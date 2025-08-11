@@ -3,6 +3,8 @@ import numpy as np
 import time
 import math
 import argparse
+import csv
+import datetime
 from typing import List, Tuple
 from meta_marker.calib_test import connect_to, set_up_tool
 
@@ -71,6 +73,7 @@ def main():
         print("Streaming stray markers (TX 1000). Press Ctrl+C to stop.")
         period = 1.0 / args.rate
         count = 0
+        buffer: List[np.ndarray] = []
 
         while True:
             t0 = time.time()
@@ -79,6 +82,27 @@ def main():
 
             # keep only the first 9
             markers = markers[:9]
+            # --- buffering and averaging ---
+            arr = np.full((9, 3), np.nan)  # fixed‑size array with NaNs
+            for i, (x, y, z) in enumerate(markers):
+                arr[i] = (x, y, z)
+            buffer.append(arr)
+
+            # When we have 50 frames, compute mean and write to CSV
+            if len(buffer) == 50:
+                stacked = np.stack(buffer)                 # shape (50, 9, 3)
+                means = np.nanmean(stacked, axis=0)        # mean across frames
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"markers_{timestamp}.csv"
+                with open(filename, "w", newline="") as csvfile:
+                    writer = csv.writer(csvfile)
+                    writer.writerow(["Marker", "X_mm", "Y_mm", "Z_mm"])
+                    for idx, (mx, my, mz) in enumerate(means, start=1):
+                        if not np.isnan(mx):
+                            writer.writerow([idx, f"{mx:.2f}", f"{my:.2f}", f"{mz:.2f}"])
+                print(f"Averaged 50‑frame buffer saved to {filename}")
+                buffer.clear()
+            # --- end buffering ---
             if markers:
                 print(f"Frame {count:05d} | {len(markers)} marker(s):")
                 for i, (x, y, z) in enumerate(markers, start=1):
