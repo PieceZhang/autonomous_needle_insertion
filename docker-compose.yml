@@ -1,0 +1,50 @@
+version: "3.9"
+
+services:
+  ros:
+    # Choose one of these:
+    image: osrf/ros:kilted-desktop            # general Kilted desktop
+    # image: osrf/ros:kilted-desktop-noble    # pins Ubuntu 24.04 explicitly
+    # image: osrf/ros:kilted-desktop-full     # adds more desktop packages
+
+    container_name: "${COMPOSE_PROJECT_NAME:-ros2}-kilted"
+    network_mode: "host"        # simplest DDS discovery on Linux
+    ipc: "host"
+    working_dir: /ws
+    stdin_open: true
+    tty: true
+
+    # Keep the ROS env: /ros_entrypoint.sh sources /opt/ros/$ROS_DISTRO/setup.bash
+    entrypoint: ["/ros_entrypoint.sh"]
+    command: >
+      bash -lc "
+        if [ -f /ws/install/setup.bash ]; then source /ws/install/setup.bash; fi;
+        echo 'ROS $ROS_DISTRO container ready at /ws';
+        tail -f /dev/null
+      "
+
+    environment:
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-42}
+      - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
+      # (Optional) GUI apps like RViz:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
+
+    volumes:
+      - ./ros2_ws:/ws
+      - ~/.ros:/root/.ros
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+
+    # (Optional) run as host user to avoid root-owned files
+    # user: "${UID:-1000}:${GID:-1000}"
+
+    # (Optional) USB devices, serial, etc.
+    # devices:
+    #   - /dev/bus/usb:/dev/bus/usb
+
+    # (Optional) GPU passthrough on modern Docker/Compose
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - capabilities: [gpu]
