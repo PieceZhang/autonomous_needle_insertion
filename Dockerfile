@@ -20,18 +20,18 @@ RUN apt-get update \
       ros-$ROS_DISTRO-ros2-controllers
 # && rm -rf /var/lib/apt/lists/* \
 
-# --- Build NDI ROS 2 driver into /opt/ndi_ws ---
-ARG NDI_REPO=https://github.com/zixingjiang/ndi_ros2_driver.git
-ARG NDI_REF=jazzy
+
+# --- Build NDI ROS 2 driver from local source into /opt/ndi_ws ---
+ARG WS=/opt/ndi_ws
+
+# Prepare workspace and copy local subtree (ensure .dockerignore does not exclude it)
+RUN mkdir -p ${WS}/src
+COPY ndi_ros2_driver ${WS}/src/ndi_ros2_driver
 
 RUN set -eo pipefail \
  && rosdep init || true \
  && rosdep update --rosdistro $ROS_DISTRO \
- && mkdir -p /opt/ndi_ws/src \
- && cd /opt/ndi_ws/src \
- && git clone --depth=1 --branch ${NDI_REF} ${NDI_REPO} \
- && cd /opt/ndi_ws \
  && source /opt/ros/$ROS_DISTRO/setup.bash \
- && rosdep install --from-paths src -i -y --rosdistro $ROS_DISTRO \
- && colcon build --merge-install \
+ && rosdep install --from-paths ${WS}/src -i -y --rosdistro $ROS_DISTRO \
+ && colcon build --merge-install --base-paths ${WS}/src --install-base ${WS}/install \
  && echo '[ -f /opt/ndi_ws/install/setup.bash ] && source /opt/ndi_ws/install/setup.bash' >> /root/.bashrc

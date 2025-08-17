@@ -33,7 +33,6 @@ services:
 
     volumes:
       - ./ros2_ws:/ws
-      - ./tool_definition:/root/tool_definition:ro
       - ~/.ros:/root/.ros
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
 

@@ -19,12 +19,8 @@
         <!-- BEGIN: add trackers here -->
         <!-- It is advised to load only the markers you are interested in broadcasting -->
         <xacro:ndi_tracker 
-            name="tracker_1"
-            srom="$(find ndi_description)/sroms/8700339.rom" 
-        />
-        <xacro:ndi_tracker 
-            name="tracker_2"
-            srom="$(find ndi_description)/sroms/8700340.rom" 
+            name="probe"
+            srom="$(find ndi_description)/sroms/8700340.rom"
         />
         <!-- END: add trackers here -->
 
