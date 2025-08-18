@@ -5,8 +5,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: aniros:kilted-dev   # optional, gives a stable tag to the built image
-    container_name: "${COMPOSE_PROJECT_NAME:-ros2}-kilted"
+    image: aniros:jazzy-dev   # optional, gives a stable tag to the built image
+    container_name: "${COMPOSE_PROJECT_NAME:-ros2}-jazzy"
 
     # keep these as you have them
     network_mode: "host"

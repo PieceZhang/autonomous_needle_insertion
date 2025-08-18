@@ -1,4 +1,4 @@
-FROM osrf/ros:kilted-desktop-full
+FROM osrf/ros:jazzy-desktop-full
 SHELL ["/bin/bash","-lc"]
 
 # Ensure interactive shells have ROS, and install essential networking tools
@@ -8,7 +8,7 @@ RUN set -euo pipefail \
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      ros-kilted-rmw-cyclonedds-cpp \
+      ros-$ROS_DISTRO-rmw-cyclonedds-cpp \
       python3-colcon-common-extensions \
       git \
       build-essential \
@@ -17,7 +17,9 @@ RUN apt-get update \
       iproute2 iputils-ping net-tools netcat-openbsd dnsutils traceroute tcpdump \
       ros-$ROS_DISTRO-ros2controlcli \
       ros-$ROS_DISTRO-ros2-control \
-      ros-$ROS_DISTRO-ros2-controllers
+      ros-$ROS_DISTRO-ros2-controllers \
+      ros-$ROS_DISTRO-ur \
+      ros-$ROS_DISTRO-tf2-tools
 # && rm -rf /var/lib/apt/lists/* \
 
 
