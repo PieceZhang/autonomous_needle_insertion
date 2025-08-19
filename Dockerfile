@@ -1,10 +1,12 @@
 FROM osrf/ros:jazzy-desktop-full
 SHELL ["/bin/bash","-lc"]
 
-# Ensure interactive shells have ROS, and install essential networking tools
-RUN set -euo pipefail \
- && echo 'source /opt/ros/$ROS_DISTRO/setup.bash' >> /root/.bashrc \
- && echo '[ -f /ws/install/setup.bash ] && source /ws/install/setup.bash' >> /root/.bashrc \
+# Ensure ALL interactive bash shells (for any user) source ROS and local workspaces
+RUN printf '%s\n' \
+  'if [ -f "/opt/ros/$ROS_DISTRO/setup.bash" ]; then source "/opt/ros/$ROS_DISTRO/setup.bash"; fi' \
+  '[ -f /opt/ndi_ws/install/setup.bash ] && source /opt/ndi_ws/install/setup.bash' \
+  '[ -f /ws/install/setup.bash ] && source /ws/install/setup.bash' \
+  >> /etc/bash.bashrc
 
 ARG UBUNTU_MIRRORS="https://ubuntu-archive.mirrorservice.org/ubuntu https://mirror.ox.ac.uk/sites/archive.ubuntu.com/ubuntu https://archive.ubuntu.com/ubuntu https://ftp.jaist.ac.jp/pub/Linux/ubuntu https://ftp.riken.jp/Linux/ubuntu https://download.nus.edu.sg/mirror/ubuntu https://ftp.kaist.ac.kr/ubuntu https://mirror.kakao.com/ubuntu https://free.nchc.org.tw/ubuntu https://mirror.xtom.com.hk/ubuntu https://mirrors.tuna.tsinghua.edu.cn/ubuntu https://mirrors.ustc.edu.cn/ubuntu https://mirrors.bfsu.edu.cn/ubuntu https://mirrors.aliyun.com/ubuntu https://mirrors.sjtug.sjtu.edu.cn/ubuntu"
 ENV UBUNTU_MIRRORS="${UBUNTU_MIRRORS}"
@@ -76,7 +78,7 @@ RUN set -eux; \
   cat /etc/apt/sources.list.d/ros2.sources
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends \
+ && apt-get install -y \
       ros-$ROS_DISTRO-rmw-cyclonedds-cpp \
       python3-colcon-common-extensions \
       git \
@@ -89,7 +91,9 @@ RUN apt-get update \
       ros-$ROS_DISTRO-ros2-controllers \
       ros-$ROS_DISTRO-ur \
       ros-$ROS_DISTRO-tf2-tools \
-      ros-$ROS_DISTRO-moveit-py
+      ros-$ROS_DISTRO-moveit-py \
+      ros-$ROS_DISTRO-ur-moveit-config \
+      ros-$ROS_DISTRO-moveit-configs-utils
 # && rm -rf /var/lib/apt/lists/* \
 
 
@@ -105,5 +109,4 @@ RUN set -eo pipefail \
  && rosdep update --rosdistro $ROS_DISTRO \
  && source /opt/ros/$ROS_DISTRO/setup.bash \
  && rosdep install --from-paths ${WS}/src -i -y --rosdistro $ROS_DISTRO \
- && colcon build --merge-install --base-paths ${WS}/src --install-base ${WS}/install \
- && echo '[ -f /opt/ndi_ws/install/setup.bash ] && source /opt/ndi_ws/install/setup.bash' >> /root/.bashrc
+ && colcon build --merge-install --base-paths ${WS}/src --install-base ${WS}/install

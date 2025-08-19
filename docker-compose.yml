@@ -1,7 +1,6 @@
-version: "3.9"
-
 services:
   ros:
+    user: "${UID:-1000}:${GID:-1000}"
     build:
       context: .
       dockerfile: Dockerfile
@@ -21,7 +20,7 @@ services:
       bash -lc "
         if [ -f /opt/ndi_ws/install/setup.bash ]; then source /opt/ndi_ws/install/setup.bash; fi;
         if [ -f /ws/install/setup.bash ]; then source /ws/install/setup.bash; fi;
-        echo 'ROS '$ROS_DISTRO' container ready at /ws';
+        echo 'ROS $${ROS_DISTRO:-unknown} container ready at /ws';
         tail -f /dev/null
       "
 
@@ -30,14 +29,14 @@ services:
       - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
       - DISPLAY=${DISPLAY}
       - QT_X11_NO_MITSHM=1
+      - ROS_HOME=/ws/.ros
+      - ROS_LOG_DIR=/ws/.ros/log
 
     volumes:
       - ./ros2_ws:/ws:rw
-      - ~/.ros:/root/.ros
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-
-    # (Optional) run as host user to avoid root-owned files
-    # user: "${UID:-1000}:${GID:-1000}"
+      - /etc/passwd:/etc/passwd:ro
+      - /etc/group:/etc/group:ro
 
     # (Optional) USB devices, serial, etc.
     # devices:
