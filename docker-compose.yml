@@ -29,11 +29,11 @@ services:
       - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
       - DISPLAY=${DISPLAY}
       - QT_X11_NO_MITSHM=1
-      - ROS_HOME=/ws/.ros
-      - ROS_LOG_DIR=/ws/.ros/log
+      - ROS_HOME=${WS_DIR:-/ani_ws}/.ros
+      - ROS_LOG_DIR=${WS_DIR:-/ani_ws}/.ros/log
 
     volumes:
-      - ./ros2_ws:/ws:rw
+      - ./workspace:${WS_DIR:-/ani_ws}:rw
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /etc/passwd:/etc/passwd:ro
       - /etc/group:/etc/group:ro

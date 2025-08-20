@@ -110,3 +110,33 @@ RUN set -eo pipefail \
  && source /opt/ros/$ROS_DISTRO/setup.bash \
  && rosdep install --from-paths ${WS}/src -i -y --rosdistro $ROS_DISTRO \
  && colcon build --merge-install --base-paths ${WS}/src --install-base ${WS}/install
+
+# --- ROS-aware Python & Pip wrappers for IDEs (PyCharm) ---
+RUN set -Eeuo pipefail; \
+  printf '%s\n' '#!/usr/bin/env bash' 'set -Ee -o pipefail' \
+  '# Source core ROS env if available' \
+  'if [ -n "${ROS_DISTRO:-}" ] && [ -f "/opt/ros/$ROS_DISTRO/setup.bash" ]; then' \
+  '  source "/opt/ros/$ROS_DISTRO/setup.bash"' \
+  'fi' \
+  '# Source any overlay workspaces if present' \
+  'for ws in /opt/ndi_ws /ws /root/ws; do' \
+  '  if [ -f "$ws/install/setup.bash" ]; then' \
+  '    source "$ws/install/setup.bash"' \
+  '  fi' \
+  'done' \
+  '# Hand off to the real interpreter' \
+  'exec /usr/bin/python3 "$@"' \
+  > /usr/local/bin/python_ros \
+  && chmod 0755 /usr/local/bin/python_ros \
+  && printf '%s\n' '#!/usr/bin/env bash' 'set -Ee -o pipefail' \
+  'if [ -n "${ROS_DISTRO:-}" ] && [ -f "/opt/ros/$ROS_DISTRO/setup.bash" ]; then' \
+  '  source "/opt/ros/$ROS_DISTRO/setup.bash"' \
+  'fi' \
+  'for ws in /opt/ndi_ws /ws /root/ws; do' \
+  '  if [ -f "$ws/install/setup.bash" ]; then' \
+  '    source "$ws/install/setup.bash"' \
+  '  fi' \
+  'done' \
+  'exec /usr/bin/python3 -m pip "$@"' \
+  > /usr/local/bin/pip_ros \
+  && chmod 0755 /usr/local/bin/pip_ros

@@ -2,7 +2,7 @@
 # Generate a .env for Docker Compose with host UID/GID.
 # Usage:
 #   ./gen-dotenv.sh                 # use current user's ids
-#   ./gen-dotenv.sh --from-dir-owner ./ros2_ws   # use owner of a directory
+#   ./gen-dotenv.sh --from-dir-owner ./workspace   # use owner of a directory
 
 set -euo pipefail
 
@@ -48,6 +48,7 @@ tmp="${ENV_FILE}.tmp"
   echo "# Used by Docker Compose for variable interpolation; not exported to containers."
   echo "UID=${uid}"
   echo "GID=${gid}"
+  echo "WS_DIR=/ani_ws"
 } > "${tmp}"
 
 mv "${tmp}" "${ENV_FILE}"
