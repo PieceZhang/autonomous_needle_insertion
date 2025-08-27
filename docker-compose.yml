@@ -38,32 +38,31 @@ services:
         ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur5e robot_ip:=${UR_ROBOT_IP} launch_rviz:=false
       "
     healthcheck:
-#      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list 2>/dev/null | grep -q '^/urscript_interface/script_command$'"]
       # setup.bash has to be sourced first in a test to expose the ros2 command
       test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q /urscript_interface/script_command"]
       interval: 5s
       timeout: 3s
-      retries: 12
-      start_period: 30s
+      retries: 5
+      start_period: 15s
     restart: unless-stopped
 
   # Service 2: NDI Polaris driver (long-running)
   polaris_driver:
     <<: *ros_common
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-polaris-driver"
-    profiles: ["default"]
+    profiles: ["default", "polaris_test"]
     command: >
       bash -lc "
         if [ -f /opt/ndi_ws/install/setup.bash ]; then source /opt/ndi_ws/install/setup.bash; fi;
         echo 'Starting Polaris driver with IP ' ${POLARIS_IP};
-        ros2 launch ndi_bringup polaris_vega.launch.py ip:=<POLARIS_IP> gui:=false
+        ros2 launch ndi_bringup polaris_vega.launch.py ip:=${POLARIS_IP} gui:=false
       "
     healthcheck:
-      test: ["CMD-SHELL", "bash -lc 'set -e; ros2 topic list | grep -q ndi' "]
+      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q ndi"]
       interval: 5s
       timeout: 3s
-      retries: 12
-      start_period: 60s
+      retries: 5
+      start_period: 15s
     restart: unless-stopped
 
   # Service 3: Test robot arm with one-shot EE +Z 10 mm motion via URScript
