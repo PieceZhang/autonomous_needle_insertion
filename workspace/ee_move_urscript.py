@@ -28,7 +28,7 @@ ee_offset_move()
 
 def main():
     rclpy.init()
-    node = URScriptMover(dz=0.1)
+    node = URScriptMover(dz=0.02)
     node.send()
     # Give the middleware a short moment to actually send the message
     rclpy.spin_once(node, timeout_sec=0.25)
