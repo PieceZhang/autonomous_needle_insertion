@@ -1,0 +1,63 @@
+ani_moveit_py:
+  ros__parameters:
+    planning_scene_monitor_options:
+      name: "planning_scene_monitor"
+      robot_description: "robot_description"
+      joint_state_topic: "/joint_states"
+      attached_collision_object_topic: "/moveit_cpp/planning_scene_monitor"
+      publish_planning_scene_topic: "/moveit_cpp/publish_planning_scene"
+      monitored_planning_scene_topic: "/moveit_cpp/monitored_planning_scene"
+      wait_for_initial_state_timeout: 10.0
+
+    # Must be an array
+    planning_pipelines:
+      pipeline_names: ["ompl"]
+
+    # Per-pipeline settings
+    ompl:
+      # Must be an array
+      planning_plugins: ["ompl_interface/OMPLPlanner"]
+
+      # Must be an array; use the *planning* (not *planner*) adapter names
+      request_adapters:
+        - default_planning_request_adapters/ResolveConstraintFrames
+        - default_planning_request_adapters/ValidateWorkspaceBounds
+        - default_planning_request_adapters/CheckStartStateBounds
+        - default_planning_request_adapters/CheckStartStateCollision
+        - default_planning_request_adapters/CheckForStackedConstraints
+      start_state_max_bounds_error: 0.1
+
+    # Optional defaults for single-pipeline requests
+    plan_request_params:
+      planning_pipeline: ompl
+      planning_attempts: 1
+      planning_time: 2.0
+      max_velocity_scaling_factor: 1.0
+      max_acceleration_scaling_factor: 1.0
+      planner_id: "RRTConnectkConfigDefault"
+
+    trajectory_execution:
+      allowed_start_tolerance: 0.05
+      execution_duration_monitoring: false
+      allowed_goal_duration_margin: 0.5
+
+    # --- Controller manager for execution ---
+    # Use the SimpleControllerManager and point it to your JTC action
+    moveit_controller_manager: "moveit_simple_controller_manager/MoveItSimpleControllerManager"
+
+    # NOTE: In ROS 2 the SimpleControllerManager reads its parameters under the
+    #       'moveit_simple_controller_manager' namespace (not 'moveit_controllers').
+    moveit_simple_controller_manager:
+      controller_names: ["joint_trajectory_controller"]
+
+      joint_trajectory_controller:
+        type: FollowJointTrajectory
+        action_ns: follow_joint_trajectory
+        default: true
+        joints:
+          - shoulder_pan_joint
+          - shoulder_lift_joint
+          - elbow_joint
+          - wrist_1_joint
+          - wrist_2_joint
+          - wrist_3_joint

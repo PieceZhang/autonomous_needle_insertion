@@ -1,6 +1,11 @@
-workspace/.ros/
 .idea/
 results/
+
+# ROS related
+workspace/.ros/
+workspace/build/
+workspace/install/
+workspace/log/
 
 # OS specific
 .DS_Store

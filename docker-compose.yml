@@ -9,7 +9,7 @@ services:
     image: aniros:jazzy-dev
     network_mode: "host"
     ipc: "host"
-    working_dir: /ws
+    working_dir: ${WS_DIR:-/ani_ws}
     stdin_open: true
     tty: true
     entrypoint: [ "/ros_entrypoint.sh" ]
@@ -38,8 +38,31 @@ services:
         ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur5e robot_ip:=${UR_ROBOT_IP} launch_rviz:=false
       "
     healthcheck:
-      # setup.bash has to be sourced first in a test to expose the ros2 command
-      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q /urscript_interface/script_command"]
+      # Real readiness = robot reachable + External Control running + robot mode RUNNING. Wait for:
+      #  1) /io_and_status_controller/robot_program_running == true (External Control)
+      #  2) /io_and_status_controller/robot_mode contains "RUNNING" (motors on, brakes released)
+      # If the robot is off/unreachable, the timeouts will fail and the service is UNHEALTHY.
+      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; timeout 5s ros2 topic echo -n 1 /io_and_status_controller/robot_program_running | grep -q 'data: true' && timeout 5s ros2 topic echo -n 1 /io_and_status_controller/robot_mode | grep -q 'RUNNING'"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # Service 2: UR driver with mock hardware(long-running)
+  ur_driver_mock:
+    <<: *ros_common
+    container_name: "${COMPOSE_PROJECT_NAME:-ros2}-ur5e-driver-mock"
+    profiles: ["default", "dev"]
+    command: >
+      bash -lc "
+        if [ -f ${WS_DIR:-/ani_ws}/install/setup.bash ]; then source ${WS_DIR:-/ani_ws}/install/setup.bash; fi;
+        echo 'Starting UR driver with IP ' ${UR_ROBOT_IP};
+        ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur5e robot_ip:=0.0.0.0 use_mock_hardware:=true initial_joint_controller:=joint_trajectory_controller launch_rviz:=false
+      "
+    healthcheck:
+#      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q /urscript_interface/script_command"]
+      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi;"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -85,14 +108,31 @@ services:
       "
     restart: "no"
 
-  # Service 4: Bare container
+  # Service 4: Container for development
+  dev:
+    <<: *ros_common
+    container_name: "${COMPOSE_PROJECT_NAME:-ros2}-dev"
+    profiles: ["dev"]
+    depends_on:
+      ur_driver_mock:
+        condition: service_healthy
+#      polaris_driver:
+#        condition: service_healthy
+    command: >
+      bash -lc "
+        echo 'Development container with all drivers';
+        exec sleep infinity
+      "
+    restart: unless-stopped
+
+  # Service 5: Bare container
   bare:
     <<: *ros_common
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-bare"
     profiles: ["bare"]
     command: >
       bash -lc "
-        echo 'Bare container with ROS 2 and no robot driver';
+        echo 'Bare container with no drivers';
         exec sleep infinity
       "
     restart: unless-stopped
