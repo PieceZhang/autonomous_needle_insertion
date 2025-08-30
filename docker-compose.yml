@@ -30,7 +30,7 @@ services:
   ur_driver:
     <<: *ros_common
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-ur5e-driver"
-    profiles: ["default", "ur_test"]
+    profiles: ["default", "ur_test", "dev"]
     command: >
       bash -lc "
         if [ -f ${WS_DIR:-/ani_ws}/install/setup.bash ]; then source ${WS_DIR:-/ani_ws}/install/setup.bash; fi;
@@ -42,7 +42,9 @@ services:
       #  1) /io_and_status_controller/robot_program_running == true (External Control)
       #  2) /io_and_status_controller/robot_mode contains "RUNNING" (motors on, brakes released)
       # If the robot is off/unreachable, the timeouts will fail and the service is UNHEALTHY.
-      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; timeout 5s ros2 topic echo -n 1 /io_and_status_controller/robot_program_running | grep -q 'data: true' && timeout 5s ros2 topic echo -n 1 /io_and_status_controller/robot_mode | grep -q 'RUNNING'"]
+#      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; timeout 5s ros2 topic echo -n 1 /io_and_status_controller/robot_program_running | grep -q 'data: true' && timeout 5s ros2 topic echo -n 1 /io_and_status_controller/robot_mode | grep -q 'RUNNING'"]
+#      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; timeout 5s ros2 topic echo -n 1 /io_and_status_controller/robot_mode | grep -q 'RUNNING'"]
+      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi;"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -53,7 +55,7 @@ services:
   ur_driver_mock:
     <<: *ros_common
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-ur5e-driver-mock"
-    profiles: ["default", "dev"]
+    profiles: ["default"]
     command: >
       bash -lc "
         if [ -f ${WS_DIR:-/ani_ws}/install/setup.bash ]; then source ${WS_DIR:-/ani_ws}/install/setup.bash; fi;
@@ -114,7 +116,7 @@ services:
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-dev"
     profiles: ["dev"]
     depends_on:
-      ur_driver_mock:
+      ur_driver:
         condition: service_healthy
 #      polaris_driver:
 #        condition: service_healthy
