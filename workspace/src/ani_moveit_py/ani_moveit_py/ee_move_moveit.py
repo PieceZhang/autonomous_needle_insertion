@@ -51,7 +51,7 @@ def main():
     # if plan_result:
     #     robot.execute(plan_result.trajectory, controllers=["joint_trajectory_controller"])
 
-    # --- Move EE by +10 mm along its local +Z axis relative to current pose ---
+    # --- Draw a 10 mm square in the EE's local Oxy plane (keep orientation fixed) ---
     arm.set_start_state_to_current_state()
 
     # Read the latest state and compute current EE transform
@@ -60,37 +60,57 @@ def main():
         T = scene.current_state.get_global_link_transform(tip_link)  # 4x4 numpy array
         current_pose = scene.current_state.get_pose(tip_link)  # geometry_msgs/Pose
 
-    # Extract local Z axis (3rd column of rotation) in base frame and translate 10 mm
-    z_axis = T[:3, 2]
-    z_axis = z_axis / np.linalg.norm(z_axis)
-    p = T[:3, 3]
-    delta = 0.1  # 10 mm
-    p_new = p + delta * z_axis
+    # Local axes of the EE expressed in the planning frame
+    R = T[:3, :3]
+    x_axis = R[:, 0] / np.linalg.norm(R[:, 0])
+    y_axis = R[:, 1] / np.linalg.norm(R[:, 1])
+    p0 = T[:3, 3]
 
-    # Build the target pose in the planning frame (keep orientation unchanged)
-    pose = PoseStamped()
-    pose.header.frame_id = planning_frame
-    pose.pose.position.x = float(p_new[0])
-    pose.pose.position.y = float(p_new[1])
-    pose.pose.position.z = float(p_new[2])
-    pose.pose.orientation = current_pose.orientation
+    # Define a square of edge 10 mm centered at the current EE position in its local Oxy plane
+    edge = 0.2  # 10 mm
+    h = edge / 2.0
+    # Waypoints (dx, dy) in the EE local frame; start at bottom-left, go CCW, return, then to center
+    local_corners = [
+        (-h, -h),
+        ( h, -h),
+        ( h,  h),
+        (-h,  h),
+        (-h, -h),
+        ( 0.0, 0.0),  # return to the square center (original start)
+    ]
 
-    arm.set_goal_state(pose_stamped_msg=pose, pose_link=tip_link)
-    # Slow down planning/execution using scaling (values in (0, 1])
-    plan_params = PlanRequestParameters(robot, "")
-    plan_params.max_velocity_scaling_factor = 0.05
-    plan_params.max_acceleration_scaling_factor = 0.05
-    plan_result = arm.plan(single_plan_parameters=plan_params)
-    if plan_result:
-        # Prefer the UR driver's scaled controller on real hardware; fall back if unavailable
+    def make_pose(dx: float, dy: float) -> PoseStamped:
+        """Create a PoseStamped at p0 + dx*x + dy*y with current orientation."""
+        p_new = p0 + dx * x_axis + dy * y_axis
+        ps = PoseStamped()
+        ps.header.frame_id = planning_frame
+        ps.pose.position.x = float(p_new[0])
+        ps.pose.position.y = float(p_new[1])
+        ps.pose.position.z = float(p_new[2])
+        ps.pose.orientation = current_pose.orientation  # lock orientation
+        return ps
+
+    waypoint_poses = [make_pose(dx, dy) for (dx, dy) in local_corners]
+
+    # Plan and execute segment-by-segment to each corner
+    for i, wp in enumerate(waypoint_poses):
+        arm.set_start_state_to_current_state()
+        arm.set_goal_state(pose_stamped_msg=wp, pose_link=tip_link)
+        plan_params = PlanRequestParameters(robot, "")
+        plan_params.max_velocity_scaling_factor = 0.2
+        plan_params.max_acceleration_scaling_factor = 0.2
+        plan_result = arm.plan(single_plan_parameters=plan_params)
+        if not plan_result:
+            print(f"[Square] Planning to corner {i} failed; aborting the shape.")
+            break
         try:
             robot.execute(plan_result.trajectory, controllers=["scaled_joint_trajectory_controller"])  # UR real HW
         except Exception:
-            # Let MoveIt pick, or try the generic controller if present
             try:
                 robot.execute(plan_result.trajectory)
             except Exception:
                 robot.execute(plan_result.trajectory, controllers=["joint_trajectory_controller"])  # sim/mock
+        print(f"[Square] Reached corner {i} / {len(waypoint_poses)-1}")
 
     rclpy.shutdown()
 
