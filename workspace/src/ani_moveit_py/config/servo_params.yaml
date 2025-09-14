@@ -1,0 +1,41 @@
+servo_node:
+  ros__parameters:
+    moveit_servo:
+      low_latency_mode: true    # publish immediately on input; ignores publish_period
+
+      # Core frames & group
+      planning_frame: base_link          # match your MoveIt planning frame
+      move_group_name: ur_manipulator    # your MoveIt group name
+      ee_frame_name: tool0                 # end-effector link used for pose IK
+      robot_link_command_frame: tool0
+
+      # Input topics
+      joint_command_in_topic: joint_jog_cmds
+      command_in_type: "speed_units"
+      cartesian_command_in_topic: /mirror_servo/twist_cmd
+      pose_command_in_topic: /mirror_servo/pose_cmd
+
+      # Output: send trajectories to your active controller (UR driver)
+      command_out_type: trajectory_msgs/JointTrajectory
+      command_out_topic: /scaled_joint_trajectory_controller/joint_trajectory
+
+      # Safety & smoothing (tune as needed)
+      check_collisions: true
+      collision_check_rate: 100.0   # Hz
+      smoothing_filter_plugin_name: "online_signal_smoothing::RuckigFilterPlugin"
+      publish_period: 0.008            # 125 Hz -> match UR RTDE/joint_states
+      max_expected_latency: 0.2        # de-jitter window; publish_period must be < (max_expected_latency/3)
+      incoming_command_timeout: 0.15   # quick halt if input stream hiccups
+      num_outgoing_halt_msgs_to_publish: 4
+      publish_joint_positions: true
+      publish_joint_velocities: false
+      publish_joint_accelerations: false
+      lower_singularity_threshold: 30.0
+      hard_stop_singularity_threshold: 45.0
+      leaving_singularity_threshold_multiplier: 2.0
+    planning_group_name: ur_manipulator      # required by Ruckig/AccelerationLimited
+    update_period: 0.008                     # seconds; MUST match Servo publish/control period
+
+online_signal_smoothing:
+  ros__parameters:
+    butterworth_filter_coeff: 20.0   # try 3.0–10.0; must be >1

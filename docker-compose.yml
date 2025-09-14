@@ -75,7 +75,7 @@ services:
   polaris_driver:
     <<: *ros_common
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-polaris-driver"
-    profiles: ["default", "polaris_test"]
+    profiles: ["default", "polaris_test", "dev"]
     command: >
       bash -lc "
         if [ -f /opt/ndi_ws/install/setup.bash ]; then source /opt/ndi_ws/install/setup.bash; fi;
@@ -118,10 +118,11 @@ services:
     depends_on:
       ur_driver:
         condition: service_healthy
-#      polaris_driver:
-#        condition: service_healthy
+      polaris_driver:
+        condition: service_healthy
     command: >
       bash -lc "
+        if [ -f ${WS_DIR:-/ani_ws}/install/setup.bash ]; then source ${WS_DIR:-/ani_ws}/install/setup.bash; fi;
         echo 'Development container with all drivers';
         exec sleep infinity
       "

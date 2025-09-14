@@ -61,7 +61,7 @@ def generate_launch_description():
 
     node = Node(
         package="ani_moveit_py",
-        executable="ee_move_moveit",
+        executable="ee_moveit_square",
         name="moveit_py",
         output="screen",
         parameters=[moveit_config.to_dict(), {"publish_robot_description_semantic": True}],

@@ -12,8 +12,7 @@ setup(
         ("share/ament_index/resource_index/packages",
          [os.path.join("resource", package_name)]),
         ("share/" + package_name, ["package.xml"]),
-        ("share/" + package_name + "/launch",
-         [os.path.join("launch", "ee_move_moveit.launch.py")]),
+        (os.path.join("share", package_name, "launch"), glob(os.path.join("launch", "*.launch.py"))),
         ("share/" + package_name + "/config",
          glob(os.path.join("config", "*.yaml"))),
     ],
@@ -25,7 +24,9 @@ setup(
     license="Apache-2.0",
     entry_points={
         "console_scripts": [
-            "ee_move_moveit = ani_moveit_py.ee_move_moveit:main",
+            "ee_moveit_square = ani_moveit_py.ee_moveit_square:main",
+            "tool_reporter = ani_moveit_py.tool_reporter:main",
+            "tool_follower = ani_moveit_py.tool_follower:main",
         ],
     },
 )

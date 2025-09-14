@@ -67,7 +67,7 @@ def main():
     p0 = T[:3, 3]
 
     # Define a square of edge 10 mm centered at the current EE position in its local Oxy plane
-    edge = 0.2  # 10 mm
+    edge = 0.2  # in m
     h = edge / 2.0
     # Waypoints (dx, dy) in the EE local frame; start at bottom-left, go CCW, return, then to center
     local_corners = [
