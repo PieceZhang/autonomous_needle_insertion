@@ -1,32 +1,33 @@
+import os
+from pathlib import Path
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
-from ament_index_python.packages import get_package_share_directory
-from pathlib import Path
 from moveit_configs_utils import MoveItConfigsBuilder
-import os
 
 
 def generate_launch_description():
-    # --- Args ---
+    # Launch arguments
     ur_type_arg = DeclareLaunchArgument("ur_type", default_value="ur5e")
     ur_type = LaunchConfiguration("ur_type")
 
-    # --- Package shares ---
+    # Package paths
     ur_moveit_pkg = Path(get_package_share_directory("ur_moveit_config"))
-    ur_desc_pkg = Path(get_package_share_directory("ur_description"))
-    my_pkg_share = Path(get_package_share_directory("ani_moveit_py"))
+    ur_desc_pkg   = Path(get_package_share_directory("ur_description"))
+    my_pkg_share  = Path(get_package_share_directory("ani_moveit_py"))
 
-    # --- SRDF path in ur_moveit_config ---
-    # Prefer xacro; fall back to plain SRDF if needed
+    # SRDF configuration
     srdf_rel = "srdf/ur.srdf.xacro"
+    # Prefer xacro; fall back to plain SRDF if needed
     if not (ur_moveit_pkg / srdf_rel).exists():
         alt = "srdf/ur.srdf"
         if (ur_moveit_pkg / alt).exists():
             srdf_rel = alt
 
-    # --- URDF xacro in ur_description ---
+    # URDF configuration
     urdf_xacro = str(ur_desc_pkg / "urdf/ur.urdf.xacro")
 
     # Required xacro mappings for UR robots
@@ -35,9 +36,9 @@ def generate_launch_description():
     phys_yaml = PathJoinSubstitution([str(ur_desc_pkg), "config", ur_type, "physical_parameters.yaml"]) # per model
     vis_yaml  = PathJoinSubstitution([str(ur_desc_pkg), "config", ur_type, "visual_parameters.yaml"])   # per model
 
+    # MoveIt configuration
     moveit_config = (
         MoveItConfigsBuilder(robot_name="ur", package_name="ur_moveit_config")
-        # Provide URDF explicitly (driver/mock can still publish /robot_description)
         .robot_description(
             file_path=urdf_xacro,
             mappings={
@@ -48,15 +49,19 @@ def generate_launch_description():
                 "visual_params": vis_yaml,
             },
         )
-        # SRDF (needs ur_type)
-        .robot_description_semantic(file_path=srdf_rel, mappings={"ur_type": ur_type, "name": ur_type})
-        # Kinematics plugins (gives Servo an IK solver for ur_manipulator)
+        .robot_description_semantic(
+            file_path=srdf_rel,
+            mappings={"ur_type": ur_type, "name": ur_type}
+        )
         .robot_description_kinematics(file_path="config/kinematics.yaml")
-        # Ensure descriptions are published for nodes that read from topics
-        .planning_scene_monitor(publish_robot_description=True, publish_robot_description_semantic=True)
-        # Minimal pipeline so MoveItPy/Servo have a planning setup
-        .planning_pipelines(default_planning_pipeline="ompl", pipelines=["ompl"])
-        # Controller + execution params from ur_moveit_config
+        .planning_scene_monitor(
+            publish_robot_description=True,
+            publish_robot_description_semantic=True
+        )
+        .planning_pipelines(
+            default_planning_pipeline="ompl",
+            pipelines=["ompl"]
+        )
         .trajectory_execution(file_path="config/moveit_controllers.yaml")
         .joint_limits(file_path="config/joint_limits.yaml")
         .to_moveit_configs()
@@ -72,7 +77,7 @@ def generate_launch_description():
             # Safe default; tune if needed
             lim["max_jerk"] = 1000.0
 
-    # --- Servo node ---
+    # Servo node
     servo_params = os.path.join(str(my_pkg_share), "config", "servo_params.yaml")
     servo = Node(
         package="moveit_servo",
@@ -80,9 +85,9 @@ def generate_launch_description():
         name="servo_node",
         output="screen",
         parameters=[
-            moveit_config.to_dict(),                 # robot_description, SRDF, kinematics, controllers, joint limits, etc.
-            {"robot_description_planning": rdp},   # jerk-augmented limits for Ruckig (overrides the previous)
-            servo_params,                            # your Servo YAML
+            moveit_config.to_dict(),
+            {"robot_description_planning": rdp},
+            servo_params,
             {
                 "moveit_servo.move_group_name": "ur_manipulator",
                 "moveit_servo.planning_frame": "base_link",
@@ -90,7 +95,7 @@ def generate_launch_description():
         ],
     )
 
-    # --- Static TF: base_link -> polaris_vega_base (adjust once calibrated) ---
+    # Static TF: base_link -> polaris_vega_base (adjust once calibrated)
     static_polaris_to_base = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
@@ -103,13 +108,12 @@ def generate_launch_description():
         output="screen",
     )
 
-    # --- Your follower node (Python) ---
+    # Tool follower node
     tool_follower = Node(
         package="ani_moveit_py",
         executable="tool_follower",
         name="tool_follower",
         output="screen",
-        # It doesn’t need robot description; it uses TF and Servo topics
     )
 
     return LaunchDescription([

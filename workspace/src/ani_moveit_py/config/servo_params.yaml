@@ -1,12 +1,12 @@
 servo_node:
   ros__parameters:
     moveit_servo:
-      low_latency_mode: true    # publish immediately on input; ignores publish_period
+      low_latency_mode: true
 
       # Core frames & group
       planning_frame: base_link          # match your MoveIt planning frame
       move_group_name: ur_manipulator    # your MoveIt group name
-      ee_frame_name: tool0                 # end-effector link used for pose IK
+      ee_frame_name: tool0               # end-effector link used for pose IK
       robot_link_command_frame: tool0
 
       # Input topics
@@ -15,11 +15,11 @@ servo_node:
       cartesian_command_in_topic: /mirror_servo/twist_cmd
       pose_command_in_topic: /mirror_servo/pose_cmd
 
-      # Output: send trajectories to your active controller (UR driver)
+      # Output: send trajectories to your active controller
       command_out_type: trajectory_msgs/JointTrajectory
       command_out_topic: /scaled_joint_trajectory_controller/joint_trajectory
 
-      # Safety & smoothing (tune as needed)
+      # Safety & smoothing
       check_collisions: true
       collision_check_rate: 100.0   # Hz
       smoothing_filter_plugin_name: "online_signal_smoothing::RuckigFilterPlugin"
@@ -38,4 +38,4 @@ servo_node:
 
 online_signal_smoothing:
   ros__parameters:
-    butterworth_filter_coeff: 20.0   # try 3.0–10.0; must be >1
+    butterworth_filter_coeff: 20.0

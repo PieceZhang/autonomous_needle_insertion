@@ -10,7 +10,7 @@ planning_scene_monitor_options:
 planning_pipelines:
   pipeline_names: ["ompl"]    # enables OMPL; configs come from ompl_planning.yaml
 
-# Sensible defaults for single-pipeline requests (optional but convenient)
+# Optional sensible defaults for single-pipeline requests
 plan_request_params:
   planning_attempts: 1
   planning_pipeline: ompl
