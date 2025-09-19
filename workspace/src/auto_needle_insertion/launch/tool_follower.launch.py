@@ -17,7 +17,7 @@ def generate_launch_description():
     # Package paths
     ur_moveit_pkg = Path(get_package_share_directory("ur_moveit_config"))
     ur_desc_pkg   = Path(get_package_share_directory("ur_description"))
-    my_pkg_share  = Path(get_package_share_directory("ani_moveit_py"))
+    my_pkg_share  = Path(get_package_share_directory("auto_needle_insertion"))
 
     # SRDF configuration
     srdf_rel = "srdf/ur.srdf.xacro"
@@ -110,7 +110,7 @@ def generate_launch_description():
 
     # Tool follower node
     tool_follower = Node(
-        package="ani_moveit_py",
+        package="auto_needle_insertion",
         executable="tool_follower",
         name="tool_follower",
         output="screen",

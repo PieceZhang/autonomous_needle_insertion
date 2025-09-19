@@ -14,7 +14,7 @@ def generate_launch_description():
     # Use URDF from /robot_description of the robot driver, and select SRDF explicitly.
     ur_moveit_pkg = Path(get_package_share_directory("ur_moveit_config"))
     ur_desc_pkg   = Path(get_package_share_directory("ur_description"))
-    my_pkg_share  = Path(get_package_share_directory("ani_moveit_py"))
+    my_pkg_share  = Path(get_package_share_directory("auto_needle_insertion"))
 
     # SRDF configuration
     srdf_rel = "srdf/ur.srdf.xacro"
@@ -66,7 +66,7 @@ def generate_launch_description():
 
     # Node configuration
     node = Node(
-        package="ani_moveit_py",
+        package="auto_needle_insertion",
         executable="ee_moveit_square",
         name="moveit_py",
         output="screen",

@@ -90,27 +90,7 @@ services:
       start_period: 15s
     restart: unless-stopped
 
-  # Service 3: Test robot arm with one-shot EE +Z 10 mm motion via URScript
-  ur_move_z:
-    <<: *ros_common
-    container_name: "${COMPOSE_PROJECT_NAME:-ros2}-ur5e-move-z"
-    profiles: ["ur_test"]
-    depends_on:
-      ur_driver:
-        condition: service_healthy
-    command: >
-      bash -lc "
-        if [ -f ${WS_DIR:-/ani_ws}/install/setup.bash ]; then source ${WS_DIR:-/ani_ws}/install/setup.bash; fi;
-        echo 'Waiting for UR driver readiness...';
-        for i in {1..5}; do
-          if ros2 topic list | grep -q '/urscript_interface/script_command'; then echo 'UR driver ready.'; break; fi;
-          sleep 1;
-        done;
-        python3 ${WS_DIR:-/ani_ws}/ee_move_urscript.py
-      "
-    restart: "no"
-
-  # Service 4: Container for development
+  # Service 3: Container for development
   dev:
     <<: *ros_common
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-dev"
@@ -122,20 +102,13 @@ services:
         condition: service_healthy
     command: >
       bash -lc "
-        if [ -f ${WS_DIR:-/ani_ws}/install/setup.bash ]; then source ${WS_DIR:-/ani_ws}/install/setup.bash; fi;
+        set -e;
+        if [ ! -f ${WS_DIR:-/ani_ws}/install/setup.bash ]; then
+          cd ${WS_DIR:-/ani_ws};
+          colcon build --symlink-install --packages-select ${PACKAGE_NAME:-/auto_needle_insertion};
+        fi;
+        source ${WS_DIR:-/ani_ws}/install/setup.bash;
         echo 'Development container with all drivers';
-        exec sleep infinity
-      "
-    restart: unless-stopped
-
-  # Service 5: Bare container
-  bare:
-    <<: *ros_common
-    container_name: "${COMPOSE_PROJECT_NAME:-ros2}-bare"
-    profiles: ["bare"]
-    command: >
-      bash -lc "
-        echo 'Bare container with no drivers';
         exec sleep infinity
       "
     restart: unless-stopped

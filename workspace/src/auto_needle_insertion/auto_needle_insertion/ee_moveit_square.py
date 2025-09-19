@@ -29,7 +29,7 @@ from moveit.core.robot_state import RobotState
 from moveit.planning import MoveItPy, PlanRequestParameters
 
 # Module constants
-NODE_NAME = "ani_moveit_py"
+NODE_NAME = "auto_needle_insertion"
 SQUARE_EDGE_LENGTH = 0.2  # meters
 MAX_VELOCITY_SCALING = 0.2
 MAX_ACCELERATION_SCALING = 0.2

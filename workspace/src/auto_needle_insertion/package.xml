@@ -2,10 +2,10 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd"
             schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>ani_moveit_py</name>
-  <version>0.0.1</version>
-  <description>MoveItPy demo node for UR5e</description>
-  <maintainer email="you@example.com">Your Name</maintainer>
+  <name>auto_needle_insertion</name>
+  <version>0.1.0</version>
+  <description>Robot arm and needle control for ultrasound-guided autonomous needle insertion</description>
+  <maintainer email="qp.ding@link.cuhk.edu.hk">Quinn Ding</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_python</buildtool_depend>
