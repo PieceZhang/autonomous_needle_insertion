@@ -11,6 +11,9 @@ def generate_launch_description():
     ur_type_arg = DeclareLaunchArgument("ur_type", default_value="ur5e")
     ur_type     = LaunchConfiguration("ur_type")
 
+    mode_arg  = DeclareLaunchArgument("mode", default_value="ee_moveit_square")
+    mode_name = LaunchConfiguration("mode")
+
     # Use URDF from /robot_description of the robot driver, and select SRDF explicitly.
     ur_moveit_pkg = Path(get_package_share_directory("ur_moveit_config"))
     ur_desc_pkg   = Path(get_package_share_directory("ur_description"))
@@ -64,11 +67,10 @@ def generate_launch_description():
         .to_moveit_configs()
     )
 
-    # Node configuration
     node = Node(
         package="auto_needle_insertion",
-        executable="ee_moveit_square",
-        name="moveit_py",
+        executable=mode_name,
+        name="move_robot",
         output="screen",
         parameters=[
             moveit_config.to_dict(),
@@ -76,4 +78,4 @@ def generate_launch_description():
         ],
     )
 
-    return LaunchDescription([ur_type_arg, node])
+    return LaunchDescription([ur_type_arg, mode_arg, node])

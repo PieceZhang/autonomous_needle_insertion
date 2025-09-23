@@ -145,15 +145,20 @@ class LocalDelta:
     droll: float; dpitch: float; dyaw: float  # radians
 
 def _default_local_deltas() -> List[LocalDelta]:
-    """Return a well-spread sequence of gentle pose deltas for calibration.
+    """Return a well-spread sequence with rotational excitation.
 
     Design goals (per step):
-      - small translations (≈ 2 cm) and small rotations (≈ 3°)
-      - balanced coverage around all axes and plane diagonals
-      - interleaved signs to avoid large cumulative drift
+      - small translations (~2 cm) and small rotations (~3°)
+      - coverage within about ±45° cumulative about local axes
+      - interleaved signs/translations to avoid large drift and planner issues
 
-    Returns ~30 deltas mixing pure translations, pure rotations, and
-    small translation+rotation combos.
+    Structure:
+      1) Baseline translations & diagonals (18)
+      2) Rotational sweeps to reach ~±45° cumulatively:
+         - +45° about roll (15 × +3°)
+         - −45° about pitch (15 × −3°)
+         - +45° about yaw (15 × +3°)
+      Each rotation step includes a small orthogonal translation to keep the scene changing.
     """
     deg = math.radians
     t = 0.02           # 2 cm per step (local frame)
@@ -161,7 +166,7 @@ def _default_local_deltas() -> List[LocalDelta]:
 
     deltas: List[LocalDelta] = []
 
-    # 1) Axis translations (±X, ±Y, ±Z) — 6
+    # ---- 1) Baseline: axis translations (±X, ±Y, ±Z) — 6 ----
     deltas += [
         LocalDelta(+t, 0.0, 0.0, 0.0, 0.0, 0.0),
         LocalDelta(-t, 0.0, 0.0, 0.0, 0.0, 0.0),
@@ -171,7 +176,7 @@ def _default_local_deltas() -> List[LocalDelta]:
         LocalDelta(0.0, 0.0, -t, 0.0, 0.0, 0.0),
     ]
 
-    # 2) Diagonals in XY plane — 4
+    # ---- 2) Baseline: diagonals in XY plane — 4 ----
     deltas += [
         LocalDelta(+t, +t, 0.0, 0.0, 0.0, 0.0),
         LocalDelta(-t, +t, 0.0, 0.0, 0.0, 0.0),
@@ -179,7 +184,7 @@ def _default_local_deltas() -> List[LocalDelta]:
         LocalDelta(+t, -t, 0.0, 0.0, 0.0, 0.0),
     ]
 
-    # 3) Diagonals in XZ and YZ planes — 8
+    # ---- 3) Baseline: diagonals in XZ and YZ planes — 8 ----
     deltas += [
         LocalDelta(+t, 0.0, +t, 0.0, 0.0, 0.0),
         LocalDelta(-t, 0.0, +t, 0.0, 0.0, 0.0),
@@ -191,25 +196,36 @@ def _default_local_deltas() -> List[LocalDelta]:
         LocalDelta(0.0, +t, -t, 0.0, 0.0, 0.0),
     ]
 
-    # 4) Small pure rotations about local axes — 6
-    deltas += [
-        LocalDelta(0.0, 0.0, 0.0, +r, 0.0, 0.0),
-        LocalDelta(0.0, 0.0, 0.0, -r, 0.0, 0.0),
-        LocalDelta(0.0, 0.0, 0.0, 0.0, +r, 0.0),
-        LocalDelta(0.0, 0.0, 0.0, 0.0, -r, 0.0),
-        LocalDelta(0.0, 0.0, 0.0, 0.0, 0.0, +r),
-        LocalDelta(0.0, 0.0, 0.0, 0.0, 0.0, -r),
-    ]
+    # ---- 4) Rotational sweeps with small orthogonal translations ----
+    def add_rot_sweep(axis: str, steps: int, sign: int, trans_axis: str) -> None:
+        for k in range(steps):
+            dx = dy = dz = 0.0
+            droll = dpitch = dyaw = 0.0
 
-    # 5) Translation + rotation combos (orthogonal axes) — 6
-    deltas += [
-        LocalDelta(+t, 0.0, 0.0, 0.0, 0.0, +r),
-        LocalDelta(0.0, +t, 0.0, +r, 0.0, 0.0),
-        LocalDelta(0.0, 0.0, +t, 0.0, +r, 0.0),
-        LocalDelta(-t, 0.0, 0.0, 0.0, 0.0, -r),
-        LocalDelta(0.0, -t, 0.0, -r, 0.0, 0.0),
-        LocalDelta(0.0, 0.0, -t, 0.0, -r, 0.0),
-    ]
+            # small alternating translation along an orthogonal axis
+            s = +1.0 if (k % 2 == 0) else -1.0
+            if trans_axis == 'x':
+                dx = s * (t * 0.5)
+            elif trans_axis == 'y':
+                dy = s * (t * 0.5)
+            else:
+                dz = s * (t * 0.5)
+
+            if axis == 'roll':
+                droll = sign * r
+            elif axis == 'pitch':
+                dpitch = sign * r
+            else:  # 'yaw'
+                dyaw = sign * r
+
+            deltas.append(LocalDelta(dx, dy, dz, droll, dpitch, dyaw))
+
+    # +45° about roll (15 × +3°)
+    add_rot_sweep(axis='roll', steps=15, sign=+1, trans_axis='y')
+    # −45° about pitch (15 × −3°)
+    add_rot_sweep(axis='pitch', steps=15, sign=-1, trans_axis='x')
+    # +45° about yaw (15 × +3°)
+    add_rot_sweep(axis='yaw', steps=15, sign=+1, trans_axis='z')
 
     return deltas
 
