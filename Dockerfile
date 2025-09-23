@@ -47,27 +47,27 @@ RUN printf '%s\n' \
 
 # Detect and use the fastest ROS 2 APT mirror (with packages.ros.org as fallback)
 # Replace preconfigured ROS 2 source with a mirror (avoid Signed-By conflicts)
-ARG ROS2_MIRRORS="https://mirror.umd.edu/packages.ros.org/ros2/ubuntu http://ftp.tudelft.nl/ros2/ubuntu https://mirrors.ustc.edu.cn/ros2/ubuntu https://mirrors.bfsu.edu.cn/ros2/ubuntu https://mirrors.sustech.edu.cn/ros2/ubuntu https://packages.ros.org/ros2/ubuntu"
+ARG ROS2_MIRRORS="http://ftp.tudelft.nl/ros2/ubuntu https://mirror.umd.edu/packages.ros.org/ros2/ubuntu https://packages.ros.org/ros2/ubuntu"
 ENV ROS2_MIRRORS="${ROS2_MIRRORS}"
 RUN set -eux; \
-#  apt-get update; \
-#  apt-get install -y --no-install-recommends curl ca-certificates gnupg; \
   # Remove any preconfigured ROS 2 sources from the base image (deb822 and legacy)
   rm -f /etc/apt/sources.list.d/ros2*.sources /etc/apt/sources.list.d/*ros2*.list \
         /etc/apt/sources.list.d/*ros*.sources /etc/apt/sources.list.d/*ros*.list \
         /usr/share/ros-apt-source/*ros2*.sources || true; \
-  # Install ROS GPG key into a keyring file (path-based; used by Signed-By below)
+  # Ensure keyring directory exists and install ROS GPG key (for Signed-By below)
+  mkdir -p /usr/share/keyrings; \
   curl -fsSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
     | gpg --dearmor -o /usr/share/keyrings/ros-archive-keyring.gpg; \
   . /etc/os-release; CODENAME="${UBUNTU_CODENAME}"; \
-  # Pick the fastest reachable mirror by probing InRelease/Release
   fastest=""; best=999999; \
   for m in $ROS2_MIRRORS; do \
     for f in InRelease Release; do \
       url="$m/dists/$CODENAME/$f"; \
-      t=$(curl -o /dev/null -s -w '%{time_total}' --max-time 3 "$url" || true); \
-      if [ -n "$t" ]; then \
-        if awk "BEGIN{exit !($t < $best)}"; then best="$t"; fastest="$m"; fi; \
+      resp=$(curl -s -o /dev/null -w '%{http_code} %{time_total}' --max-time 3 "$url" || echo '000 999999'); \
+      code="${resp%% *}"; \
+      time="${resp#* }"; \
+      if [ "$code" = "200" ]; then \
+        if awk "BEGIN{exit !($time < $best)}"; then best="$time"; fastest="$m"; fi; \
         break; \
       fi; \
     done; \

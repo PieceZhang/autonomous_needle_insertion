@@ -10,8 +10,8 @@ ndi/controller_manager:
     probe_pose_broadcaster:
       type: pose_broadcaster/PoseBroadcaster
 
-#    tracker_2_pose_broadcaster:
-#      type: pose_broadcaster/PoseBroadcaster
+    us_tracker_pose_broadcaster:
+      type: pose_broadcaster/PoseBroadcaster
     # END: add broadcaster for each tracker here
   
 # BEGIN: configure broadcaster for each tracker here
@@ -23,8 +23,8 @@ ndi/probe_pose_broadcaster:
     pose_name: "probe"
     frame_id: "polaris_vega_base"
 
-#ndi/tracker_2_pose_broadcaster:
-#  ros__parameters:
-#    pose_name: "tracker_2"
-#    frame_id: "polaris_vega_base"
+ndi/us_tracker_pose_broadcaster:
+  ros__parameters:
+    pose_name: "us_tracker"
+    frame_id: "polaris_vega_base"
 # END: configure broadcaster for each tracker here

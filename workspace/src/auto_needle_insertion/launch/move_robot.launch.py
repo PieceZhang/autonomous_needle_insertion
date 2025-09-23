@@ -2,7 +2,7 @@ from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, TextSubstitution
 from launch_ros.actions import Node
 from moveit_configs_utils import MoveItConfigsBuilder
 
@@ -13,6 +13,14 @@ def generate_launch_description():
 
     mode_arg  = DeclareLaunchArgument("mode", default_value="ee_moveit_square")
     mode_name = LaunchConfiguration("mode")
+
+    # Control ROS 2 log verbosity for this node (affects all loggers in-process)
+    log_level_arg = DeclareLaunchArgument(
+        "log_level",
+        default_value="warn",
+        description="Global log level for the node: DEBUG|INFO|WARN|ERROR|FATAL",
+    )
+    log_level = LaunchConfiguration("log_level")
 
     # Use URDF from /robot_description of the robot driver, and select SRDF explicitly.
     ur_moveit_pkg = Path(get_package_share_directory("ur_moveit_config"))
@@ -76,6 +84,7 @@ def generate_launch_description():
             moveit_config.to_dict(),
             {"publish_robot_description_semantic": True}
         ],
+        arguments=["--ros-args", "--log-level", log_level],
     )
 
-    return LaunchDescription([ur_type_arg, mode_arg, node])
+    return LaunchDescription([ur_type_arg, mode_arg, log_level_arg, node])

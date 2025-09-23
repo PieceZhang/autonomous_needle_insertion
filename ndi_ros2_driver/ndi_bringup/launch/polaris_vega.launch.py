@@ -46,7 +46,7 @@ def generate_launch_description():
     # we configured in the controllers.yaml file here
     pose_broadcasters = [
         "probe_pose_broadcaster",
-        # "tracker_2_pose_broadcaster",
+        "us_tracker_pose_broadcaster",
     ]
 
     # we can remap the default topic names to something more user friendly 
@@ -54,7 +54,7 @@ def generate_launch_description():
     # the default topic name for pose is: <pose broadcaster name>/pose
     topic_remappings = [
         ('probe_pose_broadcaster/pose', 'probe_pose'),
-        # ('tracker_2_pose_broadcaster/pose', 'tracker_2_pose'),
+        ('us_tracker_pose_broadcaster/pose', 'us_tracker_pose'),
     ]
 
     ip = LaunchConfiguration('ip')

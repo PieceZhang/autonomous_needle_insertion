@@ -30,14 +30,15 @@ import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped, Quaternion
 from moveit.planning import MoveItPy, PlanRequestParameters
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 # ---------------------- Module constants ----------------------
 
 NODE_NAME = "ee_pose_sequence_logger"
 
 # Conservative planning scales
-MAX_VELOCITY_SCALING = 0.20
-MAX_ACCELERATION_SCALING = 0.20
+MAX_VELOCITY_SCALING = 0.50
+MAX_ACCELERATION_SCALING = 0.10
 
 # Allow time for the planning scene to sync joint states
 PLANNING_SCENE_SYNC_DELAY = 0.5  # seconds
@@ -52,10 +53,23 @@ CONTROLLER_NAMES = [
 # Preferred tip link names in order of preference
 PREFERRED_TIP_LINKS = ["tool0", "ee_link"]
 
+# NDI Polaris us_tracker PoseStamped topic (from pose_broadcaster)
+US_TRACKER_TOPIC = "/ndi/us_tracker_pose"
+
 # ---------------------- Logging ----------------------
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ---------------------- Tracker subscriber helper ----------------------
+
+class _LatestPose:
+    """Stores the most recent PoseStamped received on a topic."""
+    def __init__(self):
+        self.msg: PoseStamped = None  # type: ignore[assignment]
+
+    def cb(self, msg: PoseStamped) -> None:
+        self.msg = msg
 
 # ---------------------- Math utilities ----------------------
 
@@ -220,12 +234,19 @@ def _default_local_deltas() -> List[LocalDelta]:
 
             deltas.append(LocalDelta(dx, dy, dz, droll, dpitch, dyaw))
 
+    steps = 15
     # +45° about roll (15 × +3°)
-    add_rot_sweep(axis='roll', steps=15, sign=+1, trans_axis='y')
+    deltas.append(LocalDelta(0.0, 0.0, 0.0, r * steps, 0.0, 0.0))
+    add_rot_sweep(axis='roll', steps=steps*2, sign=-1, trans_axis='y')
+    deltas.append(LocalDelta(0.0, 0.0, 0.0, r * steps, 0.0, 0.0))
     # −45° about pitch (15 × −3°)
-    add_rot_sweep(axis='pitch', steps=15, sign=-1, trans_axis='x')
+    deltas.append(LocalDelta(0.0, 0.0, 0.0, 0.0, r * steps, 0.0))
+    add_rot_sweep(axis='pitch', steps=steps*2, sign=-1, trans_axis='x')
+    deltas.append(LocalDelta(0.0, 0.0, 0.0, 0.0, r * steps, 0.0))
     # +45° about yaw (15 × +3°)
-    add_rot_sweep(axis='yaw', steps=15, sign=+1, trans_axis='z')
+    deltas.append(LocalDelta(0.0, 0.0, 0.0, 0.0, 0.0, r * steps))
+    add_rot_sweep(axis='yaw', steps=steps*2, sign=-1, trans_axis='z')
+    deltas.append(LocalDelta(0.0, 0.0, 0.0, 0.0, 0.0, r * steps))
 
     return deltas
 
@@ -233,6 +254,12 @@ def _default_local_deltas() -> List[LocalDelta]:
 
 def main() -> None:
     rclpy.init()
+
+    # Subscribe to the us_tracker PoseStamped published by pose_broadcaster
+    sub_node = rclpy.create_node("us_tracker_listener")
+    qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST)
+    latest_tracker = _LatestPose()
+    sub_node.create_subscription(PoseStamped, US_TRACKER_TOPIC, latest_tracker.cb, qos)
 
     try:
         robot = MoveItPy(node_name=NODE_NAME)
@@ -308,6 +335,7 @@ def main() -> None:
 
         # In-memory storage of achieved poses (Nx7: x,y,z,qx,qy,qz,qw)
         achieved_list: List[np.ndarray] = []
+        us_tracker_list: List[np.ndarray] = []
 
         # Execute sequence step-by-step, logging achieved state after each
         for i, goal in enumerate(targets):
@@ -336,16 +364,34 @@ def main() -> None:
             logger.info(f"Step {i+1}/{len(targets)} complete: "
                         f"pos=({pos[0]:.3f},{pos[1]:.3f},{pos[2]:.3f})")
 
+            # Sample the latest us_tracker pose (PoseStamped) from the Polaris driver
+            rclpy.spin_once(sub_node, timeout_sec=0.0)
+            if latest_tracker.msg is not None:
+                tp = latest_tracker.msg.pose
+                tpos = np.array([tp.position.x, tp.position.y, tp.position.z], dtype=float)
+                tquat = np.array([tp.orientation.x, tp.orientation.y, tp.orientation.z, tp.orientation.w], dtype=float)
+                us_tracker_list.append(np.concatenate([tpos, tquat]))
+            else:
+                logger.warning("No us_tracker PoseStamped received yet; skipping this sample.")
+
         logger.info("Pose sequence completed.")
 
         # Convert to a single numpy array for downstream use
         achieved_np = np.vstack(achieved_list) if achieved_list else np.empty((0, 7), dtype=float)
         logger.info(f"Collected {achieved_np.shape[0]} achieved poses in memory (shape: {achieved_np.shape}).")
+        # logger.info(f"Achieved poses are: {achieved_np*1000}")
+        us_tracker_np = np.vstack(us_tracker_list) if us_tracker_list else np.empty((0, 7), dtype=float)
+        logger.info(f"Collected {us_tracker_np.shape[0]} us_tracker poses in memory (shape: {us_tracker_np.shape}).")
+        # logger.info(f"Collected tracker poses are: {us_tracker_np*1000}")
 
     except Exception as e:
         logger.error(f"Pose sequence execution failed: {e}")
         raise
     finally:
+        try:
+            sub_node.destroy_node()
+        except Exception:
+            pass
         rclpy.shutdown()
 
 if __name__ == "__main__":

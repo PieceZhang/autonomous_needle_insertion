@@ -22,6 +22,10 @@
             name="probe"
             srom="$(find ndi_description)/sroms/8700340.rom"
         />
+        <xacro:ndi_tracker
+            name="us_tracker"
+            srom="$(find ndi_description)/sroms/8700339.rom"
+        />
         <!-- END: add trackers here -->
 
     </ros2_control>
