@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import List, Tuple
 
 import numpy as np
+import cv2
 import rclpy
 from geometry_msgs.msg import PoseStamped, Quaternion
 from moveit.planning import MoveItPy, PlanRequestParameters
@@ -37,8 +38,8 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 NODE_NAME = "ee_pose_sequence_logger"
 
 # Conservative planning scales
-MAX_VELOCITY_SCALING = 0.50
-MAX_ACCELERATION_SCALING = 0.10
+MAX_VELOCITY_SCALING = 0.60
+MAX_ACCELERATION_SCALING = 0.20
 
 # Allow time for the planning scene to sync joint states
 PLANNING_SCENE_SYNC_DELAY = 0.5  # seconds
@@ -53,7 +54,7 @@ CONTROLLER_NAMES = [
 # Preferred tip link names in order of preference
 PREFERRED_TIP_LINKS = ["tool0", "ee_link"]
 
-# NDI Polaris us_tracker PoseStamped topic (from pose_broadcaster)
+# PoseStamped topic from NDI Polaris pose_broadcaster for the US tracker
 US_TRACKER_TOPIC = "/ndi/us_tracker_pose"
 
 # ---------------------- Logging ----------------------
@@ -62,12 +63,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ---------------------- Tracker subscriber helper ----------------------
-
 class _LatestPose:
     """Stores the most recent PoseStamped received on a topic."""
     def __init__(self):
-        self.msg: PoseStamped = None  # type: ignore[assignment]
-
+        self.msg: PoseStamped | None = None
     def cb(self, msg: PoseStamped) -> None:
         self.msg = msg
 
@@ -114,6 +113,45 @@ def _array_to_quat_msg(q: Tuple[float, float, float, float]) -> Quaternion:
     msg = Quaternion()
     msg.x = float(x); msg.y = float(y); msg.z = float(z); msg.w = float(w)
     return msg
+
+
+# ---------------------- SE(3) helpers ----------------------
+def _pose7_to_T(pose7: np.ndarray) -> np.ndarray:
+    """[x,y,z,qx,qy,qz,qw] -> 4x4 homogeneous transform (float64)."""
+    if pose7.shape[-1] != 7:
+        raise ValueError("pose7 must have 7 elements: x,y,z,qx,qy,qz,qw")
+    x, y, z, qx, qy, qz, qw = [float(v) for v in pose7]
+    R = _quat_to_rot((qx, qy, qz, qw))
+    T = np.eye(4, dtype=float)
+    T[:3, :3] = R
+    T[:3, 3] = [x, y, z]
+    return T
+
+
+def _invert_T(T: np.ndarray) -> np.ndarray:
+    """SE(3) inverse using block structure."""
+    R = T[:3, :3]
+    t = T[:3, 3]
+    Tinv = np.eye(4, dtype=float)
+    Tinv[:3, :3] = R.T
+    Tinv[:3, 3] = -R.T @ t
+    return Tinv
+
+
+def _relative_motion(Ta: np.ndarray, Tb: np.ndarray) -> np.ndarray:
+    """Compute relative motion from pose a to pose b: A = Ta^{-1} Tb."""
+    return _invert_T(Ta) @ Tb
+
+# ---------------------- Validation utilities ----------------------
+
+def _pose7_is_finite(vec: np.ndarray) -> bool:
+    """Return True if [x,y,z,qx,qy,qz,qw] has only finite values and a nonzero quaternion."""
+    if vec.shape[-1] != 7:
+        return False
+    if not np.isfinite(vec).all():
+        return False
+    # Guard against zero-norm quaternions
+    return float(np.linalg.norm(vec[3:7])) > 0.0
 
 # ---------------------- MoveIt helpers ----------------------
 
@@ -248,14 +286,14 @@ def _default_local_deltas() -> List[LocalDelta]:
     add_rot_sweep(axis='yaw', steps=steps*2, sign=-1, trans_axis='z')
     deltas.append(LocalDelta(0.0, 0.0, 0.0, 0.0, 0.0, r * steps))
 
-    return deltas
+    return deltas[0:6]
 
 # ---------------------- Core routine ----------------------
 
 def main() -> None:
     rclpy.init()
 
-    # Subscribe to the us_tracker PoseStamped published by pose_broadcaster
+    # Subscribe to the US tracker PoseStamped (Polaris)
     sub_node = rclpy.create_node("us_tracker_listener")
     qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST)
     latest_tracker = _LatestPose()
@@ -335,6 +373,8 @@ def main() -> None:
 
         # In-memory storage of achieved poses (Nx7: x,y,z,qx,qy,qz,qw)
         achieved_list: List[np.ndarray] = []
+
+        # In-memory storage of US tracker poses (Nx7: x,y,z,qx,qy,qz,qw)
         us_tracker_list: List[np.ndarray] = []
 
         # Execute sequence step-by-step, logging achieved state after each
@@ -359,30 +399,76 @@ def main() -> None:
 
             pos = np.array([achieved.position.x, achieved.position.y, achieved.position.z], dtype=float)
             q = np.array([achieved.orientation.x, achieved.orientation.y, achieved.orientation.z, achieved.orientation.w], dtype=float)
-            achieved_list.append(np.concatenate([pos, q]))
+            ee_pose7 = np.concatenate([pos, q])
 
-            logger.info(f"Step {i+1}/{len(targets)} complete: "
-                        f"pos=({pos[0]:.3f},{pos[1]:.3f},{pos[2]:.3f})")
-
-            # Sample the latest us_tracker pose (PoseStamped) from the Polaris driver
-            rclpy.spin_once(sub_node, timeout_sec=0.0)
+            # Sample the latest tracker pose right after motion execution
+            rclpy.spin_once(sub_node, timeout_sec=0.05)
             if latest_tracker.msg is not None:
                 tp = latest_tracker.msg.pose
                 tpos = np.array([tp.position.x, tp.position.y, tp.position.z], dtype=float)
                 tquat = np.array([tp.orientation.x, tp.orientation.y, tp.orientation.z, tp.orientation.w], dtype=float)
-                us_tracker_list.append(np.concatenate([tpos, tquat]))
+                tracker_pose7 = np.concatenate([tpos, tquat])
+
+                if _pose7_is_finite(tracker_pose7) and _pose7_is_finite(ee_pose7):
+                    achieved_list.append(ee_pose7)
+                    us_tracker_list.append(tracker_pose7)
+                else:
+                    logger.warning("Detected NaN/invalid in tracker or EE pose; dropping this pair.")
             else:
-                logger.warning("No us_tracker PoseStamped received yet; skipping this sample.")
+                logger.warning("No us_tracker PoseStamped received; dropping this pair.")
+
+            logger.info(f"Step {i+1}/{len(targets)} complete: "
+                        f"pos=({pos[0]:.3f},{pos[1]:.3f},{pos[2]:.3f})")
+            logger.info(f"Kept pairs so far: {len(achieved_list)}")
 
         logger.info("Pose sequence completed.")
 
         # Convert to a single numpy array for downstream use
         achieved_np = np.vstack(achieved_list) if achieved_list else np.empty((0, 7), dtype=float)
-        logger.info(f"Collected {achieved_np.shape[0]} achieved poses in memory (shape: {achieved_np.shape}).")
-        # logger.info(f"Achieved poses are: {achieved_np*1000}")
         us_tracker_np = np.vstack(us_tracker_list) if us_tracker_list else np.empty((0, 7), dtype=float)
+        logger.info(f"Collected {achieved_np.shape[0]} achieved poses in memory (shape: {achieved_np.shape}).")
         logger.info(f"Collected {us_tracker_np.shape[0]} us_tracker poses in memory (shape: {us_tracker_np.shape}).")
-        # logger.info(f"Collected tracker poses are: {us_tracker_np*1000}")
+        # logger.info(f"Collected EE pose: {achieved_np}")
+        # logger.info(f"Collected tracker pose: {us_tracker_np}")
+
+        # ---------------------- Relative motions for hand-eye ----------------------
+        # Build A_i (robot/EE motion) and B_i (tracker/marker motion) as consecutive relative transforms
+        # A_i = T_ee(i)^{-1} * T_ee(i+1),  B_i = T_tr(i)^{-1} * T_tr(i+1)
+        if achieved_np.shape[0] >= 2 and us_tracker_np.shape[0] >= 2:
+            T_ee_seq = [_pose7_to_T(p) for p in achieved_np]
+            T_tr_seq = [_pose7_to_T(p) for p in us_tracker_np]
+
+            # Ensure equal length pairing (they should be, since we append pairs together)
+            n = min(len(T_ee_seq), len(T_tr_seq))
+            T_ee_seq = T_ee_seq[:n]
+            T_tr_seq = T_tr_seq[:n]
+
+            A_list = [_relative_motion(T_ee_seq[i], T_ee_seq[i+1]) for i in range(n - 1)]
+            B_list = [_relative_motion(T_tr_seq[i], T_tr_seq[i+1]) for i in range(n - 1)]
+
+            # Stack to contiguous arrays for downstream solvers (AX = XB, AX = YB, etc.)
+            A_array = np.stack(A_list, axis=0) if A_list else np.empty((0, 4, 4), dtype=float)
+            B_array = np.stack(B_list, axis=0) if B_list else np.empty((0, 4, 4), dtype=float)
+
+            # Optional: also expose R/t blocks for convenience
+            A_R = A_array[:, :3, :3]
+            A_t = A_array[:, :3, 3]
+            B_R = B_array[:, :3, :3]
+            B_t = B_array[:, :3, 3]
+
+            logger.info(f"Built {A_array.shape[0]} paired relative motions (A_i, B_i) for AX=XB-style solvers.")
+            logger.info(f"Example norms: |A_t0|={np.linalg.norm(A_t[0]):.4f} m, |B_t0|={np.linalg.norm(B_t[0]):.4f} m" if A_array.shape[0] > 0 else "")
+        else:
+            A_array = np.empty((0, 4, 4), dtype=float)
+            B_array = np.empty((0, 4, 4), dtype=float)
+            A_R = np.empty((0, 3, 3), dtype=float)
+            A_t = np.empty((0, 3), dtype=float)
+            B_R = np.empty((0, 3, 3), dtype=float)
+            B_t = np.empty((0, 3), dtype=float)
+            logger.warning("Not enough pose pairs to build relative motions (need ≥2).")
+
+        logger.info(f"Collected relative EE pose: {A_array}")
+        logger.info(f"Collected relative tracker pose: {B_array}")
 
     except Exception as e:
         logger.error(f"Pose sequence execution failed: {e}")

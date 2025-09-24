@@ -17,7 +17,7 @@ def generate_launch_description():
     # Control ROS 2 log verbosity for this node (affects all loggers in-process)
     log_level_arg = DeclareLaunchArgument(
         "log_level",
-        default_value="warn",
+        default_value="error",
         description="Global log level for the node: DEBUG|INFO|WARN|ERROR|FATAL",
     )
     log_level = LaunchConfiguration("log_level")
