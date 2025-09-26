@@ -24,6 +24,7 @@ setup(
     entry_points={
         "console_scripts": [
             "ee_moveit_square = auto_needle_insertion.ee_moveit_square:main",
+            "ee_pose_logger = auto_needle_insertion.ee_pose_logger:main",
             "hand_eye_calib = auto_needle_insertion.hand_eye_calib:main",
             "tool_reporter = auto_needle_insertion.tool_reporter:main",
             "tool_follower = auto_needle_insertion.tool_follower:main",
