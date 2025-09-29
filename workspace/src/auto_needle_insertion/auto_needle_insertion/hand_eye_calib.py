@@ -26,6 +26,7 @@ import time
 from dataclasses import dataclass
 from typing import List, Tuple
 import csv
+import os
 from pathlib import Path
 from datetime import datetime
 
@@ -46,17 +47,18 @@ import threading
 
 # ---------------------- Module constants ----------------------
 
-NODE_NAME = "ee_pose_sequence_logger"
+NODE_NAME = "hand_eye_calib"
 
 # Robot base frame used for TF lookup of the EE pose
 BASE_FRAME = "base"  # controller base frame (matches pendant)
 
 # Conservative planning scales
-MAX_VELOCITY_SCALING = 0.10
-MAX_ACCELERATION_SCALING = 0.10
+MAX_VELOCITY_SCALING = 0.60
+MAX_ACCELERATION_SCALING = 0.30
 
 # Allow time for the planning scene to sync joint states
 PLANNING_SCENE_SYNC_DELAY = 0.5  # seconds
+POST_EXECUTION_SETTLE_SEC = 0.75  # small wait to ensure state update after motion
 
 # Controller fallback order (hardware -> default -> sim/common)
 CONTROLLER_NAMES = [
@@ -304,6 +306,27 @@ def _relative_motion(Ta: np.ndarray, Tb: np.ndarray) -> np.ndarray:
     return _invert_T(Ta) @ Tb
 
 
+# --- Helper to match ee_pose_logger semantics ---
+def relative_transform(parent_T: np.ndarray, child_T: np.ndarray) -> np.ndarray:
+    """Return the homogeneous transform of the child expressed in the parent frame.
+    Args:
+        parent_T: 4x4 transform of parent in world/model frame
+        child_T: 4x4 transform of child in world/model frame
+    Returns:
+        4x4 transform of child in parent frame
+    """
+    R_p = parent_T[:3, :3]
+    t_p = parent_T[:3, 3]
+    R_c = child_T[:3, :3]
+    t_c = child_T[:3, 3]
+    R_rel = R_p.T @ R_c
+    t_rel = R_p.T @ (t_c - t_p)
+    T_rel = np.eye(4, dtype=float)
+    T_rel[:3, :3] = R_rel
+    T_rel[:3, 3] = t_rel
+    return T_rel
+
+
 # ---------------------- Rotation angle helper ----------------------
 def _average_quaternions(quaternions: np.ndarray) -> np.ndarray:
     """Average an array of quaternions (N,4)."""
@@ -381,6 +404,136 @@ def _pose7_is_finite(vec: np.ndarray) -> bool:
     # Guard against zero-norm quaternions
     return float(np.linalg.norm(vec[3:7])) > 0.0
 
+
+# ---------------------- AX=XB algebraic consistency (SE(3) log) ----------------------
+
+def _skew(w: np.ndarray) -> np.ndarray:
+    """Return the 3x3 skew-symmetric matrix of a 3-vector."""
+    w = np.asarray(w, dtype=float).reshape(3)
+    return np.array([[0.0, -w[2], w[1]],
+                     [w[2], 0.0, -w[0]],
+                     [-w[1], w[0], 0.0]], dtype=float)
+
+
+def _so3_log(R: np.ndarray) -> np.ndarray:
+    """Matrix logarithm for SO(3): returns the rotation vector ω (axis * angle, in radians).
+    Robust near-zero rotation using first-order series.
+    """
+    R = np.asarray(R, dtype=float).reshape(3, 3)
+    # Clamp trace for numerical stability
+    tr = float(np.trace(R))
+    cos_theta = max(-1.0, min(1.0, (tr - 1.0) * 0.5))
+    theta = math.acos(cos_theta)
+    if theta < 1e-9:
+        # Use first-order approximation: log(R) ≈ (R - R^T)/2 with vee operator
+        W = 0.5 * (R - R.T)
+        return np.array([W[2, 1], W[0, 2], W[1, 0]], dtype=float)
+    else:
+        W = (R - R.T) * (theta / (2.0 * math.sin(theta)))
+        return np.array([W[2, 1], W[0, 2], W[1, 0]], dtype=float)
+
+
+def _se3_log_xi(T: np.ndarray) -> np.ndarray:
+    """Matrix logarithm for SE(3) returning the 6×1 twist coordinates ξ = [v; ω].
+    Uses V^{-1} from Blanco-Claraco (2010) for translating t to v. Units: meters & radians.
+    """
+    T = np.asarray(T, dtype=float).reshape(4, 4)
+    R = T[:3, :3]
+    t = T[:3, 3]
+    omega = _so3_log(R)
+    theta = float(np.linalg.norm(omega))
+    if theta < 1e-12:
+        # Series expansion for small angles: V^{-1} ≈ I - 1/2 Ω + 1/12 Ω^2
+        Omega = _skew(omega)
+        V_inv = np.eye(3) - 0.5 * Omega + (1.0 / 12.0) * (Omega @ Omega)
+    else:
+        Omega = _skew(omega)
+        half_theta = 0.5 * theta
+        # Avoid division by zero when sin(θ/2) is tiny
+        s = math.sin(half_theta)
+        if abs(s) < 1e-12:
+            V_inv = np.eye(3) - 0.5 * Omega + (1.0 / 12.0) * (Omega @ Omega)
+        else:
+            A = (1.0 - (theta * math.cos(half_theta)) / (2.0 * s)) / (theta * theta)
+            V_inv = np.eye(3) - 0.5 * Omega + A * (Omega @ Omega)
+    v = V_inv @ t
+    return np.hstack([v, omega])
+
+
+def axxb_residuals(A_array: np.ndarray, B_array: np.ndarray, X: np.ndarray,
+                    mode: str = "cam2gripper") -> dict:
+    """Compute algebraic residuals for AX ≈ XB using the SE(3) log.
+
+    Args:
+        A_array: (M,4,4) relative motions of gripper (e.g., A_i = ^bT_g(i)^{-1} ^bT_g(i+1)).
+        B_array: (M,4,4) relative motions of target in camera (e.g., B_i = ^cT_t(i)^{-1} ^cT_t(i+1)).
+        X:       (4,4) hand–eye transform. If `mode=='cam2gripper'`, X = ^gT_c (camera→gripper).
+                 If `mode=='tool2gripper'`, X = ^gT_t (target/tool→gripper).
+        mode:    'cam2gripper' (default) uses residual E_i = A_i X B_i^{-1} X^{-1}.
+                 'tool2gripper' uses residual E_i = A_i X B_i X^{-1} (since B is ^cT_t motion).
+
+    Returns:
+        dict with arrays of per-pair rotation error (deg) and translation error (m),
+        plus summary statistics.
+    """
+    A_array = np.asarray(A_array, dtype=float)
+    B_array = np.asarray(B_array, dtype=float)
+    X = np.asarray(X, dtype=float).reshape(4, 4)
+    if A_array.ndim != 3 or B_array.ndim != 3 or A_array.shape != B_array.shape:
+        raise ValueError("A_array and B_array must be (M,4,4) and same shape.")
+    M = A_array.shape[0]
+    if M == 0:
+        return {
+            "rot_deg": np.array([]),
+            "trans_m": np.array([]),
+            "median_deg": float("nan"),
+            "p95_deg": float("nan"),
+            "median_m": float("nan"),
+            "p95_m": float("nan"),
+        }
+
+    X_inv = _invert_T(X)
+    rot_deg = np.zeros(M, dtype=float)
+    trans_m = np.zeros(M, dtype=float)
+
+    for i in range(M):
+        if mode == "cam2gripper":
+            E = A_array[i] @ X @ _invert_T(B_array[i]) @ X_inv
+        elif mode == "tool2gripper":
+            # When X is ^gT_t but B_i encodes ^cT_t(i)^{-1} ^cT_t(i+1), the consistency equation becomes A X = X (B^{-1}).
+            # That gives residual E = A X B X^{-1}.
+            E = A_array[i] @ X @ B_array[i] @ X_inv
+        else:
+            raise ValueError("mode must be 'cam2gripper' or 'tool2gripper'")
+
+        xi = _se3_log_xi(E)  # [v; omega]
+        rot_deg[i] = np.degrees(np.linalg.norm(xi[3:]))
+        trans_m[i] = float(np.linalg.norm(xi[:3]))
+
+    def _pct(a: np.ndarray, p: float) -> float:
+        return float(np.percentile(a, p)) if a.size else float("nan")
+
+    summary = {
+        "rot_deg": rot_deg,
+        "trans_m": trans_m,
+        "median_deg": float(np.median(rot_deg)) if rot_deg.size else float("nan"),
+        "p95_deg": _pct(rot_deg, 95.0),
+        "median_m": float(np.median(trans_m)) if trans_m.size else float("nan"),
+        "p95_m": _pct(trans_m, 95.0),
+    }
+    return summary
+
+
+def axxb_print_summary(res: dict, logger_obj=logger, label: str = "AX=XB residuals") -> None:
+    """Pretty-print residual summary returned by axxb_residuals()."""
+    if res["rot_deg"].size == 0:
+        logger_obj.warning(f"{label}: no residuals to report (empty A/B arrays).")
+        return
+    logger_obj.info(
+        f"{label}: rotation median={res['median_deg']:.3f}°, p95={res['p95_deg']:.3f}°; "
+        f"translation median={res['median_m']*1000.0:.2f} mm, p95={res['p95_m']*1000.0:.2f} mm."
+    )
+
 # ---------------------- CSV helpers ----------------------
 
 def _save_pose_array_csv(path: Path, poses: np.ndarray, header: str = "idx,x,y,z,qx,qy,qz,qw") -> None:
@@ -401,6 +554,22 @@ def _save_Ts_csv(path: Path, Ts: np.ndarray, header: str = "idx,T00,T01,T02,T03,
         w.writerow(header.split(","))
         for i, T in enumerate(Ts):
             w.writerow([i] + [float(x) for x in T.reshape(-1).tolist()])
+
+# --- Streaming CSV helpers to match ee_pose_logger ---
+
+def ensure_log_path(path: str) -> None:
+    """Create parent directory for the CSV log if it doesn't exist."""
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+
+
+def write_csv_header_if_needed(path: str) -> None:
+    if not os.path.exists(path):
+        with open(path, mode="w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["idx", "x", "y", "z", "qx", "qy", "qz", "qw"])
+
 
 # ---------------------- MoveIt helpers ----------------------
 
@@ -449,21 +618,22 @@ def _default_local_deltas() -> List[LocalDelta]:
     """Return a well-spread sequence with rotational excitation.
 
     Design goals (per step):
-      - small translations (~2 cm) and small rotations (~3°)
+      - small translations (~2 cm) and small rotations (~5°)
       - coverage within about ±45° cumulative about local axes
       - interleaved signs/translations to avoid large drift and planner issues
+      - avoid large single-step rotations to remove angle inversion ambiguities in relative motions
 
     Structure:
       1) Baseline translations & diagonals (18)
       2) Rotational sweeps to reach ~±45° cumulatively:
-         - +45° about roll (15 × +3°)
-         - −45° about pitch (15 × −3°)
-         - +45° about yaw (15 × +3°)
+         - +45° about roll
+         - −45° about pitch
+         - +45° about yaw
       Each rotation step includes a small orthogonal translation to keep the scene changing.
     """
     deg = math.radians
     t = 0.02           # 2 cm per step (local frame)
-    r = deg(3.0)       # ~3 degrees per step (local frame)
+    r = deg(5.0)       # ~3 degrees per step (local frame)
 
     deltas: List[LocalDelta] = []
 
@@ -521,21 +691,139 @@ def _default_local_deltas() -> List[LocalDelta]:
 
             deltas.append(LocalDelta(dx, dy, dz, droll, dpitch, dyaw))
 
-    steps = 15
-    # +45° about roll (15 × +3°)
-    deltas.append(LocalDelta(0.0, 0.0, 0.0, r * steps, 0.0, 0.0))
-    add_rot_sweep(axis='roll', steps=steps*2, sign=-1, trans_axis='y')
-    deltas.append(LocalDelta(0.0, 0.0, 0.0, r * steps, 0.0, 0.0))
-    # −45° about pitch (15 × −3°)
-    deltas.append(LocalDelta(0.0, 0.0, 0.0, 0.0, r * steps, 0.0))
-    add_rot_sweep(axis='pitch', steps=steps*2, sign=-1, trans_axis='x')
-    deltas.append(LocalDelta(0.0, 0.0, 0.0, 0.0, r * steps, 0.0))
-    # +45° about yaw (15 × +3°)
-    deltas.append(LocalDelta(0.0, 0.0, 0.0, 0.0, 0.0, r * steps))
-    add_rot_sweep(axis='yaw', steps=steps*2, sign=-1, trans_axis='z')
-    deltas.append(LocalDelta(0.0, 0.0, 0.0, 0.0, 0.0, r * steps))
+    steps = 9
+    # +/-45° about roll (9 × +5°)
+    add_rot_sweep(axis='roll', steps=steps,   sign=-1, trans_axis='y')
+    add_rot_sweep(axis='roll', steps=steps*2, sign= 1, trans_axis='y')
+    add_rot_sweep(axis='roll', steps=steps,   sign=-1, trans_axis='y')
+    # +/−45° about pitch
+    add_rot_sweep(axis='pitch', steps=steps,   sign=-1, trans_axis='x')
+    add_rot_sweep(axis='pitch', steps=steps*2, sign= 1, trans_axis='x')
+    add_rot_sweep(axis='pitch', steps=steps,   sign=-1, trans_axis='x')
+    # +/-45° about yaw
+    add_rot_sweep(axis='yaw', steps=steps,   sign=-1, trans_axis='z')
+    add_rot_sweep(axis='yaw', steps=steps*2, sign= 1, trans_axis='z')
+    add_rot_sweep(axis='yaw', steps=steps,   sign=-1, trans_axis='z')
 
     return deltas
+
+
+
+def _square_local_deltas(
+    side: float = 0.10,
+    step: float = 0.02,
+    axis_order: str = "xy",
+    layers: int = 2,
+    layer_gap: float = 0.05,
+    vertical_step: float | None = None,
+) -> List[LocalDelta]:
+    """Return incremental *local-frame* deltas that trace one or more squares centered at start.
+
+    The trajectory starts at the square center on layer 0 (z = 0), traverses the
+    square perimeter, returns to the center, then (if layers > 1) moves along +Z
+    by ``layer_gap`` to the next layer and repeats the same square. After the last
+    layer, it returns to the original center at z = 0. Orientation is held
+    constant (no rotation deltas).
+
+    Args:
+        side: Side length of each square in meters.
+        step: Linear translation increment in meters along X/Y edges.
+        axis_order: "xy" (go +X half, +Y, −X, −Y, +X half) or "yx" to swap axes.
+        layers: Number of square layers to draw (>=1). Default 2 as requested.
+        layer_gap: Separation (meters) between consecutive layers along +Z.
+        vertical_step: Optional increment for Z moves (defaults to ``step`` if None).
+
+    Returns:
+        List[LocalDelta] defining the incremental motion sequence.
+    """
+    if side <= 0.0:
+        raise ValueError("side must be > 0")
+    if step <= 0.0:
+        raise ValueError("step must be > 0")
+    if axis_order not in ("xy", "yx"):
+        raise ValueError("axis_order must be 'xy' or 'yx'")
+    if layers < 1:
+        raise ValueError("layers must be >= 1")
+    if layer_gap < 0.0:
+        raise ValueError("layer_gap must be >= 0")
+
+    vz = step if vertical_step is None else float(vertical_step)
+    if vz <= 0.0:
+        raise ValueError("vertical_step must be > 0 (or None)")
+
+    # Helper: produce increments along a single-axis segment so that the sum is exact.
+    def _segment_xy(dx: float = 0.0, dy: float = 0.0) -> List[LocalDelta]:
+        # Only one axis should be non-zero for a square edge.
+        if dx != 0.0 and dy != 0.0:
+            raise ValueError("Only one of dx or dy should be non-zero for a square edge.")
+        dist = abs(dx if dx != 0.0 else dy)
+        if dist == 0.0:
+            return []
+        signx = 0.0 if dx == 0.0 else (1.0 if dx > 0.0 else -1.0)
+        signy = 0.0 if dy == 0.0 else (1.0 if dy > 0.0 else -1.0)
+        n = int(dist // step)
+        rem = dist - n * step
+        incs = [step] * n
+        if rem > 1e-9:
+            incs.append(rem)
+        return [LocalDelta(signx * inc, signy * inc, 0.0, 0.0, 0.0, 0.0) for inc in incs]
+
+    def _segment_z(dz: float) -> List[LocalDelta]:
+        dist = abs(dz)
+        if dist == 0.0:
+            return []
+        signz = 0.0 if dz == 0.0 else (1.0 if dz > 0.0 else -1.0)
+        n = int(dist // vz)
+        rem = dist - n * vz
+        incs = [vz] * n
+        if rem > 1e-9:
+            incs.append(rem)
+        return [LocalDelta(0.0, 0.0, signz * inc, 0.0, 0.0, 0.0) for inc in incs]
+
+    def _one_square_sequence() -> List[LocalDelta]:
+        half = side * 0.5
+        seq: List[LocalDelta] = []
+        if axis_order == "xy":
+            # Center -> +X half-side (to the middle of right edge)
+            seq += _segment_xy(dx=+half)
+            # +Y full side (right edge up)
+            seq += _segment_xy(dy=+side)
+            # -X full side (top edge left)
+            seq += _segment_xy(dx=-side)
+            # -Y full side (left edge down)
+            seq += _segment_xy(dy=-side)
+            # +X half-side back to center
+            seq += _segment_xy(dx=+half)
+        else:  # axis_order == "yx"
+            # Center -> +Y half-side (to the middle of top edge)
+            seq += _segment_xy(dy=+half)
+            # +X full side (top edge right)
+            seq += _segment_xy(dx=+side)
+            # -Y full side (right edge down)
+            seq += _segment_xy(dy=-side)
+            # -X full side (bottom edge left)
+            seq += _segment_xy(dx=-side)
+            # +Y half-side back to center
+            seq += _segment_xy(dy=+half)
+        return seq
+
+    full: List[LocalDelta] = []
+
+    # First layer at z = 0
+    full += _one_square_sequence()
+
+    # Additional layers: move up along +Z by layer_gap, draw square, remain centered on that layer
+    accumulated_z = 0.0
+    for _ in range(1, layers):
+        full += _segment_z(+layer_gap)
+        accumulated_z += layer_gap
+        full += _one_square_sequence()
+
+    # Return to the original center height (z = 0)
+    if accumulated_z > 0.0:
+        full += _segment_z(-accumulated_z)
+
+    return full
 
 
 # ---------------------- TF helpers ----------------------
@@ -663,6 +951,9 @@ def main() -> None:
         logger.info(f"Using planning group: {group_name}")
         logger.info(f"Using tip link: {tip_link}")
 
+        base_frame = robot.get_robot_model().model_frame
+        logger.info(f"Using base frame: {base_frame}")
+
         # Initial state and transform
         arm.set_start_state_to_current_state()
         with psm.read_only() as scene:
@@ -677,7 +968,8 @@ def main() -> None:
         R_cur = _quat_to_rot(q_cur)
 
         # Build a sequence of small, cumulative targets in world frame
-        local_deltas = _default_local_deltas()
+        local_deltas = _default_local_deltas()  # rotational excitation for calibration
+        # local_deltas = _square_local_deltas()  # translation-only diagnostic
         targets: List[PoseStamped] = []
 
         pos_cur = origin.copy()
@@ -737,34 +1029,43 @@ def main() -> None:
             logger.info(f"Execution succeed at step {i}.")
 
             # Observe MoveIt's execute_trajectory action status and controller-level fallback to confirm completion
-            if not _wait_for_execution_via_actions(sub_node, latest_exec, latest_fjt, exec_start_t, timeout_total=6.0):
+            if not _wait_for_execution_via_actions(sub_node, latest_exec, latest_fjt, exec_start_t, timeout_total=0.3):
                 logger.warning("Did not observe SUCCEEDED on MoveIt or controller action status within timeout; proceeding to log pose regardless.")
 
             # Wait for a *new* TF sample to avoid re-logging identical data
-            if 'last_tf_stamp' not in locals():
-                last_tf_stamp = None
-
-            pos, q, new_stamp = _lookup_latest_tf(
-                tf_buffer, sub_node, BASE_FRAME_RESOLVED, TIP_LINK_TF,
-                last_stamp=last_tf_stamp, timeout_total=1.0
-            )
+            # if 'last_tf_stamp' not in locals():
+            #     last_tf_stamp = None
+            #
+            # pos, q, new_stamp = _lookup_latest_tf(
+            #     tf_buffer, sub_node, BASE_FRAME_RESOLVED, TIP_LINK_TF,
+            #     last_stamp=last_tf_stamp, timeout_total=1.0
+            # )
 
             # If TF didn't advance, fall back to MoveIt's current_state
-            used_fallback = False
-            if (last_tf_stamp is not None) and (new_stamp == last_tf_stamp):
-                try:
-                    with psm.read_write() as scene_rw:
-                        scene_rw.current_state.update()
-                        T_now = scene_rw.current_state.get_global_link_transform(tip_link)
-                    pos = T_now[:3, 3].astype(float)
-                    q = np.array(_rot_to_quat(T_now[:3, :3]), dtype=float)
-                    used_fallback = True
-                    logger.warning("TF timestamp did not advance; used MoveIt current_state as fallback for this sample.")
-                except Exception as _e:
-                    logger.warning(f"Fallback to current_state failed: {_e}")
+            # used_fallback = False
+            # if (last_tf_stamp is not None) and (new_stamp == last_tf_stamp):
+            #     try:
+            #         with psm.read_write() as scene_rw:
+            #             scene_rw.current_state.update()
+            #             T_now = scene_rw.current_state.get_global_link_transform(tip_link)
+            #         pos = T_now[:3, 3].astype(float)
+            #         q = np.array(_rot_to_quat(T_now[:3, :3]), dtype=float)
+            #         used_fallback = True
+            #         logger.warning("TF timestamp did not advance; used MoveIt current_state as fallback for this sample.")
+            #     except Exception as _e:
+            #         logger.warning(f"Fallback to current_state failed: {_e}")
 
+            # --- Pose logging in base frame (mirror ee_pose_logger) ---
+            time.sleep(POST_EXECUTION_SETTLE_SEC)
+            with psm.read_write() as scene_rw:
+                scene_rw.current_state.update()
+                T_base = scene_rw.current_state.get_frame_transform(base_frame)
+                T_tip = scene_rw.current_state.get_global_link_transform(tip_link)
+            T_tip_in_base = relative_transform(T_base, T_tip)
+            pos = T_tip_in_base[:3, 3].astype(float)
+            q = np.array(_rot_to_quat(T_tip_in_base[:3, :3]), dtype=float)
             ee_pose7 = np.concatenate([pos, q])
-            last_tf_stamp = new_stamp if new_stamp is not None else last_tf_stamp
+            # last_tf_stamp = new_stamp if new_stamp is not None else last_tf_stamp
 
             # Sample the latest tracker pose right after motion execution
             rclpy.spin_once(sub_node, timeout_sec=0.05)
@@ -836,15 +1137,18 @@ def main() -> None:
         # A_i = T_ee(i)^{-1} * T_ee(i+1),  B_i = T_tr(i)^{-1} * T_tr(i+1)
         if achieved_np.shape[0] >= 2 and us_tracker_np.shape[0] >= 2:
             T_ee_seq = [_pose7_to_T(p) for p in achieved_np]
-            T_tr_seq = [_pose7_to_T(p) for p in us_tracker_np]
+            T_camera_seq = [_invert_T(_pose7_to_T(p)) for p in us_tracker_np]
 
             # Ensure equal length pairing (they should be, since we append pairs together)
-            n = min(len(T_ee_seq), len(T_tr_seq))
+            n = min(len(T_ee_seq), len(T_camera_seq))
             T_ee_seq = T_ee_seq[:n]
-            T_tr_seq = T_tr_seq[:n]
+            T_camera_seq = T_camera_seq[:n]
+            # logger.info(f"T_tr_seq {T_tr_seq}")
 
-            A_list = [_relative_motion(T_ee_seq[i], T_ee_seq[i+1]) for i in range(n - 1)]
-            B_list = [_relative_motion(T_tr_seq[i], T_tr_seq[i+1]) for i in range(n - 1)]
+            # A_list = [_relative_motion(T_ee_seq[i], T_ee_seq[i+1]) for i in range(n - 1)]
+            # B_list = [_relative_motion(T_tr_seq[i], T_tr_seq[i+1]) for i in range(n - 1)]
+            A_list = [_invert_T(T_ee_seq[i + 1]) @ T_ee_seq[i] for i in range(n - 1)]
+            B_list = [T_camera_seq[i + 1] @ _invert_T(T_camera_seq[i]) for i in range(n - 1)]
 
             # Stack to contiguous arrays for downstream solvers (AX = XB, AX = YB, etc.)
             A_array = np.stack(A_list, axis=0) if A_list else np.empty((0, 4, 4), dtype=float)
@@ -904,6 +1208,7 @@ def main() -> None:
         # API expects per-sample: R_world2cam, t_world2cam, R_base2gripper, t_base2gripper.
         #   R_world2cam,t_world2cam  correspond to  ^cT_t   from Polaris (tool/marker in camera).
         #   R_base2gripper,t_base2gripper correspond to  ^gT_b, the inverse of ^bT_g from MoveIt.
+        # Naming example: T_g2b means "gripper to base" (end effector in robot base frame).
         try:
             import cv2
             nA = achieved_np.shape[0]
@@ -912,127 +1217,71 @@ def main() -> None:
             if n < 3:
                 logger.warning("Need at least 3 paired poses for hand–eye; skipping calibration.")
             else:
-                R_world2cam_list, t_world2cam_list = [], []
-                R_base2gripper_list, t_base2gripper_list = [], []
+                R_g2b_list, t_g2b_list = [], []
+                R_c2t_list, t_c2t_list = [], []
 
                 for i in range(n):
-                    # tracker/tool pose in camera frame: ^cT_t
+                    # camera pose in tracker/tool frame: ^tT_c  (cam2target)
                     x, y, z, qx, qy, qz, qw = us_tracker_np[i]
-                    R_ct = _quat_to_rot((qx, qy, qz, qw))
-                    t_ct = np.array([[x], [y], [z]], dtype=float)
-                    R_world2cam_list.append(R_ct.astype(np.float64))
-                    t_world2cam_list.append(t_ct.astype(np.float64))
+                    R_t2c = _quat_to_rot((qx, qy, qz, qw))
+                    t_t2c = np.array([[x], [y], [z]], dtype=float)
+                    R_c2t = R_t2c.transpose()
+                    t_c2t = -R_c2t @ t_t2c
+                    # logger.info(f"B_R {R_c2t}")
+                    # logger.info(f"B_T {t_c2t}")
+                    R_c2t_list.append(R_c2t.astype(np.float64))
+                    t_c2t_list.append(t_c2t.astype(np.float64))
 
-                    # robot EE pose in base: ^bT_g  -> invert to ^gT_b
-                    xb, yb, zb, qbx, qby, qbz, qbw = achieved_np[i]
-                    R_bg = _quat_to_rot((qbx, qby, qbz, qbw))
-                    t_bg = np.array([xb, yb, zb], dtype=float)
-                    T_bg = np.eye(4, dtype=float)
-                    T_bg[:3, :3] = R_bg
-                    T_bg[:3, 3] = t_bg
-                    T_gb = _invert_T(T_bg)
-                    R_gb = T_gb[:3, :3].astype(np.float64)
-                    t_gb = T_gb[:3, 3].reshape(3, 1).astype(np.float64)
-                    R_base2gripper_list.append(R_gb)
-                    t_base2gripper_list.append(t_gb)
+                    # robot EE pose in base: ^bT_g (gripper2base)
+                    x, y, z, qx, qy, qz, qw = achieved_np[i]
+                    R_g2b = _quat_to_rot((qx, qy, qz, qw))
+                    t_g2b = np.array([[x], [y], [z]], dtype=float)
+                    R_g2b_list.append(R_g2b.astype(np.float64))
+                    t_g2b_list.append(t_g2b.astype(np.float64))
 
-                # Solve AX = ZB (Robot-World/Hand-Eye) -> outputs ^wT_b and ^cT_g
-                R_b2w, t_b2w, R_g2c, t_g2c = cv2.calibrateRobotWorldHandEye(
-                    R_world2cam_list, t_world2cam_list,
-                    R_base2gripper_list, t_base2gripper_list,
-                    method=cv2.CALIB_ROBOT_WORLD_HAND_EYE_SHAH,
+                # Solve Hand–Eye (eye-to-hand; fixed camera): returns ^gT_c
+                R_t2g, t_t2g= cv2.calibrateHandEye(
+                    R_g2b_list, t_g2b_list, R_c2t_list, t_c2t_list,
+                    method=cv2.CALIB_HAND_EYE_PARK,
                 )
 
                 # Build transforms
-                T_b2w = np.eye(4); T_b2w[:3, :3] = R_b2w; T_b2w[:3, 3] = t_b2w.flatten()
-                T_g2c = np.eye(4); T_g2c[:3, :3] = R_g2c; T_g2c[:3, 3] = t_g2c.flatten()
-                T_c2g = _invert_T(T_g2c)
-
-                # Compute constant ^gT_t from each sample:  ^gT_t(i) =  (^cT_g)^{-1}  ^cT_t(i)
-                Rq_list, t_list = [], []
-                for i in range(n):
-                    T_ct = _pose7_to_T(us_tracker_np[i])
-                    T_gt = T_c2g @ T_ct
-                    Rq_list.append(_rot_to_quat(T_gt[:3, :3]))
-                    t_list.append(T_gt[:3, 3])
-
-                q_avg = _average_quaternions(Rq_list)
-                R_gt_mean = _quat_to_rot(q_avg)
-                t_gt_mean = np.mean(np.stack(t_list, axis=0), axis=0)
-
-                T_gt_mean = np.eye(4)
-                T_gt_mean[:3, :3] = R_gt_mean
-                T_gt_mean[:3, 3] = t_gt_mean
+                T_t2g = np.eye(4); T_t2g[:3, :3] = R_t2g; T_t2g[:3, 3] = t_t2g.flatten()
+                # T_g2t = _invert_T(T_t2g)
+                #
+                # # Compute constant ^gT_t from each sample:  ^gT_t(i) =  ^gT_c * ^cT_t(i)
+                # Rq_list, t_list = [], []
+                # for i in range(n):
+                #     T_ct = _pose7_to_T(us_tracker_np[i])   # ^cT_t(i)
+                #     T_gt = T_g2c @ T_ct                     # ^gT_t(i) = ^gT_c * ^cT_t(i)
+                #     Rq_list.append(_rot_to_quat(T_gt[:3, :3]))
+                #     t_list.append(T_gt[:3, 3])
+                #
+                # q_avg = _average_quaternions(Rq_list)
+                # R_gt_mean = _quat_to_rot(q_avg)
+                # t_gt_mean = np.mean(np.stack(t_list, axis=0), axis=0)
+                #
+                # T_gt_mean = np.eye(4)
+                # T_gt_mean[:3, :3] = R_gt_mean
+                # T_gt_mean[:3, 3] = t_gt_mean
 
                 # Report results
                 def fmt_T(T: np.ndarray) -> str:
                     return "\n" + "\n".join(["  [" + ", ".join(f"{v: .6f}" for v in row) + "]" for row in T])
 
-                logger.info("OpenCV Robot-World/Hand–Eye results:")
-                logger.info(f"  ^wT_b (base wrt world/target) = {fmt_T(T_b2w)}")
-                logger.info(f"  ^cT_g (camera wrt gripper)     = {fmt_T(T_g2c)}")
-                logger.info(f"Estimated constant transform from TRACKER/TOOL -> EE ( ^gT_t ): {fmt_T(T_gt_mean)}")
+                logger.info(f"Calibration result: ^gT_t (tracker wrt end effector) = {fmt_T(T_t2g)}")
+                # ---------------------- AX=XB algebraic consistency check ----------------------
+                try:
+                    if A_array.shape[0] > 0 and B_array.shape[0] > 0:
+                        # res = axxb_residuals(A_array, B_array, T_t2g, mode='tool2gripper')
+                        res = axxb_residuals(A_array, B_array, T_t2g)
+                        axxb_print_summary(res)
+                    else:
+                        logger.warning("AX=XB residuals skipped: need relative motion stacks A_array and B_array.")
+                except Exception as _e:
+                    logger.error(f"AX=XB residual computation failed: {_e}")
+                # logger.info(f"Estimated constant transform from TRACKER/TOOL -> EE ( ^gT_t ): {fmt_T(T_gt_mean)}")
 
-                # ---------------------- Residual metrics / measurement indices ----------------------
-                # 1) Kinematic identity residual:
-                #    Check  ^cT_g * ^gT_b(i)  ≈  ^cT_t(i) * ^wT_b
-                rot_err_deg_list = []
-                trans_err_mm_list = []
-
-                for i in range(n):
-                    # ^gT_b(i)
-                    xb, yb, zb, qbx, qby, qbz, qbw = achieved_np[i]
-                    R_bg = _quat_to_rot((qbx, qby, qbz, qbw))
-                    T_bg = np.eye(4); T_bg[:3, :3] = R_bg; T_bg[:3, 3] = [xb, yb, zb]
-                    T_gb = _invert_T(T_bg)
-
-                    # ^cT_t(i)
-                    T_ct = _pose7_to_T(us_tracker_np[i])
-
-                    # Left and right sides
-                    T_left  = T_g2c @ T_gb
-                    T_right = T_ct @ T_b2w
-                    T_delta = T_left @ _invert_T(T_right)
-
-                    rot_err_deg_list.append(_rot_angle_deg(T_delta[:3, :3]))
-                    trans_err_mm_list.append(float(np.linalg.norm(T_delta[:3, 3]) * 1e3))
-
-                def _stats(arr: List[float]) -> Tuple[float, float, float, float]:
-                    if len(arr) == 0:
-                        return (float('nan'), float('nan'), float('nan'), float('nan'))
-                    a = np.asarray(arr, dtype=float)
-                    rms = float(np.sqrt(np.mean(np.square(a))))
-                    med = float(np.median(a))
-                    p95 = float(np.percentile(a, 95.0))
-                    mx  = float(np.max(a))
-                    return rms, med, p95, mx
-
-                rms_rot, med_rot, p95_rot, max_rot = _stats(rot_err_deg_list)
-                rms_trn, med_trn, p95_trn, max_trn = _stats(trans_err_mm_list)
-
-                logger.info(
-                    "Kinematic identity residual  (^cT_g * ^gT_b  vs  ^cT_t * ^wT_b):\n"
-                    f"  rotation:  RMS={rms_rot:.3f} deg, median={med_rot:.3f}, p95={p95_rot:.3f}, max={max_rot:.3f}\n"
-                    f"  translation: RMS={rms_trn:.3f} mm, median={med_trn:.3f}, p95={p95_trn:.3f}, max={max_trn:.3f}"
-                )
-
-                # 2) Constancy of ^gT_t across samples:  ^gT_t(i) ≈ ^gT_t(mean)
-                const_rot_deg, const_trn_mm = [], []
-                for i in range(n):
-                    T_ct = _pose7_to_T(us_tracker_np[i])
-                    T_gt_i = T_c2g @ T_ct   # ^gT_t(i)
-                    T_dev = _invert_T(T_gt_mean) @ T_gt_i
-                    const_rot_deg.append(_rot_angle_deg(T_dev[:3, :3]))
-                    const_trn_mm.append(float(np.linalg.norm(T_dev[:3, 3]) * 1e3))
-
-                rms_crot, med_crot, p95_crot, max_crot = _stats(const_rot_deg)
-                rms_ctrn, med_ctrn, p95_ctrn, max_ctrn = _stats(const_trn_mm)
-
-                logger.info(
-                    "Constancy residual of ^gT_t across samples  (^gT_t(i) vs mean):\n"
-                    f"  rotation:  RMS={rms_crot:.3f} deg, median={med_crot:.3f}, p95={p95_crot:.3f}, max={max_crot:.3f}\n"
-                    f"  translation: RMS={rms_ctrn:.3f} mm, median={med_ctrn:.3f}, p95={p95_ctrn:.3f}, max={max_ctrn:.3f}"
-                )
 
         except Exception as e:
             logger.error(f"OpenCV hand–eye calibration failed: {e}")
