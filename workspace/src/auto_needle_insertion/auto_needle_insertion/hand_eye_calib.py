@@ -70,9 +70,10 @@ Notes
 import logging
 import math
 import time
+import json
+from pathlib import Path
 from dataclasses import dataclass
 from typing import List, Tuple
-import os
 
 import numpy as np
 import cv2
@@ -83,9 +84,7 @@ from action_msgs.msg import GoalStatusArray, GoalStatus
 from control_msgs.action import FollowJointTrajectory  # for reference
 from moveit.planning import MoveItPy, PlanRequestParameters
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
-from tf2_ros import Buffer, TransformListener
 
-from rclpy.duration import Duration
 from rclpy.executors import SingleThreadedExecutor
 import threading
 
@@ -964,14 +963,47 @@ def main() -> None:
                 logger.info(f"Calibration result: ^gT_c (tracker wrt end effector) = {fmt_T(T_c2g)}")
 
                 # ---------------------- AX=XB algebraic consistency check ----------------------
+                res_for_save = None
                 try:
                     if A_array.shape[0] > 0 and B_array.shape[0] > 0:
                         res = axxb_residuals(A_array, B_array, T_c2g)
                         axxb_print_summary(res)
+                        # Convert residuals to JSON-serializable form
+                        res_for_save = {
+                            "rot_deg": res["rot_deg"].tolist(),
+                            "trans_m": res["trans_m"].tolist(),
+                            "median_deg": float(res["median_deg"]),
+                            "p95_deg": float(res["p95_deg"]),
+                            "median_m": float(res["median_m"]),
+                            "p95_m": float(res["p95_m"]),
+                        }
                     else:
                         logger.warning("AX=XB residuals skipped: need relative motion stacks A_array and B_array.")
                 except Exception as _e:
                     logger.error(f"AX=XB residual computation failed: {_e}")
+
+                # ---------------------- Persist calibration to JSON ----------------------
+                try:
+                    # Prefer a 'calibrations' folder in the current working directory;
+                    # fall back to next to this script if needed.
+                    out_dir = Path.cwd() / "calibrations"
+                    try:
+                        out_dir.mkdir(parents=True, exist_ok=True)
+                    except Exception:
+                        out_dir = Path(__file__).resolve().parent / "calibrations"
+                        out_dir.mkdir(parents=True, exist_ok=True)
+
+                    payload = {
+                        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                        "T_c2g": T_c2g.tolist(),
+                        "axxb_residuals": res_for_save,
+                    }
+                    out_path = out_dir / f"hand_eye_{time.strftime('%Y%m%d_%H%M%S')}.json"
+                    with open(out_path, "w", encoding="utf-8") as f:
+                        json.dump(payload, f, indent=2)
+                    logger.info(f"Saved calibration JSON to: {out_path}")
+                except Exception as _e:
+                    logger.error(f"Failed to save hand–eye calibration JSON: {_e}")
 
         except Exception as e:
             logger.error(f"OpenCV hand–eye calibration failed: {e}")

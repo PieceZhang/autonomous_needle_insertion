@@ -6,6 +6,7 @@ workspace/.ros/
 workspace/build/
 workspace/install/
 workspace/log/
+workspace/calibrations/
 
 # OS specific
 .DS_Store
