@@ -1,23 +1,70 @@
 #!/usr/bin/env python3
 """
-End-effector pose sequence execution + pose logging.
+Hand–eye calibration for UR/MoveIt + NDI Polaris (eye-in-hand via OpenCV’s
+calibrateHandEye), with motion excitation, AX=XB solving, residual checks, and result logging.
 
-This module commands a UR5e (MoveIt 2 + MoveItPy on ROS 2 Jazzy) through
-a series of small, cumulative pose deltas expressed in the EE local frame,
-and logs the *achieved* end-effector poses (in the planning frame) to CSV.
+Summary
+-------
+This module drives a small, well-conditioned excitation of the robot end effector using
+MoveItPy, and for each step pairs the achieved gripper pose with the
+simultaneously received NDI PoseStamped of the tracked tool in the Polaris frame.
+From these sequences it builds relative motions A_i and B_i, solves for the hand–eye
+transform using OpenCV, and reports algebraic AX=XB residuals on SE(3) as a basic
+consistency check.
 
-Motion-safety intent:
-  - Small per-step deltas (<= 3 cm translation, <= ~5° orientation by default)
-  - Conservative velocity/acceleration scaling
-  - Controller fallback (scaled_joint_trajectory_controller -> default -> joint_trajectory_controller)
+Pipeline
+--------
+1) Warm up TF and resolve frames (base, tip); subscribe to /ndi/us_tracker_pose and to
+   controller/MoveIt status topics for execution confirmation.
+2) Generate a well-spread local-frame excitation sequence via _default_local_deltas()
+   (small translations + small rotations).
+3) For each target: plan & execute; confirm completion by observing the MoveIt
+   /execute_trajectory/_action/status and (fallback) */follow_joint_trajectory/_action/status
+   streams; then log the achieved gripper pose and the latest tracker pose.
+4) Build relative motions A_i (gripper) and B_i (tracker) and call
+   cv2.calibrateHandEye(R_gripper2base, t_gripper2base, R_target2cam, t_target2cam)
+   to estimate ^gT_c ("camera"/tracker with respect to the gripper).
+5) Compute SE(3)-log residuals E_i and print median/95th-percentile rotation (deg)
+   and translation (mm) as a quick diagnostic.
 
-Logging:
-  - Achieved robot EE poses are kept in-memory as an array shaped (N, 7): [x, y, z, qx, qy, qz, qw].
+Frames & units
+--------------
+- Robot base:  'base' (or 'base_link' if available).
+- Gripper/tip: MoveIt tip link (prefers 'tool0' when present).
+- Polaris camera frame: fixed sensor frame.
+- All translations are **meters** and rotations are **radians**. ndi_ros2_driver publishes in
+  **metres**; the script emits a step-length ratio warning if a unit mismatch is suspected.
 
-References:
-  - MoveItPy Motion Planning Python API and PlanRequestParameters fields.
-  - Orientation/path constraints are *not* used here to keep planning simple and robust,
-    but can be added later if you prefer constraint-based planning.
+Inputs & topics
+---------------
+- Subscribes: /ndi/us_tracker_pose (geometry_msgs/PoseStamped).
+- Observes status: /execute_trajectory/_action/status and
+  */follow_joint_trajectory/_action/status.
+- Requires a running UR ROS 2 driver/controller and MoveIt 2 planning scene.
+
+Configuration highlights
+------------------------
+- Motion scaling: MAX_VELOCITY_SCALING, MAX_ACCELERATION_SCALING.
+- Waits: PLANNING_SCENE_SYNC_DELAY, POST_EXECUTION_SETTLE_SEC.
+- Excitation: _default_local_deltas() (both translational and rotational excitation)
+
+Outputs
+-------
+- Logs the estimated ^gT_c and an AX=XB residual summary.
+- Keeps in-memory arrays 'achieved_np' (N×7 for ^bT_g) and 'tracker_np' (N×7 for ^cT_t).
+
+Usage
+-----
+Run with the auto_needle_insertion package with the UR driver and MoveIt running, i.eg.:
+
+    ros2 launch auto_needle_insertion move_robot.launch.py mode:=hand_eye_calib
+
+Notes
+-----
+- The OpenCV API expects (R_gripper2base, t_gripper2base, R_target2cam, t_target2cam) and
+  returns (R_cam2gripper, t_cam2gripper).
+- In our settings the camera role and target role are inverted, thus the tracker pose needs
+  to be inverted before passing to OpenCV.
 """
 
 import logging
@@ -25,10 +72,7 @@ import math
 import time
 from dataclasses import dataclass
 from typing import List, Tuple
-import csv
 import os
-from pathlib import Path
-from datetime import datetime
 
 import numpy as np
 import cv2
@@ -50,11 +94,11 @@ import threading
 NODE_NAME = "hand_eye_calib"
 
 # Robot base frame used for TF lookup of the EE pose
-BASE_FRAME = "base"  # controller base frame (matches pendant)
+BASE_FRAME = "base"
 
 # Conservative planning scales
-MAX_VELOCITY_SCALING = 0.60
-MAX_ACCELERATION_SCALING = 0.30
+MAX_VELOCITY_SCALING = 1.00
+MAX_ACCELERATION_SCALING = 0.20
 
 # Allow time for the planning scene to sync joint states
 PLANNING_SCENE_SYNC_DELAY = 0.5  # seconds
@@ -70,34 +114,10 @@ CONTROLLER_NAMES = [
 # Preferred tip link names in order of preference
 PREFERRED_TIP_LINKS = ["tool0", "ee_link"]
 
-# PoseStamped topic from NDI Polaris pose_broadcaster for the US tracker
+# PoseStamped topic from ndi_ros2_driver pose_broadcaster for the tracker
 US_TRACKER_TOPIC = "/ndi/us_tracker_pose"
 
-# Candidate TF frame names (try in order)
-BASE_CANDIDATES = ["base", "base_link"]
-TIP_TF_CANDIDATES = ["tool0", "tool0_controller", "flange"]
-
-def resolve_tf_pair(tf_buffer: Buffer, node, timeout_sec: float = 2.0) -> Tuple[str, str]:
-    """Probe TF and return a (base, tip) pair that exists in the buffer.
-    Spins the node while probing so the buffer can fill. Raises if none found."""
-    import time as _time
-    deadline = _time.time() + timeout_sec
-    while _time.time() < deadline:
-        rclpy.spin_once(node, timeout_sec=0.05)
-        for base in BASE_CANDIDATES:
-            for tip in TIP_TF_CANDIDATES:
-                if tf_buffer.can_transform(base, tip, rclpy.time.Time()):
-                    return base, tip
-    # One last spin + check
-    rclpy.spin_once(node, timeout_sec=0.05)
-    for base in BASE_CANDIDATES:
-        for tip in TIP_TF_CANDIDATES:
-            if tf_buffer.can_transform(base, tip, rclpy.time.Time()):
-                return base, tip
-    raise RuntimeError("Could not resolve any (base, tip) TF pair. Inspect the TF tree with 'ros2 run tf2_tools view_frames'.")
-
 # ---------------------- Logging ----------------------
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -173,7 +193,6 @@ def _wait_for_succeeded_after(node, latest: "_LatestExecStatus | _LatestFjtStatu
         logger.debug(f"Status wait timed out; last status={st} at {s}.{ns}s from {getattr(latest, 'src_topic', None)}")
     return False, getattr(latest, 'src_topic', None)
 
-
 def _wait_for_execution_via_actions(node, exec_status: "_LatestExecStatus", fjt_status: "_LatestFjtStatus", start_time: rclpy.time.Time, timeout_total: float = 6.0) -> bool:
     """Try MoveIt ExecuteTrajectory status first, then fall back to controller FollowJointTrajectory status."""
     # Split budget: 2/3 for MoveIt, 1/3 for controller-level
@@ -187,54 +206,7 @@ def _wait_for_execution_via_actions(node, exec_status: "_LatestExecStatus", fjt_
         return True
     return False
 
-# ---------------------- Execution settle helper ----------------------
-from typing import Sequence
-
-def _wait_until_controller_settled(
-    node,
-    latest_state: "_LatestJtcState",
-    target_joint_names: Sequence[str],
-    pos_tol_rad: float = 2e-3,
-    consecutive: int = 5,
-    timeout: float = 5.0,
-) -> bool:
-    """Wait until |actual.position - desired.position| < pos_tol_rad for
-    all target joints for `consecutive` samples of the JTC state.
-    Returns True if condition satisfied within timeout, else False.
-    """
-    import time as _time
-    deadline = _time.time() + float(timeout)
-    ok_count = 0
-    idx_map: dict[str, int] | None = None
-
-    while _time.time() < deadline:
-        rclpy.spin_once(node, timeout_sec=0.02)
-        st = latest_state.msg
-        if st is None:
-            continue
-        # Build index map once from controller's joint order
-        if idx_map is None:
-            idx_map = {name: i for i, name in enumerate(st.joint_names)}
-        # Check only joints present in both sets
-        errors = []
-        for jn in target_joint_names:
-            i = idx_map.get(jn) if idx_map else None
-            if i is None:
-                continue
-            if i >= len(st.actual.positions) or i >= len(st.desired.positions):
-                continue
-            err = abs(float(st.actual.positions[i]) - float(st.desired.positions[i]))
-            errors.append(err)
-        if errors and max(errors) < pos_tol_rad:
-            ok_count += 1
-            if ok_count >= consecutive:
-                return True
-        else:
-            ok_count = 0
-    return False
-
 # ---------------------- Math utilities ----------------------
-
 def _euler_to_quat(roll: float, pitch: float, yaw: float) -> Tuple[float, float, float, float]:
     """Convert RPY (rad) to quaternion (x, y, z, w)."""
     cr = math.cos(roll * 0.5); sr = math.sin(roll * 0.5)
@@ -277,7 +249,6 @@ def _array_to_quat_msg(q: Tuple[float, float, float, float]) -> Quaternion:
     msg.x = float(x); msg.y = float(y); msg.z = float(z); msg.w = float(w)
     return msg
 
-
 # ---------------------- SE(3) helpers ----------------------
 def _pose7_to_T(pose7: np.ndarray) -> np.ndarray:
     """[x,y,z,qx,qy,qz,qw] -> 4x4 homogeneous transform (float64)."""
@@ -290,7 +261,6 @@ def _pose7_to_T(pose7: np.ndarray) -> np.ndarray:
     T[:3, 3] = [x, y, z]
     return T
 
-
 def _invert_T(T: np.ndarray) -> np.ndarray:
     """SE(3) inverse using block structure."""
     R = T[:3, :3]
@@ -299,12 +269,6 @@ def _invert_T(T: np.ndarray) -> np.ndarray:
     Tinv[:3, :3] = R.T
     Tinv[:3, 3] = -R.T @ t
     return Tinv
-
-
-def _relative_motion(Ta: np.ndarray, Tb: np.ndarray) -> np.ndarray:
-    """Compute relative motion from pose a to pose b: A = Ta^{-1} Tb."""
-    return _invert_T(Ta) @ Tb
-
 
 # --- Helper to match ee_pose_logger semantics ---
 def relative_transform(parent_T: np.ndarray, child_T: np.ndarray) -> np.ndarray:
@@ -325,20 +289,6 @@ def relative_transform(parent_T: np.ndarray, child_T: np.ndarray) -> np.ndarray:
     T_rel[:3, :3] = R_rel
     T_rel[:3, 3] = t_rel
     return T_rel
-
-
-# ---------------------- Rotation angle helper ----------------------
-def _average_quaternions(quaternions: np.ndarray) -> np.ndarray:
-    """Average an array of quaternions (N,4)."""
-    # [Function body omitted for brevity]
-    pass  # Placeholder for context
-
-def _rot_angle_deg(R: np.ndarray) -> float:
-    """Return rotation angle (degrees) from 3x3 rotation matrix."""
-    tr = (np.trace(R) - 1.0) * 0.5
-    tr = max(-1.0, min(1.0, float(tr)))
-    return math.degrees(math.acos(tr))
-
 
 # ---------------------- Quaternion and averaging helpers ----------------------
 def _rot_to_quat(R: np.ndarray) -> Tuple[float, float, float, float]:
@@ -374,25 +324,6 @@ def _rot_to_quat(R: np.ndarray) -> Tuple[float, float, float, float]:
     n = math.sqrt(x*x + y*y + z*z + w*w)
     return (x/n, y/n, z/n, w/n)
 
-
-def _average_quaternions(q_list: List[Tuple[float, float, float, float]]) -> Tuple[float, float, float, float]:
-    """Average unit quaternions via eigenvector of scatter matrix (Markley method)."""
-    if not q_list:
-        return (0.0, 0.0, 0.0, 1.0)
-    A = np.zeros((4, 4), dtype=float)
-    for q in q_list:
-        qv = np.array(q, dtype=float).reshape(4, 1)
-        A += qv @ qv.T
-    # Principal eigenvector
-    eigvals, eigvecs = np.linalg.eigh(A)
-    q_avg = eigvecs[:, np.argmax(eigvals)]
-    # Ensure w >= 0 for consistency
-    if q_avg[3] < 0:
-        q_avg = -q_avg
-    # normalize
-    q_avg = q_avg / np.linalg.norm(q_avg)
-    return (float(q_avg[0]), float(q_avg[1]), float(q_avg[2]), float(q_avg[3]))
-
 # ---------------------- Validation utilities ----------------------
 
 def _pose7_is_finite(vec: np.ndarray) -> bool:
@@ -404,16 +335,13 @@ def _pose7_is_finite(vec: np.ndarray) -> bool:
     # Guard against zero-norm quaternions
     return float(np.linalg.norm(vec[3:7])) > 0.0
 
-
 # ---------------------- AX=XB algebraic consistency (SE(3) log) ----------------------
-
 def _skew(w: np.ndarray) -> np.ndarray:
     """Return the 3x3 skew-symmetric matrix of a 3-vector."""
     w = np.asarray(w, dtype=float).reshape(3)
     return np.array([[0.0, -w[2], w[1]],
                      [w[2], 0.0, -w[0]],
                      [-w[1], w[0], 0.0]], dtype=float)
-
 
 def _so3_log(R: np.ndarray) -> np.ndarray:
     """Matrix logarithm for SO(3): returns the rotation vector ω (axis * angle, in radians).
@@ -431,7 +359,6 @@ def _so3_log(R: np.ndarray) -> np.ndarray:
     else:
         W = (R - R.T) * (theta / (2.0 * math.sin(theta)))
         return np.array([W[2, 1], W[0, 2], W[1, 0]], dtype=float)
-
 
 def _se3_log_xi(T: np.ndarray) -> np.ndarray:
     """Matrix logarithm for SE(3) returning the 6×1 twist coordinates ξ = [v; ω].
@@ -459,18 +386,13 @@ def _se3_log_xi(T: np.ndarray) -> np.ndarray:
     v = V_inv @ t
     return np.hstack([v, omega])
 
-
-def axxb_residuals(A_array: np.ndarray, B_array: np.ndarray, X: np.ndarray,
-                    mode: str = "cam2gripper") -> dict:
+def axxb_residuals(A_array: np.ndarray, B_array: np.ndarray, X: np.ndarray) -> dict:
     """Compute algebraic residuals for AX ≈ XB using the SE(3) log.
 
     Args:
-        A_array: (M,4,4) relative motions of gripper (e.g., A_i = ^bT_g(i)^{-1} ^bT_g(i+1)).
-        B_array: (M,4,4) relative motions of target in camera (e.g., B_i = ^cT_t(i)^{-1} ^cT_t(i+1)).
-        X:       (4,4) hand–eye transform. If `mode=='cam2gripper'`, X = ^gT_c (camera→gripper).
-                 If `mode=='tool2gripper'`, X = ^gT_t (target/tool→gripper).
-        mode:    'cam2gripper' (default) uses residual E_i = A_i X B_i^{-1} X^{-1}.
-                 'tool2gripper' uses residual E_i = A_i X B_i X^{-1} (since B is ^cT_t motion).
+        A_array: (M,4,4) relative motions of gripper, A_i = ^bT_g(i+1)^{-1} ^bT_g(i).
+        B_array: (M,4,4) relative motions of target in camera, B_i = ^cT_t(i+1) ^cT_t(i)^{-1}.
+        X:       (4,4) hand–eye transform, X = ^gT_c (camera2gripper).
 
     Returns:
         dict with arrays of per-pair rotation error (deg) and translation error (m),
@@ -497,16 +419,8 @@ def axxb_residuals(A_array: np.ndarray, B_array: np.ndarray, X: np.ndarray,
     trans_m = np.zeros(M, dtype=float)
 
     for i in range(M):
-        if mode == "cam2gripper":
-            E = A_array[i] @ X @ _invert_T(B_array[i]) @ X_inv
-        elif mode == "tool2gripper":
-            # When X is ^gT_t but B_i encodes ^cT_t(i)^{-1} ^cT_t(i+1), the consistency equation becomes A X = X (B^{-1}).
-            # That gives residual E = A X B X^{-1}.
-            E = A_array[i] @ X @ B_array[i] @ X_inv
-        else:
-            raise ValueError("mode must be 'cam2gripper' or 'tool2gripper'")
-
-        xi = _se3_log_xi(E)  # [v; omega]
+        E = A_array[i] @ X @ _invert_T(B_array[i]) @ X_inv
+        xi = _se3_log_xi(E)
         rot_deg[i] = np.degrees(np.linalg.norm(xi[3:]))
         trans_m[i] = float(np.linalg.norm(xi[:3]))
 
@@ -523,7 +437,6 @@ def axxb_residuals(A_array: np.ndarray, B_array: np.ndarray, X: np.ndarray,
     }
     return summary
 
-
 def axxb_print_summary(res: dict, logger_obj=logger, label: str = "AX=XB residuals") -> None:
     """Pretty-print residual summary returned by axxb_residuals()."""
     if res["rot_deg"].size == 0:
@@ -534,45 +447,7 @@ def axxb_print_summary(res: dict, logger_obj=logger, label: str = "AX=XB residua
         f"translation median={res['median_m']*1000.0:.2f} mm, p95={res['p95_m']*1000.0:.2f} mm."
     )
 
-# ---------------------- CSV helpers ----------------------
-
-def _save_pose_array_csv(path: Path, poses: np.ndarray, header: str = "idx,x,y,z,qx,qy,qz,qw") -> None:
-    """Save an Nx7 pose array to CSV with a header and index column."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(header.split(","))
-        for i, row in enumerate(poses):
-            w.writerow([i] + [float(v) for v in row.tolist()])
-
-
-def _save_Ts_csv(path: Path, Ts: np.ndarray, header: str = "idx,T00,T01,T02,T03,T10,T11,T12,T13,T20,T21,T22,T23,T30,T31,T32,T33") -> None:
-    """Save a stack of 4x4 matrices (M,4,4) row-major flattened per row."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(header.split(","))
-        for i, T in enumerate(Ts):
-            w.writerow([i] + [float(x) for x in T.reshape(-1).tolist()])
-
-# --- Streaming CSV helpers to match ee_pose_logger ---
-
-def ensure_log_path(path: str) -> None:
-    """Create parent directory for the CSV log if it doesn't exist."""
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-
-
-def write_csv_header_if_needed(path: str) -> None:
-    if not os.path.exists(path):
-        with open(path, mode="w", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow(["idx", "x", "y", "z", "qx", "qy", "qz", "qw"])
-
-
 # ---------------------- MoveIt helpers ----------------------
-
 def _get_planning_group_name(robot: MoveItPy) -> str:
     names = robot.get_robot_model().joint_model_group_names
     if not names:
@@ -607,7 +482,6 @@ def _execute_with_fallback(robot: MoveItPy, trajectory, controllers: List[str]) 
     return False
 
 # ---------------------- Pose sequence definition ----------------------
-
 @dataclass
 class LocalDelta:
     """Pose delta in the *current EE local frame*."""
@@ -691,23 +565,18 @@ def _default_local_deltas() -> List[LocalDelta]:
 
             deltas.append(LocalDelta(dx, dy, dz, droll, dpitch, dyaw))
 
-    steps = 9
-    # +/-45° about roll (9 × +5°)
-    add_rot_sweep(axis='roll', steps=steps,   sign=-1, trans_axis='y')
-    add_rot_sweep(axis='roll', steps=steps*2, sign= 1, trans_axis='y')
-    add_rot_sweep(axis='roll', steps=steps,   sign=-1, trans_axis='y')
+    steps = 8
+    # +/-40° about roll (8 × +5°)
+    add_rot_sweep(axis='roll', steps=steps, sign=-1, trans_axis='y')
+    add_rot_sweep(axis='roll', steps=steps, sign= 1, trans_axis='y')
     # +/−45° about pitch
-    add_rot_sweep(axis='pitch', steps=steps,   sign=-1, trans_axis='x')
-    add_rot_sweep(axis='pitch', steps=steps*2, sign= 1, trans_axis='x')
-    add_rot_sweep(axis='pitch', steps=steps,   sign=-1, trans_axis='x')
+    add_rot_sweep(axis='pitch', steps=steps, sign=-1, trans_axis='x')
+    add_rot_sweep(axis='pitch', steps=steps, sign= 1, trans_axis='x')
     # +/-45° about yaw
-    add_rot_sweep(axis='yaw', steps=steps,   sign=-1, trans_axis='z')
-    add_rot_sweep(axis='yaw', steps=steps*2, sign= 1, trans_axis='z')
-    add_rot_sweep(axis='yaw', steps=steps,   sign=-1, trans_axis='z')
+    add_rot_sweep(axis='yaw', steps=steps, sign=-1, trans_axis='z')
+    add_rot_sweep(axis='yaw', steps=steps, sign= 1, trans_axis='z')
 
     return deltas
-
-
 
 def _square_local_deltas(
     side: float = 0.10,
@@ -825,85 +694,17 @@ def _square_local_deltas(
 
     return full
 
-
-# ---------------------- TF helpers ----------------------
-from typing import Optional
-
-def _lookup_latest_tf(
-    tf_buffer: Buffer,
-    node,
-    base: str,
-    tip: str,
-    last_stamp: Optional[tuple] = None,
-    timeout_total: float = 1.0,
-):
-    """Return (pos[3], quat[4], stamp_pair) for the *latest* TF, waiting until
-    a **new** sample arrives (i.e., header.stamp != last_stamp) or until timeout.
-    This prevents re-logging identical transforms when the buffer hasn't updated yet.
-    """
-    import time as _time
-    deadline = _time.time() + float(timeout_total)
-    pos = np.zeros(3, dtype=float)
-    q = np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
-    stamp_pair = last_stamp
-    while _time.time() < deadline:
-        # Service callbacks so /tf is ingested
-        rclpy.spin_once(node, timeout_sec=0.02)
-        try:
-            tf_trans = tf_buffer.lookup_transform(
-                base, tip, rclpy.time.Time(), timeout=Duration(seconds=0.2)
-            )
-        except Exception:
-            continue
-        t = (tf_trans.header.stamp.sec, tf_trans.header.stamp.nanosec)
-        pos = np.array([
-            tf_trans.transform.translation.x,
-            tf_trans.transform.translation.y,
-            tf_trans.transform.translation.z,
-        ], dtype=float)
-        q = np.array([
-            tf_trans.transform.rotation.x,
-            tf_trans.transform.rotation.y,
-            tf_trans.transform.rotation.z,
-            tf_trans.transform.rotation.w,
-        ], dtype=float)
-        # Accept if it's a *new* TF sample
-        if (last_stamp is None) or (t != last_stamp):
-            return pos, q, t
-        # else: wait a bit and try again
-    # Timed out: return the latest we have (may be unchanged)
-    return pos, q, stamp_pair
-
-# ---------------------- Core routine ----------------------
-
 def main() -> None:
     rclpy.init()
 
-    # Subscribe to the US tracker PoseStamped (Polaris)
+    # Subscribe to the Polaris PoseStamped
     sub_node = rclpy.create_node("us_tracker_listener")
-    # Spin the TF/subscription node in the background so /tf and /ndi/us_tracker_pose
+    # Spin the subscription node in the background so /ndi/us_tracker_pose
     # callbacks are processed continuously while we plan/execute motions.
     executor = SingleThreadedExecutor()
     executor.add_node(sub_node)
     _spin_thread = threading.Thread(target=executor.spin, daemon=True)
     _spin_thread.start()
-    tf_buffer = Buffer()
-    tf_listener = TransformListener(tf_buffer, sub_node)
-    # Warm up TF buffer and resolve (base, tip) TF frames to use for logging
-    try:
-        BASE_FRAME_RESOLVED, TIP_LINK_TF = resolve_tf_pair(tf_buffer, sub_node, timeout_sec=2.0)
-        logger.info(f"Resolved TF pair for EE logging: base='{BASE_FRAME_RESOLVED}', tip='{TIP_LINK_TF}'")
-    except Exception as e:
-        # Fall back to defaults if resolution fails; will still try lookup later
-        BASE_FRAME_RESOLVED, TIP_LINK_TF = BASE_FRAME, "tool0_controller"
-        logger.warning(f"TF auto-resolution failed ({e}); falling back to '{BASE_FRAME_RESOLVED}'<-'{TIP_LINK_TF}'.")
-    # Prefer 'tool0' (pendant-consistent) if available
-    try:
-        if tf_buffer.can_transform(BASE_FRAME_RESOLVED, 'tool0', rclpy.time.Time()):
-            TIP_LINK_TF = 'tool0'
-            logger.info("Overriding TIP_LINK_TF to 'tool0' for pendant parity.")
-    except Exception:
-        pass
     qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST)
     latest_tracker = _LatestPose()
     sub_node.create_subscription(PoseStamped, US_TRACKER_TOPIC, latest_tracker.cb, qos)
@@ -968,8 +769,7 @@ def main() -> None:
         R_cur = _quat_to_rot(q_cur)
 
         # Build a sequence of small, cumulative targets in world frame
-        local_deltas = _default_local_deltas()  # rotational excitation for calibration
-        # local_deltas = _square_local_deltas()  # translation-only diagnostic
+        local_deltas = _default_local_deltas()
         targets: List[PoseStamped] = []
 
         pos_cur = origin.copy()
@@ -1005,10 +805,10 @@ def main() -> None:
         params.max_velocity_scaling_factor = MAX_VELOCITY_SCALING
         params.max_acceleration_scaling_factor = MAX_ACCELERATION_SCALING
 
-        # In-memory storage of achieved poses (Nx7: x,y,z,qx,qy,qz,qw)
+        # In-memory storage of achieved gripper poses (Nx7: x,y,z,qx,qy,qz,qw)
         achieved_list: List[np.ndarray] = []
 
-        # In-memory storage of US tracker poses (Nx7: x,y,z,qx,qy,qz,qw)
+        # In-memory storage of Polaris tracker poses (Nx7: x,y,z,qx,qy,qz,qw)
         us_tracker_list: List[np.ndarray] = []
 
         # Execute sequence step-by-step, logging achieved state after each
@@ -1032,256 +832,146 @@ def main() -> None:
             if not _wait_for_execution_via_actions(sub_node, latest_exec, latest_fjt, exec_start_t, timeout_total=0.3):
                 logger.warning("Did not observe SUCCEEDED on MoveIt or controller action status within timeout; proceeding to log pose regardless.")
 
-            # Wait for a *new* TF sample to avoid re-logging identical data
-            # if 'last_tf_stamp' not in locals():
-            #     last_tf_stamp = None
-            #
-            # pos, q, new_stamp = _lookup_latest_tf(
-            #     tf_buffer, sub_node, BASE_FRAME_RESOLVED, TIP_LINK_TF,
-            #     last_stamp=last_tf_stamp, timeout_total=1.0
-            # )
-
-            # If TF didn't advance, fall back to MoveIt's current_state
-            # used_fallback = False
-            # if (last_tf_stamp is not None) and (new_stamp == last_tf_stamp):
-            #     try:
-            #         with psm.read_write() as scene_rw:
-            #             scene_rw.current_state.update()
-            #             T_now = scene_rw.current_state.get_global_link_transform(tip_link)
-            #         pos = T_now[:3, 3].astype(float)
-            #         q = np.array(_rot_to_quat(T_now[:3, :3]), dtype=float)
-            #         used_fallback = True
-            #         logger.warning("TF timestamp did not advance; used MoveIt current_state as fallback for this sample.")
-            #     except Exception as _e:
-            #         logger.warning(f"Fallback to current_state failed: {_e}")
-
-            # --- Pose logging in base frame (mirror ee_pose_logger) ---
+            # --- Pose logging in base frame from MoveIt's planning scene ---
             time.sleep(POST_EXECUTION_SETTLE_SEC)
             with psm.read_write() as scene_rw:
                 scene_rw.current_state.update()
                 T_base = scene_rw.current_state.get_frame_transform(base_frame)
                 T_tip = scene_rw.current_state.get_global_link_transform(tip_link)
-            T_tip_in_base = relative_transform(T_base, T_tip)
-            pos = T_tip_in_base[:3, 3].astype(float)
-            q = np.array(_rot_to_quat(T_tip_in_base[:3, :3]), dtype=float)
-            ee_pose7 = np.concatenate([pos, q])
-            # last_tf_stamp = new_stamp if new_stamp is not None else last_tf_stamp
+            T_g2b = relative_transform(T_base, T_tip)
+            g_pos = T_g2b[:3, 3].astype(float)
+            g_q = np.array(_rot_to_quat(T_g2b[:3, :3]), dtype=float)
+            gripper_pose7 = np.concatenate([g_pos, g_q])
 
             # Sample the latest tracker pose right after motion execution
             rclpy.spin_once(sub_node, timeout_sec=0.05)
             if latest_tracker.msg is not None:
-                tp = latest_tracker.msg.pose
-                tpos = np.array([tp.position.x, tp.position.y, tp.position.z], dtype=float)
-                tquat = np.array([tp.orientation.x, tp.orientation.y, tp.orientation.z, tp.orientation.w], dtype=float)
-                tracker_pose7 = np.concatenate([tpos, tquat])
+                tracker_pose = latest_tracker.msg.pose
+                t_pos = np.array([tracker_pose.position.x, tracker_pose.position.y, tracker_pose.position.z], dtype=float)
+                t_q = np.array([tracker_pose.orientation.x, tracker_pose.orientation.y, tracker_pose.orientation.z, tracker_pose.orientation.w], dtype=float)
+                tracker_pose7 = np.concatenate([t_pos, t_q])
 
-                if _pose7_is_finite(tracker_pose7) and _pose7_is_finite(ee_pose7):
-                    achieved_list.append(ee_pose7)
+                if _pose7_is_finite(tracker_pose7) and _pose7_is_finite(gripper_pose7):
+                    achieved_list.append(gripper_pose7)
                     us_tracker_list.append(tracker_pose7)
                 else:
-                    logger.warning("Detected NaN/invalid in tracker or EE pose; dropping this pair.")
+                    logger.warning("Detected NaN/invalid in tracker or gripper pose; dropping this pair.")
             else:
                 logger.warning("No us_tracker PoseStamped received; dropping this pair.")
 
             logger.info(f"Step {i+1}/{len(targets)} complete: "
-                        f"pos=({pos[0]*1000:.3f},{pos[1]*1000:.3f},{pos[2]*1000:.3f})")
-            try:
-                logger.info(f"TF stamp used: {last_tf_stamp}, fallback={'yes' if used_fallback else 'no'}")
-            except Exception:
-                pass
+                        f"pos=({g_pos[0]*1000:.2f},{g_pos[1]*1000:.2f},{g_pos[2]*1000:.2f}) mm")
             logger.info(f"Kept pairs so far: {len(achieved_list)}")
 
         logger.info("Pose sequence completed.")
 
         # Convert to a single numpy array for downstream use
         achieved_np = np.vstack(achieved_list) if achieved_list else np.empty((0, 7), dtype=float)
-        us_tracker_np = np.vstack(us_tracker_list) if us_tracker_list else np.empty((0, 7), dtype=float)
-        logger.info(f"Collected {achieved_np.shape[0]} achieved poses in memory (shape: {achieved_np.shape}).")
-        logger.info(f"Collected {us_tracker_np.shape[0]} us_tracker poses in memory (shape: {us_tracker_np.shape}).")
+        tracker_np = np.vstack(us_tracker_list) if us_tracker_list else np.empty((0, 7), dtype=float)
+        logger.info(f"Collected {achieved_np.shape[0]} gripper poses in memory (shape: {achieved_np.shape}).")
+        logger.info(f"Collected {tracker_np.shape[0]} tracker poses in memory (shape: {tracker_np.shape}).")
+
         # ---------------------- Quick sanity diagnostics ----------------------
         def _step_lengths_m(P: np.ndarray) -> np.ndarray:
             return np.linalg.norm(P[1:, 0:3] - P[:-1, 0:3], axis=1) if len(P) > 1 else np.array([])
 
-        ee_steps = _step_lengths_m(achieved_np)
-        tr_steps = _step_lengths_m(us_tracker_np)
-        if ee_steps.size > 0 and tr_steps.size > 0:
-            ee_med = float(np.median(ee_steps))
-            tr_med = float(np.median(tr_steps))
-            if ee_med > 0.0:
-                ratio = tr_med / ee_med
+        gripper_steps = _step_lengths_m(achieved_np)
+        tracker_steps = _step_lengths_m(tracker_np)
+        if gripper_steps.size > 0 and tracker_steps.size > 0:
+            gripper_med = float(np.median(gripper_steps))
+            tracker_med = float(np.median(tracker_steps))
+            if gripper_med > 0.0:
+                ratio = tracker_med / gripper_med
                 if ratio > 5.0 or ratio < 0.2:
                     logger.warning(
-                        "Tracker step length is %.1fx of EE step length (median). Possible unit mismatch (mm vs m) or wrong frames.",
+                        "Tracker step length is %.1fx of gripper step length (median). Possible unit mismatch (mm vs m) or wrong frames.",
                         ratio,
                     )
                     logger.warning("NDI SDKs commonly report positions in millimeters; ensure your driver publishes meters (SI).")
 
-        # ---------------------- Persist raw pose logs to CSV ----------------------
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_dir = Path.cwd() / "handeye_logs"
-        ee_csv = out_dir / f"ee_poses_{ts}.csv"
-        tr_csv = out_dir / f"tracker_poses_{ts}.csv"
-        if achieved_np.shape[0] > 0:
-            _save_pose_array_csv(ee_csv, achieved_np)
-            logger.info(f"Saved EE poses to: {ee_csv}")
-        else:
-            logger.warning("No EE poses to save.")
-        if us_tracker_np.shape[0] > 0:
-            _save_pose_array_csv(tr_csv, us_tracker_np)
-            logger.info(f"Saved tracker poses to: {tr_csv}")
-        else:
-            logger.warning("No tracker poses to save.")
+        # ---------------------- Relative motions for calibration quality check ----------------------
+        # Build A_i (gripper motion) and B_i (tracker motion) as consecutive relative transforms.
+        # The tracker motion is inverted.
+        # Source: https://docs.opencv.org/4.5.4/d9/d0c/group__calib3d.html#gaebfc1c9f7434196a374c382abf43439b
+        if achieved_np.shape[0] >= 2 and tracker_np.shape[0] >= 2:
+            T_gripper_seq = [_pose7_to_T(p) for p in achieved_np]
+            T_camera_seq = [_invert_T(_pose7_to_T(p)) for p in tracker_np]
 
-        # ---------------------- Relative motions for hand-eye ----------------------
-        # Build A_i (robot/EE motion) and B_i (tracker/marker motion) as consecutive relative transforms
-        # A_i = T_ee(i)^{-1} * T_ee(i+1),  B_i = T_tr(i)^{-1} * T_tr(i+1)
-        if achieved_np.shape[0] >= 2 and us_tracker_np.shape[0] >= 2:
-            T_ee_seq = [_pose7_to_T(p) for p in achieved_np]
-            T_camera_seq = [_invert_T(_pose7_to_T(p)) for p in us_tracker_np]
-
-            # Ensure equal length pairing (they should be, since we append pairs together)
-            n = min(len(T_ee_seq), len(T_camera_seq))
-            T_ee_seq = T_ee_seq[:n]
+            # Ensure equal length pairing
+            n = min(len(T_gripper_seq), len(T_camera_seq))
+            T_gripper_seq = T_gripper_seq[:n]
             T_camera_seq = T_camera_seq[:n]
-            # logger.info(f"T_tr_seq {T_tr_seq}")
 
-            # A_list = [_relative_motion(T_ee_seq[i], T_ee_seq[i+1]) for i in range(n - 1)]
-            # B_list = [_relative_motion(T_tr_seq[i], T_tr_seq[i+1]) for i in range(n - 1)]
-            A_list = [_invert_T(T_ee_seq[i + 1]) @ T_ee_seq[i] for i in range(n - 1)]
+            A_list = [_invert_T(T_gripper_seq[i + 1]) @ T_gripper_seq[i] for i in range(n - 1)]
             B_list = [T_camera_seq[i + 1] @ _invert_T(T_camera_seq[i]) for i in range(n - 1)]
 
             # Stack to contiguous arrays for downstream solvers (AX = XB, AX = YB, etc.)
             A_array = np.stack(A_list, axis=0) if A_list else np.empty((0, 4, 4), dtype=float)
             B_array = np.stack(B_list, axis=0) if B_list else np.empty((0, 4, 4), dtype=float)
 
-            # Optional: also expose R/t blocks for convenience
-            A_R = A_array[:, :3, :3]
-            A_t = A_array[:, :3, 3]
-            B_R = B_array[:, :3, :3]
-            B_t = B_array[:, :3, 3]
-
             logger.info(f"Built {A_array.shape[0]} paired relative motions (A_i, B_i) for AX=XB-style solvers.")
-            logger.info(f"Example norms: |A_t0|={np.linalg.norm(A_t[0]):.4f} m, |B_t0|={np.linalg.norm(B_t[0]):.4f} m" if A_array.shape[0] > 0 else "")
-            # ---------------------- Persist relative motions to CSV ----------------------
-            A_csv = out_dir / f"A_rel_motions_{ts}.csv"
-            B_csv = out_dir / f"B_rel_motions_{ts}.csv"
-            if A_array.shape[0] > 0:
-                _save_Ts_csv(A_csv, A_array)
-                logger.info(f"Saved relative EE motions (A_i) to: {A_csv}")
-            else:
-                logger.warning("No relative EE motions to save.")
-            if B_array.shape[0] > 0:
-                _save_Ts_csv(B_csv, B_array)
-                logger.info(f"Saved relative tracker motions (B_i) to: {B_csv}")
-            else:
-                logger.warning("No relative tracker motions to save.")
         else:
             A_array = np.empty((0, 4, 4), dtype=float)
             B_array = np.empty((0, 4, 4), dtype=float)
-            A_R = np.empty((0, 3, 3), dtype=float)
-            A_t = np.empty((0, 3), dtype=float)
-            B_R = np.empty((0, 3, 3), dtype=float)
-            B_t = np.empty((0, 3), dtype=float)
             logger.warning("Not enough pose pairs to build relative motions (need ≥2).")
-            # ---------------------- Persist relative motions to CSV ----------------------
-            A_csv = out_dir / f"A_rel_motions_{ts}.csv"
-            B_csv = out_dir / f"B_rel_motions_{ts}.csv"
-            if A_array.shape[0] > 0:
-                _save_Ts_csv(A_csv, A_array)
-                logger.info(f"Saved relative EE motions (A_i) to: {A_csv}")
-            else:
-                logger.warning("No relative EE motions to save.")
-            if B_array.shape[0] > 0:
-                _save_Ts_csv(B_csv, B_array)
-                logger.info(f"Saved relative tracker motions (B_i) to: {B_csv}")
-            else:
-                logger.warning("No relative tracker motions to save.")
 
-        # logger.info(f"Collected relative EE pose: {A_array}")
-        # logger.info(f"Collected relative tracker pose: {B_array}")
-
-        # ---------------------- OpenCV hand–eye (eye-to-hand) ----------------------
-        # We use OpenCV's Robot-World/Hand-Eye solver to estimate:
-        #   ^wT_b  (base wrt world) and ^cT_g  (camera wrt gripper)
-        # Here: world == tracker target (rigid body on the EE), camera == Polaris (fixed),
-        #       base == robot base, gripper == UR5e EE.
-        # API expects per-sample: R_world2cam, t_world2cam, R_base2gripper, t_base2gripper.
-        #   R_world2cam,t_world2cam  correspond to  ^cT_t   from Polaris (tool/marker in camera).
-        #   R_base2gripper,t_base2gripper correspond to  ^gT_b, the inverse of ^bT_g from MoveIt.
-        # Naming example: T_g2b means "gripper to base" (end effector in robot base frame).
+        # ---------------------- OpenCV hand–eye (eye-in-hand) ----------------------
+        # Use OpenCV's calibrateHandEye solver to estimate: ^gT_t  (tracker wrt gripper).
+        # Here we use the eye-in-hand model, where the camera is fixed on the gripper.
+        # In our settings, the Polaris sensor is static in the world, and the tracked marker is
+        # mounted on the robot end effector. Thus, we use the eye-in-hand solver with
+        # inverted roles: the tracker is the "camera" and the Polaris sensor is the "target".
+        # The collected tracker poses in the Polaris frame should be inverted before feeding
+        # into the solver.
+        # API expects: R_gripper2base, t_gripper2base, R_target2cam, t_target2cam.
+        # Naming example:
+        # T_g2b means "gripper to base" (end effector in robot base frame)
+        # T_c2t means "camera to target" (Polaris in tracker frame)
         try:
-            import cv2
             nA = achieved_np.shape[0]
-            nB = us_tracker_np.shape[0]
+            nB = tracker_np.shape[0]
             n = min(nA, nB)
             if n < 3:
                 logger.warning("Need at least 3 paired poses for hand–eye; skipping calibration.")
             else:
                 R_g2b_list, t_g2b_list = [], []
-                R_c2t_list, t_c2t_list = [], []
+                R_t2c_list, t_t2c_list = [], []
 
                 for i in range(n):
-                    # camera pose in tracker/tool frame: ^tT_c  (cam2target)
-                    x, y, z, qx, qy, qz, qw = us_tracker_np[i]
-                    R_t2c = _quat_to_rot((qx, qy, qz, qw))
-                    t_t2c = np.array([[x], [y], [z]], dtype=float)
-                    R_c2t = R_t2c.transpose()
-                    t_c2t = -R_c2t @ t_t2c
-                    # logger.info(f"B_R {R_c2t}")
-                    # logger.info(f"B_T {t_c2t}")
-                    R_c2t_list.append(R_c2t.astype(np.float64))
-                    t_c2t_list.append(t_c2t.astype(np.float64))
+                    camera_pose7 = tracker_np[i]
+                    T_t2c = _invert_T(_pose7_to_T(camera_pose7))
+                    R_t2c_list.append(T_t2c[:3, :3].astype(np.float64))
+                    t_t2c_list.append(T_t2c[:3, 3].astype(np.float64))
 
-                    # robot EE pose in base: ^bT_g (gripper2base)
-                    x, y, z, qx, qy, qz, qw = achieved_np[i]
-                    R_g2b = _quat_to_rot((qx, qy, qz, qw))
-                    t_g2b = np.array([[x], [y], [z]], dtype=float)
-                    R_g2b_list.append(R_g2b.astype(np.float64))
-                    t_g2b_list.append(t_g2b.astype(np.float64))
+                    gripper_pose7 = achieved_np[i]
+                    T_g2b = _pose7_to_T(gripper_pose7)
+                    R_g2b_list.append(T_g2b[:3, :3].astype(np.float64))
+                    t_g2b_list.append(T_g2b[:3, 3].astype(np.float64))
 
-                # Solve Hand–Eye (eye-to-hand; fixed camera): returns ^gT_c
-                R_t2g, t_t2g= cv2.calibrateHandEye(
-                    R_g2b_list, t_g2b_list, R_c2t_list, t_c2t_list,
+                # Solve Hand–Eye (eye-in-hand)
+                R_c2g, t_c2g= cv2.calibrateHandEye(
+                    R_g2b_list, t_g2b_list, R_t2c_list, t_t2c_list,
                     method=cv2.CALIB_HAND_EYE_PARK,
                 )
 
                 # Build transforms
-                T_t2g = np.eye(4); T_t2g[:3, :3] = R_t2g; T_t2g[:3, 3] = t_t2g.flatten()
-                # T_g2t = _invert_T(T_t2g)
-                #
-                # # Compute constant ^gT_t from each sample:  ^gT_t(i) =  ^gT_c * ^cT_t(i)
-                # Rq_list, t_list = [], []
-                # for i in range(n):
-                #     T_ct = _pose7_to_T(us_tracker_np[i])   # ^cT_t(i)
-                #     T_gt = T_g2c @ T_ct                     # ^gT_t(i) = ^gT_c * ^cT_t(i)
-                #     Rq_list.append(_rot_to_quat(T_gt[:3, :3]))
-                #     t_list.append(T_gt[:3, 3])
-                #
-                # q_avg = _average_quaternions(Rq_list)
-                # R_gt_mean = _quat_to_rot(q_avg)
-                # t_gt_mean = np.mean(np.stack(t_list, axis=0), axis=0)
-                #
-                # T_gt_mean = np.eye(4)
-                # T_gt_mean[:3, :3] = R_gt_mean
-                # T_gt_mean[:3, 3] = t_gt_mean
+                T_c2g = np.eye(4); T_c2g[:3, :3] = R_c2g; T_c2g[:3, 3] = t_c2g.flatten()
 
                 # Report results
                 def fmt_T(T: np.ndarray) -> str:
                     return "\n" + "\n".join(["  [" + ", ".join(f"{v: .6f}" for v in row) + "]" for row in T])
 
-                logger.info(f"Calibration result: ^gT_t (tracker wrt end effector) = {fmt_T(T_t2g)}")
+                logger.info(f"Calibration result: ^gT_c (tracker wrt end effector) = {fmt_T(T_c2g)}")
+
                 # ---------------------- AX=XB algebraic consistency check ----------------------
                 try:
                     if A_array.shape[0] > 0 and B_array.shape[0] > 0:
-                        # res = axxb_residuals(A_array, B_array, T_t2g, mode='tool2gripper')
-                        res = axxb_residuals(A_array, B_array, T_t2g)
+                        res = axxb_residuals(A_array, B_array, T_c2g)
                         axxb_print_summary(res)
                     else:
                         logger.warning("AX=XB residuals skipped: need relative motion stacks A_array and B_array.")
                 except Exception as _e:
                     logger.error(f"AX=XB residual computation failed: {_e}")
-                # logger.info(f"Estimated constant transform from TRACKER/TOOL -> EE ( ^gT_t ): {fmt_T(T_gt_mean)}")
-
 
         except Exception as e:
             logger.error(f"OpenCV hand–eye calibration failed: {e}")
