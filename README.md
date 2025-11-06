@@ -85,7 +85,18 @@ docker compose build
 # It might take a while depending on your internet connection.
 ```
 
-### 4) Start services
+### 4) Fire up hardware
+**Power on devices.** Ensure the UR arm and NDI Polaris are powered on and connected to the lab LAN.
+On the UR pendent, click Load -> Installation and select `ani.installation`.
+This configuration sets up the pre-defined TCP and the external control program.
+
+**Verify network access.** From the host machine, ping the devices:
+```bash
+ping -c 3 <UR_ROBOT_IP>
+ping -c 3 <POLARIS_IP>
+```
+
+### 5) Start services
 Bring up the stack in the background:
 ```bash
 docker compose up --profile dev -d
@@ -97,7 +108,7 @@ docker compose ps -a
 docker compose logs -f
 ```
 
-### 5) Open a development shell
+### 6) Open a development shell
 Get inside the container shell:
 ```bash
 docker compose exec -it auto_needle_insertion bash
@@ -108,7 +119,15 @@ ros2 topic list
 ```
 Then start your experiments or development.
 
-### 6) Stop / Remove
+### 7) Control the robot arm
+Run the external control program on the UR pendant by pressing the play button.
+In the container shell, you can run control commands from the auto_needle_insertion package.
+For example, to run a simple trajectory profile:
+```bash
+ros2 launch auto_needle_insertion move_robot.launch.py mode:=ee_moveit_square
+```
+
+### 8) Stop / Remove
 Stop all the containers in one go:
 ```bash
 TODO update command
