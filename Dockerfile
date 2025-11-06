@@ -47,7 +47,7 @@ RUN printf '%s\n' \
 
 # Detect and use the fastest ROS 2 APT mirror (with packages.ros.org as fallback)
 # Replace preconfigured ROS 2 source with a mirror (avoid Signed-By conflicts)
-ARG ROS2_MIRRORS="http://ftp.tudelft.nl/ros2/ubuntu https://mirror.umd.edu/packages.ros.org/ros2/ubuntu https://packages.ros.org/ros2/ubuntu"
+ARG ROS2_MIRRORS="https://mirror.umd.edu/packages.ros.org/ros2/ubuntu http://ftp.tudelft.nl/ros2/ubuntu http://packages.ros.org/ros2/ubuntu"
 ENV ROS2_MIRRORS="${ROS2_MIRRORS}"
 RUN set -eux; \
   # Remove any preconfigured ROS 2 sources from the base image (deb822 and legacy)
@@ -63,7 +63,7 @@ RUN set -eux; \
   for m in $ROS2_MIRRORS; do \
     for f in InRelease Release; do \
       url="$m/dists/$CODENAME/$f"; \
-      resp=$(curl -s -o /dev/null -w '%{http_code} %{time_total}' --max-time 3 "$url" || echo '000 999999'); \
+      resp=$(curl -s -o /dev/null -w '%{http_code} %{time_total}' --max-time 5 "$url" || echo '000 999999'); \
       code="${resp%% *}"; \
       time="${resp#* }"; \
       if [ "$code" = "200" ]; then \
@@ -72,7 +72,11 @@ RUN set -eux; \
       fi; \
     done; \
   done; \
-  if [ -z "$fastest" ]; then fastest="https://packages.ros.org/ros2/ubuntu"; fi; \
+  if [ -z "$fastest" ]; then fastest="http://packages.ros.org/ros2/ubuntu"; fi; \
+  # Work around known TLS/SNI certificate mismatch on packages.ros.org by preferring HTTP (APT verifies package signatures) \
+  case "$fastest" in \
+    https://packages.ros.org/*) fastest="http://packages.ros.org/ros2/ubuntu" ;; \
+  esac; \
   printf 'Types: deb\nURIs: %s\nSuites: %s\nComponents: main\nSigned-By: /usr/share/keyrings/ros-archive-keyring.gpg\n' "$fastest" "$CODENAME" > /etc/apt/sources.list.d/ros2.sources; \
   echo "ROS 2 mirror chosen: $fastest (best=${best}s)"; \
   cat /etc/apt/sources.list.d/ros2.sources

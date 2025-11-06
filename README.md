@@ -50,10 +50,33 @@ It is **tested on Linux** and is expected to work on macOS/Windows via Docker De
      tailscale ip -4   # optional: note your Tailscale IPv4 address
      ```
 
+**GitHub access** is needed to clone or contribute to the repo.
+  1. If you work locally on the host machine, create an SSH key and add it to your GitHub account.
+  2. If you connect to the host via Tailscale and work remotely, you can forward your Mac’s existing SSH key to the host machine (SSH agent forwarding) with the following steps:
+     ```bash
+     # On your Mac (ensure the key is in the agent; stores passphrase in Keychain)
+     ssh-add --apple-use-keychain ~/.ssh/your_private_github_key_such_as_id_ed25519
+
+     # Connect to the remote with agent forwarding
+     ssh -A youruser@remote.host
+     
+     # Optionally, make the forwarding persistent by adding to your local ~/.ssh/config:
+     Host remote.host
+         HostName host_ip_on_tailnet
+         User youruser
+         IdentityFile ~/.ssh/your_private_github_key_such_as_id_ed25519
+         ForwardAgent yes
+     # Then connect with:
+     ssh remote.host
+
+     # On the remote, verify forwarding and test GitHub
+     echo "$SSH_AUTH_SOCK"
+     ssh -T [email protected]
+     ```
+
 ### 1) Prepare the codebase
 Choose a workspace location and clone the repository:
 ```bash
-mkdir -p ~/ani_ws && cd ~/ani_ws
 # clone this repo
 git clone <THIS_REPO_URL>.git
 cd <THIS_REPO_DIRECTORY>
@@ -111,7 +134,7 @@ docker compose logs -f
 ### 6) Open a development shell
 Get inside the container shell:
 ```bash
-docker compose exec -it auto_needle_insertion bash
+docker compose exec -it auto_needle_insertion-dev bash
 ```
 Run ROS 2 commands inside the container:
 ```bash
@@ -130,8 +153,7 @@ ros2 launch auto_needle_insertion move_robot.launch.py mode:=ee_moveit_square
 ### 8) Stop / Remove
 Stop all the containers in one go:
 ```bash
-TODO update command
-docker compose down
+docker stop $(docker ps -q)
 ```
 
 ## Under the hood
@@ -197,15 +219,34 @@ A Linux lab box is recommended; macOS/Windows hosts work via Docker Desktop.
 > Project‑level recommendations (not hard requirements): ≥4 physical cores (8 threads), 16 GB RAM, and ≥50 GB free SSD space for images/logs. Wired Ethernet to your device LAN is strongly preferred.
 
 ### 2) Install Git and Docker
-Install Git, Docker Engine and the Compose v2 plugin, then allow your user to run Docker without root:
+Install Git, Docker Engine and the Compose v2 plugin, then check with:
 ```bash
-sudo usermod -aG docker "$USER" && newgrp docker
 docker compose version   # should print a v2.x version
 ```
 
 ### 3) Remote access via Tailscale
 Add the machine to your Tailscale network.
 From the Tailscale admin console, **invite users** (or generate an **invite link**) and share it with the intended end users so they can join the tailnet with their own accounts.
+
+### 4) Create user account
+Create a local account for each person who will use the box:
+```bash
+sudo useradd -m -s /bin/bash <username>
+sudo passwd <username>
+```
+To require the user to change that password at first login:
+```bash
+# Either of the following works
+sudo chage -d 0 <username>
+# or
+sudo passwd -e <username>
+```
+Grant Docker access so they can run `docker` without `sudo`:
+```bash
+sudo usermod -aG docker <username>
+```
+> The user must **log out and back in** (or reboot) for new group membership to take effect.
+
 
 ### Troubleshooting
 - **Permission denied (Linux):** ensure your user is in the `docker` group (see Tip above), then log out/in or run `newgrp docker`.
