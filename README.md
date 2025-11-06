@@ -122,25 +122,27 @@ ping -c 3 <POLARIS_IP>
 ### 5) Start services
 Bring up the stack in the background:
 ```bash
-docker compose up --profile dev -d
+docker compose --profile dev up -d
 ```
 and wait for all the container health checks to pass.
 Check container status and logs with:
 ```bash
 docker compose ps -a
-docker compose logs -f
+# and for example:
+docker logs autonomous_needle_insertion-ur5e-driver 
+
 ```
 
 ### 6) Open a development shell
 Get inside the container shell:
 ```bash
-docker compose exec -it auto_needle_insertion-dev bash
+docker exec -it autonomous_needle_insertion-dev bash
 ```
-Run ROS 2 commands inside the container:
+Run ROS 2 commands inside the container to start your experiments or development:
 ```bash
+# For example, list available topics:
 ros2 topic list
 ```
-Then start your experiments or development.
 
 ### 7) Control the robot arm
 Run the external control program on the UR pendant by pressing the play button.
