@@ -51,7 +51,7 @@ It is **tested on Linux** and is expected to work on macOS/Windows via Docker De
      ```
 
 **GitHub access** is needed to clone or contribute to the repo.
-  1. If you work locally on the host machine, create an SSH key and add it to your GitHub account.
+  1. If you work locally on the host machine, follow [here](https://docs.github.com/en/authentication/connecting-to-github-with-ssh/adding-a-new-ssh-key-to-your-github-account) to create an SSH key and add it to your GitHub account.
   2. If you connect to the host via Tailscale and work remotely, you can forward your Mac’s existing SSH key to the host machine (SSH agent forwarding) with the following steps:
      ```bash
      # On your Mac (ensure the key is in the agent; stores passphrase in Keychain)
