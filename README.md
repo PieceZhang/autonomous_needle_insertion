@@ -40,10 +40,12 @@ Run this project with Docker Compose, and no host-side ROS 2 install is required
 It is **tested on Linux** and is expected to work on macOS/Windows via Docker Desktop.
 
 ### 0) Access (required for lab devices)
+>You are going to work on a host machine on a lab LAN, no matter locally or remotely. Therefore, ensure you have the following access.
+
 **Host access.** Request a personal login on the lab host from the administrator.
 
 **Remote access (optional).** If you will reach devices over the lab tailnet:
-  1. Create your own Tailscale account and request a **Tailscale invite link** to the team tailnet.
+  1. Create your own Tailscale account [here](https://tailscale.com) and request a **Tailscale invite link** to the team tailnet from the administrator.
   2. Install Tailscale on your own device and join the tailnet. You can verify connectivity with:
      ```bash
      tailscale status
@@ -73,8 +75,12 @@ It is **tested on Linux** and is expected to work on macOS/Windows via Docker De
      echo "$SSH_AUTH_SOCK"
      ssh -T [email protected]
      ```
+> TODO
+> 
+> How do you forward SSH keys on Windows?
 
 ### 1) Prepare the codebase
+Work locally on the host, or connect remotely via SSH to the host.
 Choose a workspace location and clone the repository:
 ```bash
 # clone this repo
@@ -109,9 +115,13 @@ docker compose build
 ```
 
 ### 4) Fire up hardware
-**Power on devices.** Ensure the UR arm and NDI Polaris are powered on and connected to the lab LAN.
-On the UR pendent, click Load -> Installation and select `ani.installation`.
-This configuration sets up the pre-defined TCP and the external control program.
+**Power on devices.** Ensure the UR arm and NDI Polaris are powered on and connected to the lab LAN. On the UR pendent:
+
+> Click Open -> Installation and select `ani.installation`.
+> 
+> Click Open -> Program and select `ani_external_control.urp`.
+> 
+> Enable the robot.
 
 **Verify network access.** From the host machine, ping the devices:
 ```bash
@@ -145,10 +155,17 @@ ros2 topic list
 ```
 
 ### 7) Control the robot arm
-Run the external control program on the UR pendant by pressing the play button.
+Run the external control program. On the UR pendant:
+> Press the play button to run the `ani_external_control` program.
+> 
+> If prompted error, check on the pendent in Installation -> URCaps -> External Control if the host IP setting is correct.
+
 In the container shell, you can run control commands from the auto_needle_insertion package.
 For example, to run a simple trajectory profile:
 ```bash
+# First source the package setup file to make ROS 2 aware of the package
+source install/setup.bash
+# Then launch a command
 ros2 launch auto_needle_insertion move_robot.launch.py mode:=ee_moveit_square
 ```
 
@@ -248,6 +265,10 @@ Grant Docker access so they can run `docker` without `sudo`:
 sudo usermod -aG docker <username>
 ```
 > The user must **log out and back in** (or reboot) for new group membership to take effect.
+
+> TODO
+> 
+> Add a bash script to automate user creation and Docker group assignment.
 
 
 ### Troubleshooting
