@@ -6,6 +6,7 @@ import argparse
 import csv
 import datetime
 from typing import List, Tuple
+# from calib_test import connect_to, set_up_tool
 from meta_marker.calib_test import connect_to, set_up_tool
 
 def connect_to(ip_addr: str, port: int):
@@ -52,7 +53,7 @@ def parse_tx1000_reply(reply: str) -> List[Tuple[float, float, float]]:
 def main():
     ap = argparse.ArgumentParser(
         description="Read and print positions of up to 9 stray markers via TX 1000.")
-    ap.add_argument("--ip", default="192.168.33.190", help="Tracker IP")
+    ap.add_argument("--ip", default="192.168.56.5", help="Tracker IP")
     ap.add_argument("--port", type=int, default=8765, help="Tracker port")
     ap.add_argument("--rate", type=float, default=5.0,
                     help="Print rate in Hz (default 5)")
@@ -126,6 +127,43 @@ def main():
         ndicapy.ndiCommand(dev, 'TSTOP ')
         ndicapy.ndiCloseNetwork(dev)
         print("Device closed.")
+
+
+def get_stray_markers(ip: str, port: int = 8765, rom_name: str = "8700340.rom"):
+    """
+    Connect to Polaris, load passive ROM, read one TX 1000 frame,
+    and return Nx3 numpy array (mm).
+    Use this function from Slicer.
+    """
+    # 1. Connect
+    dev = connect_to(ip, port)
+
+    # 2. Load the tool ROM (mandatory for passive stray)
+    try:
+        handle_hex = set_up_tool(dev, rom_name)
+    except Exception as e:
+        ndicapy.ndiCloseNetwork(dev)
+        raise RuntimeError(f"Failed to set_up_tool(): {e}")
+
+    # 3. Enter tracking mode
+    reply = ndicapy.ndiCommand(dev, 'TSTART ')
+    if not reply.startswith('OKAY'):
+        ndicapy.ndiCloseNetwork(dev)
+        raise RuntimeError(f"TSTART failed: {reply}")
+
+    # 4. Read a single stray marker frame (TX 1000)
+    raw = ndicapy.ndiCommand(dev, 'TX 1000').strip()
+    markers = parse_tx1000_reply(raw)    # List[(x,y,z)]
+
+    # 5. Stop & disconnect
+    ndicapy.ndiCommand(dev, 'TSTOP ')
+    ndicapy.ndiCloseNetwork(dev)
+
+    # Convert to numpy array (M,3)
+    arr = np.array(markers, dtype=float)
+    return arr
+
+
 
 if __name__ == "__main__":
     main()
