@@ -1,255 +1,420 @@
-import qt, ctk, slicer
-from slicer.ScriptedLoadableModule import *
-import logging, re, time
+import logging
+import os
+import sys
+import time
+import math
 import numpy as np
+import qt, ctk, slicer
+import itertools
+from slicer.ScriptedLoadableModule import *
 
-# External dep
-# import ndicapy  # provided by ndicapi wheel
+# ----------------------------------------------------------
+# 加载你的 meta_marker 包路径（按你的实际路径写）
+# ----------------------------------------------------------
+PROJECT_ROOT = "/Users/leo17/Desktop/surgical_robotics/equipment/autonomous_needle_insertion/"
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
-#
-# RegisterOpticalMarkers
-#
+import ndicapy
+from meta_marker.calib_test import set_up_tool
+from meta_marker.read_stray_markers import connect_to, parse_tx1000_reply
+
+ROM_PATH = PROJECT_ROOT + "meta_marker/8700340.rom"
+
+
+# -------------------------------------------------------------------------
+# Slicer module
+# -------------------------------------------------------------------------
+
 class RegisterOpticalMarkers(ScriptedLoadableModule):
     def __init__(self, parent):
-        super().__init__(parent)
-        self.parent.title = "Register Polaris Optical Markers"
-        self.parent.categories = ["Registration"]
-        self.parent.contributors = ["Your Name"]
-        self.parent.helpText = (
-            "Connect directly to NDI Polaris (Vega/Polaris) via TCP and acquire stray marker positions.\n"
-            "Uses TX with reply option 0x1000 (passive) or 0x0004 (active)."
-        )
-        self.parent.acknowledgementText = "Uses ndicapi/ndicapy."
+        ScriptedLoadableModule.__init__(self, parent)
+        parent.title = "Register Optical Markers"
+        parent.categories = ["Registration"]
+        parent.helpText = "Acquire Polaris passive stray markers using TX 1000."
+        parent.acknowledgementText = "Part of autonomous needle insertion project."
 
-#
-# RegisterOpticalMarkersWidget
-#
+
+# -------------------------------------------------------------------------
+# GUI
+# -------------------------------------------------------------------------
+
 class RegisterOpticalMarkersWidget(ScriptedLoadableModuleWidget):
-    def setup(self):
-        super().setup()
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.logic = RegisterOpticalMarkersLogic()
 
-        #
-        # UI
-        #
-        form = qt.QFormLayout(self.parent)
+    def setup(self):
+        ScriptedLoadableModuleWidget.setup(self)
+        layout = self.layout
 
-        # IP / Port
-        self.ipEdit = qt.QLineEdit(); self.ipEdit.placeholderText = "Tracker IP (e.g. 192.168.0.10)"
-        self.portEdit = qt.QLineEdit(); self.portEdit.setText("")  # leave blank if using device default
-        self.portEdit.setValidator(qt.QIntValidator(1, 65535))
+        panel = ctk.ctkCollapsibleButton()
+        panel.text = "Polaris Controls"
+        layout.addWidget(panel)
+
+        form = qt.QFormLayout(panel)
+
+        # --- IP / Port ---
+        self.ipEdit = qt.QLineEdit()
+        self.ipEdit.setText("192.168.56.5")
         form.addRow("IP", self.ipEdit)
+
+        self.portEdit = qt.QLineEdit()
+        self.portEdit.setText("8765")
         form.addRow("Port", self.portEdit)
 
-        # Stray type
-        self.strayType = qt.QComboBox()
-        self.strayType.addItem("Passive stray (0x1000)")
-        self.strayType.addItem("Active stray (0x0004)")
-        form.addRow("Stray type", self.strayType)
+        # --- Buttons ---
+        self.connectButton = qt.QPushButton("Connect")
+        form.addRow(self.connectButton)
 
-        # Markups node selector
+        self.startButton = qt.QPushButton("Start Tracking")
+        form.addRow(self.startButton)
+
+        self.stopButton = qt.QPushButton("Stop Tracking")
+        form.addRow(self.stopButton)
+
+        self.acquireOnceButton = qt.QPushButton("Acquire Once (TX1000)")
+        form.addRow(self.acquireOnceButton)
+
+        self.acquireMeanButton = qt.QPushButton("Acquire 100 frames (Mean)")
+        form.addRow(self.acquireMeanButton)
+
+        self.computeCTErrorButton = qt.QPushButton("Compute Error vs CT")
+        form.addRow(self.computeCTErrorButton)
+
+
+        # --- Markups Node Selector ---
         self.markupsSelector = slicer.qMRMLNodeComboBox()
-        self.markupsSelector.objectName = "markupsSelector"
-        self.markupsSelector.toolTip = "Choose/Make a Markups Fiducial to display points"
         self.markupsSelector.nodeTypes = ["vtkMRMLMarkupsFiducialNode"]
         self.markupsSelector.addEnabled = True
-        self.markupsSelector.removeEnabled = False
-        self.markupsSelector.noneEnabled = False
         self.markupsSelector.selectNodeUponCreation = True
-        form.addRow("Output markups", self.markupsSelector)
+        self.markupsSelector.noneEnabled = False
+        self.markupsSelector.setMRMLScene(slicer.mrmlScene)
+        form.addRow("Output Markups", self.markupsSelector)
 
-        # Buttons
-        btnRow = qt.QHBoxLayout()
-        self.connectBtn = qt.QPushButton("Connect")
-        self.disconnectBtn = qt.QPushButton("Disconnect"); self.disconnectBtn.enabled = False
-        self.initBtn = qt.QPushButton("INIT & TSTART"); self.initBtn.enabled = False
-        btnRow.addWidget(self.connectBtn); btnRow.addWidget(self.disconnectBtn); btnRow.addWidget(self.initBtn)
-        form.addRow(btnRow)
-
-        btnRow2 = qt.QHBoxLayout()
-        self.getOnceBtn = qt.QPushButton("Get stray once"); self.getOnceBtn.enabled = False
-        self.streamToggle = qt.QPushButton("Start streaming"); self.streamToggle.checkable = True; self.streamToggle.enabled = False
-        self.clearBtn = qt.QPushButton("Clear markups")
-        btnRow2.addWidget(self.getOnceBtn); btnRow2.addWidget(self.streamToggle); btnRow2.addWidget(self.clearBtn)
-        form.addRow(btnRow2)
-
-        # Raw reply (for debugging)
-        self.rawReply = qt.QPlainTextEdit(); self.rawReply.setReadOnly(True); self.rawReply.setMaximumBlockCount(200)
-        form.addRow("Raw TX reply", self.rawReply)
-
-        # Timer for streaming
-        self.timer = qt.QTimer(); self.timer.setInterval(100)  # 10 Hz default
-        self.timer.timeout.connect(self.onGetOnce)
-
-        # Signals
-        self.connectBtn.clicked.connect(self.onConnect)
-        self.disconnectBtn.clicked.connect(self.onDisconnect)
-        self.initBtn.clicked.connect(self.onInit)
-        self.getOnceBtn.clicked.connect(self.onGetOnce)
-        self.streamToggle.toggled.connect(self.onStreamToggle)
-        self.clearBtn.clicked.connect(self.onClear)
-
-        self.parent.layout().addLayout(form)
-
-        # Ensure an output node exists
+        # 必须：保证默认有一个标注节点
         if not self.markupsSelector.currentNode():
-            node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsFiducialNode", "StrayMarkers")
+            node = slicer.mrmlScene.AddNewNodeByClass(
+                "vtkMRMLMarkupsFiducialNode", "StrayMarkers"
+            )
             self.markupsSelector.setCurrentNode(node)
 
-    # --- UI handlers ---
+        # 信号绑定
+        self.connectButton.connect("clicked()", self.onConnect)
+        self.startButton.connect("clicked()", self.onStart)
+        self.stopButton.connect("clicked()", self.onStop)
+        self.acquireOnceButton.connect("clicked()", self.onAcquireOnce)
+        self.acquireMeanButton.connect("clicked()", self.onAcquireMean)
+        self.computeCTErrorButton.connect("clicked()", self.onComputeCTError)
+
+
+        layout.addStretch(1)
+
+    # ---------------------------------------------------------
+    # 回调函数
+    # ---------------------------------------------------------
+
+    def _getMarkups(self):
+        markups = self.markupsSelector.currentNode()
+        if markups is None:
+            markups = slicer.mrmlScene.AddNewNodeByClass(
+                "vtkMRMLMarkupsFiducialNode", "StrayMarkers"
+            )
+            self.markupsSelector.setCurrentNode(markups)
+        return markups
 
     def onConnect(self):
         ip = self.ipEdit.text.strip()
-        portText = self.portEdit.text.strip()
-        port = int(portText) if len(portText) else None
+        port = int(self.portEdit.text.strip())
 
         try:
             self.logic.connect(ip, port)
-            self.connectBtn.enabled = False
-            self.disconnectBtn.enabled = True
-            self.initBtn.enabled = True
-            self.getOnceBtn.enabled = True
-            self.streamToggle.enabled = True
-            slicer.util.infoDisplay("Connected to NDI device.")
+            slicer.util.infoDisplay("Connected to Polaris and ROM loaded.")
         except Exception as e:
-            slicer.util.errorDisplay(f"Connect failed: {e}")
+            slicer.util.errorDisplay(f"Connect failed:\n{e}")
 
-    def onDisconnect(self):
-        self.timer.stop()
+    def onStart(self):
         try:
-            self.logic.disconnect()
+            self.logic.startTracking()
+            slicer.util.infoDisplay("Tracking started.")
         except Exception as e:
-            logging.warning(f"During disconnect: {e}")
-        self.connectBtn.enabled = True
-        self.disconnectBtn.enabled = False
-        self.initBtn.enabled = False
-        self.getOnceBtn.enabled = False
-        self.streamToggle.setChecked(False); self.streamToggle.enabled = False
-        slicer.util.infoDisplay("Disconnected.")
+            slicer.util.errorDisplay(f"TSTART failed:\n{e}")
 
-    def onInit(self):
+    def onStop(self):
         try:
-            self.logic.initAndStartTracking()
-            slicer.util.infoDisplay("Tracker initialized and started (INIT/TSTART).")
+            self.logic.stopTracking()
+            slicer.util.infoDisplay("Tracking stopped.")
         except Exception as e:
-            slicer.util.errorDisplay(f"INIT/TSTART failed: {e}")
+            slicer.util.errorDisplay(f"TSTOP failed:\n{e}")
 
-    def onGetOnce(self):
-        node = self.markupsSelector.currentNode()
-        if node is None:
-            slicer.util.errorDisplay("Please create/select a Markups Fiducial node.")
+    def onAcquireOnce(self):
+        try:
+            pts = self.logic.acquireOnce()
+        except Exception as e:
+            slicer.util.errorDisplay(f"Acquire once failed:\n{e}")
             return
-        active = (self.strayType.currentIndex == 1)
+
+        markups = self._getMarkups()
+        markups.RemoveAllControlPoints()
+
+        import vtk
+        for i, p in enumerate(pts):
+            markups.AddControlPoint(vtk.vtkVector3d(*p))
+            markups.SetNthControlPointLabel(i, f"M{i+1}")
+
+    def onAcquireMean(self):
         try:
-            points, raw = self.logic.getStrayOnce(active=active)
-            self.rawReply.setPlainText(raw)
-            # Append points to Markups
-            for p in points:
-                # p is (x,y,z) in tracker coordinates, units mm
-                node.AddFiducialFromArray(np.array(p, dtype=float), f"stray-{time.time():.3f}")
+            pts = self.logic.acquireMean(100)
         except Exception as e:
-            slicer.util.errorDisplay(f"Failed to get stray markers: {e}")
+            slicer.util.errorDisplay(f"Acquire mean failed:\n{e}")
+            return
 
-    def onStreamToggle(self, checked):
-        if checked:
-            self.streamToggle.setText("Stop streaming")
-            self.timer.start()
-        else:
-            self.streamToggle.setText("Start streaming")
-            self.timer.stop()
+        markups = self._getMarkups()
+        markups.RemoveAllControlPoints()
 
-    def onClear(self):
-        node = self.markupsSelector.currentNode()
-        if node:
-            node.RemoveAllControlPoints()
+        import vtk
+        for i, p in enumerate(pts):
+            markups.AddControlPoint(vtk.vtkVector3d(*p))
+            markups.SetNthControlPointLabel(i, f"M{i+1}")
 
-#
-# RegisterOpticalMarkersLogic
-#
-class RegisterOpticalMarkersLogic(ScriptedLoadableModuleLogic):
-    def __init__(self):
-        super().__init__()
-        self.device = None
+    def onComputeCTError(self):
+        """
+        从当前 Markups 中读取 9 个实时 marker（例如 mean 100 帧后得到的点），
+        与 CT 文件中的 18 个 segment 质心（两两取中点）做刚体注册并计算误差。
+        结果会打印在 Python console。
+        """
+        # 1. CT 文件路径
+        ct_path = "/Users/leo17/Desktop/surgical_robotics/equipment/autonomous_needle_insertion/data/registration/preop/lumbar_MRI.tsv"
 
-    def connect(self, ip, port=None):
-        if not ip:
-            raise ValueError("IP address is required.")
-        # If port is None, ndicapy uses its internal default for the device.
-        if port is None:
-            self.device = ndicapy.ndiOpenNetwork(ip)
-        else:
-            self.device = ndicapy.ndiOpenNetwork(ip, int(port))
-        if not self.device:
-            raise RuntimeError("ndiOpenNetwork returned null handle")
+        # 2. 从 Markups 读取当前 live marker
+        markups = self._getMarkups()
+        N = markups.GetNumberOfControlPoints()
+        if N == 0:
+            slicer.util.errorDisplay("No points in Markups. Please acquire markers first (e.g., mean 100 frames).")
+            return
 
-    def initAndStartTracking(self):
-        self._ensureConnected()
-        # Initialize device and start tracking
-        self._send("INIT:")
-        self._send("TSTART:")
+        live_pts = np.zeros((N, 3), dtype=float)
+        for i in range(N):
+            p = [0.0, 0.0, 0.0]
+            markups.GetNthControlPointPosition(i, p)
+            live_pts[i] = p
 
-    def disconnect(self):
-        if self.device:
-            try:
-                self._send("TSTOP:")
-            except Exception:
-                pass
-            ndicapy.ndiClose(self.device)
-            self.device = None
-
-    def getStrayOnce(self, active=False):
-        """Return ([(x,y,z), ...], raw_reply_text)"""
-        self._ensureConnected()
-        # Reply option: passive stray 0x1000, active stray 0x0004
-        reply_opt = 0x0004 if active else 0x1000
-        # Use TX (ASCII) so we can parse text robustly
-        cmd = f"TX:{reply_opt:04X}"
-        self._send(cmd)
-        # Try generic reply getter (works in many ndicapy builds)
-        raw = ""
         try:
-            raw = ndicapy.ndiGetReply(self.device)  # returns bytes or str depending on build
-            if isinstance(raw, (bytes, bytearray)):
-                raw = raw.decode(errors="ignore")
-        except AttributeError:
-            # Fallback: some ndicapy versions auto-return from ndiCommand
-            # We re-send TX and rely on any bound helper (rare); otherwise raise
-            raise RuntimeError("Your ndicapy build lacks ndiGetReply(); consider upgrading ndicapi.")
+            rmse_val, residuals, perm, R, t = self.logic.computeErrorVsCT(ct_path, live_pts)
+        except Exception as e:
+            slicer.util.errorDisplay(f"Compute error failed:\n{e}")
+            return
 
-        pts = self._parse_tx_stray_ascii(raw)
-        return pts, raw
+        slicer.util.infoDisplay(
+            f"Registration to lumbar_CT finished.\nRMSE = {rmse_val:.4f} mm\n"
+            f"详见 Python console 中的详细输出。"
+        )
 
-    # --- helpers ---
 
-    def _send(self, s):
-        r = ndicapy.ndiCommand(self.device, s)
-        if r != ndicapy.NDI_OKAY:
-            raise RuntimeError(f"NDI command failed ({s}): code {r}")
 
-    def _ensureConnected(self):
-        if not self.device:
-            raise RuntimeError("Not connected")
+# -------------------------------------------------------------------------
+# Logic (后台负责连接 / Tracking / TX1000)
+# -------------------------------------------------------------------------
 
-    @staticmethod
-    def _parse_tx_stray_ascii(replyText):
+class RegisterOpticalMarkersLogic(ScriptedLoadableModuleLogic):
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.dev = None
+        self.handle = None
+
+    # --------------------- CONNECT -------------------------
+    def connect(self, ip, port):
+        logging.info(f"Connecting to Polaris at {ip}:{port}")
+
+        self.dev = connect_to(ip, port)  # INIT
+        logging.info("INIT OK")
+
+        logging.info("Loading ROM...")
+        self.handle = set_up_tool(self.dev, ROM_PATH)
+        logging.info("ROM loaded.")
+
+    # --------------------- TRACKING -------------------------
+    def startTracking(self):
+        if self.dev is None:
+            raise RuntimeError("Not connected.")
+
+        reply = ndicapy.ndiCommand(self.dev, "TSTART ")
+        if not reply.startswith("OKAY"):
+            raise RuntimeError(f"TSTART failed: {reply}")
+
+    def stopTracking(self):
+        if self.dev:
+            ndicapy.ndiCommand(self.dev, "TSTOP ")
+
+    # --------------------- ACQUIRE -------------------------
+
+    def acquireOnce(self):
+        print("AcquireOnce clicked")
+        if self.dev is None:
+            raise RuntimeError("Not connected.")
+        
+        print("Sending TX 1000...")
+        raw = ndicapy.ndiCommand(self.dev, "TX 1000")
+        print("TX1000 reply:", raw)
+        markers = parse_tx1000_reply(raw)
+        print("Parsed markers:", markers)
+        return np.array(markers, dtype=float)
+
+    def acquireMean(self, N=100):
         """
-        Heuristic ASCII parser for stray-marker triples in TX reply.
-        It tries to extract sensible (x,y,z) triples in millimetres.
-        Filters out absurd values and deduplicates nearby points.
+        连续采集 N 帧 TX 1000，并打印每一帧的 markers。
+        最后对所有有效帧求均值，返回 (min_n, 3) 的 numpy 数组。
         """
-        # Extract all numbers
-        nums = re.findall(r"[-+]?(?:\d*\.\d+|\d+)", replyText)
-        vals = [float(n) for n in nums]
-        # Group into triples and filter unrealistic magnitudes
-        pts = []
-        for i in range(0, len(vals) - 2, 3):
-            x, y, z = vals[i], vals[i + 1], vals[i + 2]
-            if all(abs(v) < 5000 for v in (x, y, z)):  # ±5 m sanity window
-                pts.append((x, y, z))
-        # Deduplicate near-identical points
-        dedup = []
-        def near(a, b): return sum((a[k]-b[k])**2 for k in range(3)) < 0.1**2
-        for p in pts:
-            if not any(near(p, q) for q in dedup):
-                dedup.append(p)
-        return dedup
+        if self.dev is None:
+            raise RuntimeError("Not connected.")
+
+        frames = []
+
+        print(f"\n[Polaris] Start acquiring {N} frames for mean computation...")
+        for i in range(N):
+            raw = ndicapy.ndiCommand(self.dev, "TX 1000").strip()
+            markers = parse_tx1000_reply(raw)
+
+            print(f"Frame {i:03d}: got {len(markers)} marker(s).")
+            if len(markers) > 0:
+                arr = np.array(markers, dtype=float)
+                print(arr)  # 显示本帧的坐标
+                frames.append(arr)
+
+            slicer.app.processEvents()
+            time.sleep(0.01)
+
+        if len(frames) == 0:
+            raise RuntimeError("No valid frames (no markers detected in any frame).")
+
+        # 统一长度（有的帧可能少几个点）
+        min_n = min(f.shape[0] for f in frames)
+        print(f"\n[Polaris] Valid frames: {len(frames)} / {N}, "
+              f"using first {min_n} markers of each frame for mean.")
+
+        clipped = np.stack([f[:min_n] for f in frames], axis=0)  # (F, min_n, 3)
+        mean_pts = clipped.mean(axis=0)  # (min_n, 3)
+
+        print("\n[Polaris] Mean of 100 frames (each row = one marker, columns = X Y Z in mm):")
+        print(mean_pts)
+
+        return mean_pts
+
+    def computeErrorVsCT(self, ct_path: str, live_pts: np.ndarray):
+        """
+        ct_path: lumbar_CT.tsv 文件路径（18 行, Centroid_r/a/s）
+        live_pts: 实时 marker 的坐标 (N x 3)，这里期望 N=9（mean 之后的 9 个 meta-fid 中心）
+        """
+
+        import pandas as pd
+
+        # ---- 1. 读取 CT 18 个 segment 的质心 ----
+        df = pd.read_csv(ct_path, sep="\t")
+        cols = ["Centroid_r", "Centroid_a", "Centroid_s"]
+        for c in cols:
+            if c not in df.columns:
+                raise RuntimeError(f"CT file missing column: {c}")
+        ct18 = df[cols].to_numpy(dtype=float)   # 18 x 3
+
+        if ct18.shape[0] != 18:
+            raise RuntimeError(f"Expect 18 CT segments, got {ct18.shape[0]}")
+
+        # ---- 2. 每两个 segment 取中点，得到 9 个 meta-fid center ----
+        # 对应关系: (1,2), (3,4), ..., (17,18)
+        ct9 = 0.5 * (ct18[0::2, :] + ct18[1::2, :])   # shape (9, 3)
+
+        # ---- 3. 检查 live_pts 维度 ----
+        if live_pts.shape[0] != 9:
+            raise RuntimeError(f"Live markers must be 9, got {live_pts.shape[0]}")
+
+        # ---- 4. 用距离签名做无序匹配（live -> CT）----
+        perm = match_unlabeled_bruteforce(ct9, live_pts)
+        live_matched = live_pts[perm]
+
+        # ---- 5. 刚体配准（传感器 -> CT）----
+        R, t = rigid_transform_row(live_matched, ct9)
+        aligned = live_matched @ R + t
+
+        # ---- 6. 计算误差 ----
+        residuals = np.linalg.norm(ct9 - aligned, axis=1)
+        e_rmse = rmse(ct9, aligned)
+
+        # ---- 7. 打印详细信息 ----
+        np.set_printoptions(precision=4, suppress=True)
+        print("\n===== Registration to lumbar_CT =====")
+        print("CT meta-fid centers (9 x 3):")
+        print(ct9)
+        print("\nLive markers (after permutation):")
+        print(live_matched)
+        print("\nPermutation (live index -> CT meta index):")
+        print(perm)
+        print("\nRotation R:\n", R)
+        print("Translation t:\n", t)
+        print(f"\nRMSE: {e_rmse:.4f}")
+        print("Residuals per marker:", residuals)
+        print("=====================================\n")
+
+        return e_rmse, residuals, perm, R, t
+
+
+
+import itertools  # 新增
+
+# ---------- Registration utilities (pure NumPy, no SciPy) ----------
+
+def pairwise_distances(X: np.ndarray) -> np.ndarray:
+    return np.linalg.norm(X[:, None, :] - X[None, :, :], axis=2)
+
+def distance_signatures(D: np.ndarray) -> np.ndarray:
+    """
+    For each point i, take distances to others, sort them;
+    used as a permutation-invariant signature.
+    """
+    N = D.shape[0]
+    S = np.empty((N, N - 1), dtype=float)
+    for i in range(N):
+        row = np.delete(D[i], i)
+        row.sort()
+        S[i] = row
+    return S
+
+def match_unlabeled_bruteforce(A: np.ndarray, B: np.ndarray) -> np.ndarray:
+    """
+    Match B to A by brute-force Hungarian-like search on distance-signature L2 cost.
+    N<=9 so brute-force permutations (9! ~= 3.6e5) 是可以接受的。
+    返回 perm，使得 B[perm[i]] 与 A[i] 对应。
+    """
+    N = A.shape[0]
+    Da, Db = pairwise_distances(A), pairwise_distances(B)
+    Sa, Sb = distance_signatures(Da), distance_signatures(Db)
+
+    best_perm = None
+    best_cost = float("inf")
+    for perm in itertools.permutations(range(N)):
+        perm = list(perm)
+        # cost = sum over i of || Sa[i] - Sb[perm[i]] ||
+        diff = Sa - Sb[perm, :]
+        cost = np.linalg.norm(diff)
+        if cost < best_cost:
+            best_cost = cost
+            best_perm = np.array(perm, dtype=int)
+    return best_perm
+
+def rigid_transform_row(src: np.ndarray, dst: np.ndarray):
+    """
+    Solve R,t for dst ≈ src @ R + t (刚体配准，Kabsch).
+    """
+    c_src, c_dst = src.mean(axis=0), dst.mean(axis=0)
+    X, Y = src - c_src, dst - c_dst
+    H = X.T @ Y
+    U, S, Vt = np.linalg.svd(H)
+    R = U @ Vt
+    if np.linalg.det(R) < 0:
+        U[:, -1] *= -1
+        R = U @ Vt
+    t = c_dst - c_src @ R
+    return R, t
+
+def rmse(A: np.ndarray, B: np.ndarray) -> float:
+    return np.sqrt(np.mean(np.sum((A - B) ** 2, axis=1)))
