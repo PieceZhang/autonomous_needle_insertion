@@ -202,9 +202,9 @@ def main():
     ap = argparse.ArgumentParser(description="Register 3D point sets with meta-fiducial pairing on MRI.")
     ap.add_argument("mri_file", help="Path to 18-point MRI marker file (TSV or CSV; two per meta-fiducial).")
     ap.add_argument("sensor_file", help="Path to 9-point sensor marker file (TSV or CSV; one per meta-fiducial).")
-    ap.add_argument("--pair-dist", type=float, default=None,
+    ap.add_argument("--pair-dist", type=float, default=65.0,
                     help="Known distance between the two markers of a meta-fiducial (in MRI units).")
-    ap.add_argument("--pair-tol", type=float, default=None,
+    ap.add_argument("--pair-tol", type=float, default=5.0,
                     help="Tolerance for --pair-dist. If set, pairing will be constrained and relaxed if needed.")
     ap.add_argument("--similarity", action="store_true",
                     help="Estimate isotropic scale in addition to rigid transform (Umeyama).")
