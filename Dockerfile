@@ -101,7 +101,8 @@ RUN apt-get update \
       ros-$ROS_DISTRO-moveit-py \
       ros-$ROS_DISTRO-moveit-planners-ompl \
       ros-$ROS_DISTRO-moveit-ros-control-interface \
-      ros-$ROS_DISTRO-moveit-simple-controller-manager
+      ros-$ROS_DISTRO-moveit-simple-controller-manager\
+      pynput
 #      ros-$ROS_DISTRO-launch-param-builder \
 #      ros-$ROS_DISTRO-moveit-configs-utils
 # && rm -rf /var/lib/apt/lists/* \

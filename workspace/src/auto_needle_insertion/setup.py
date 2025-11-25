@@ -23,6 +23,7 @@ setup(
     license="Apache-2.0",
     entry_points={
         "console_scripts": [
+            "ee_moveit_keyboard_pynput = auto_needle_insertion.ee_moveit_keyboard_pynput:main",
             "ee_moveit_keyboard = auto_needle_insertion.ee_moveit_keyboard:main",
             "ee_moveit_square = auto_needle_insertion.ee_moveit_square:main",
             "ee_pose_logger = auto_needle_insertion.ee_pose_logger:main",
