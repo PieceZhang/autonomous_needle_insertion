@@ -147,42 +147,30 @@ def _getch_nonblocking() -> Optional[Union[str, bytes]]:
       - str for POSIX keys (e.g., '\x1b[C' for Right)
       - None if no key available
     """
+    import tty
+    import termios
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
     try:
-        # Windows
-        import msvcrt
-        if msvcrt.kbhit():
-            ch = msvcrt.getch()
-            if ch in (b'\x00', b'\xe0'):  # special keys: next byte is code
-                ch2 = msvcrt.getch()
-                return ch + ch2
-            return ch
-        return None
-    except ImportError:
-        # POSIX
-        import tty
-        import termios
-        fd = sys.stdin.fileno()
-        old = termios.tcgetattr(fd)
-        try:
-            tty.setcbreak(fd)
-            dr, _, _ = select.select([sys.stdin], [], [], 0.05)
-            if not dr:
-                return None
-            ch = sys.stdin.read(1)
-            # Arrow keys are ESC [ A/B/C/D
-            if ch == '\x1b':
-                # Try to read the rest quickly
+        tty.setcbreak(fd)
+        dr, _, _ = select.select([sys.stdin], [], [], 0.05)
+        if not dr:
+            return None
+        ch = sys.stdin.read(1)
+        # Arrow keys are ESC [ A/B/C/D
+        if ch == '\x1b':
+            # Try to read the rest quickly
+            dr, _, _ = select.select([sys.stdin], [], [], 0.01)
+            if dr:
+                ch2 = sys.stdin.read(1)
                 dr, _, _ = select.select([sys.stdin], [], [], 0.01)
                 if dr:
-                    ch2 = sys.stdin.read(1)
-                    dr, _, _ = select.select([sys.stdin], [], [], 0.01)
-                    if dr:
-                        ch3 = sys.stdin.read(1)
-                        return ch + ch2 + ch3
-                return ch
+                    ch3 = sys.stdin.read(1)
+                    return ch + ch2 + ch3
             return ch
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        return ch
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
 def _map_key_to_command(
@@ -195,25 +183,6 @@ def _map_key_to_command(
       ('MOVE', (dx, dy, dz)) or ('QUIT', (0,0,0)) or ('HELP', ...) or ('NOP', ...)
       None if unrecognized
     """
-    # Windows virtual keys (bytes)
-    if isinstance(key, bytes):
-        # Arrows: b'\xe0M'(Right) b'\xe0K'(Left) b'\xe0H'(Up) b'\xe0P'(Down)
-        if key == b'\xe0M':
-            return ('MOVE', ( step_xy, 0.0, 0.0))
-        if key == b'\xe0K':
-            return ('MOVE', (-step_xy, 0.0, 0.0))
-        if key == b'\xe0H':
-            return ('MOVE', (0.0,  step_xy, 0.0))
-        if key == b'\xe0P':
-            return ('MOVE', (0.0, -step_xy, 0.0))
-        # PageUp/PageDown (optional Z) b'\xe0I' / b'\xe0Q'
-        if key == b'\xe0I':
-            return ('MOVE', (0.0, 0.0,  step_z))
-        if key == b'\xe0Q':
-            return ('MOVE', (0.0, 0.0, -step_z))
-        return None
-
-    # POSIX strings
     if key == '\x1b[C':  # Right
         return ('MOVE', ( step_xy, 0.0, 0.0))
     if key == '\x1b[D':  # Left
