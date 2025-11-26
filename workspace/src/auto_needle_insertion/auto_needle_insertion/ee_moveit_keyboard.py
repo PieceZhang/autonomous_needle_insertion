@@ -1,7 +1,7 @@
 """
 Keyboard teleoperation for end-effector incremental motions in its local frame
-using MoveItPy. Orientation is kept constant; each key press triggers a small
-point-to-point plan and execution with conservative speed scaling.
+using MoveItPy. Eeach key press triggers a small point-to-point plan and execution 
+with conservative speed scaling.
 
 Controls (default):
   - Arrow Right/Left:  +X / -X  (right/left when facing the flange)
@@ -13,94 +13,79 @@ Controls (default):
   - Q:                 quit
 """
 
+import os
 import sys
 import time
 import logging
-import select
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional
+
+import curses
+import tty
+import termios
+import fcntl
 
 import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from moveit.planning import MoveItPy, PlanRequestParameters
 
-# Module constants
-NODE_NAME = "auto_needle_insertion"
-PLANNING_SCENE_SYNC_DELAY = 0.5  # seconds for initial joint state sync
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("auto_needle_insertion.ee_moveit_keyboard")
 
-DEFAULT_STEP_XY = 0.01  # 1 cm per key press in X/Y
-DEFAULT_STEP_Z = 0.01   # 1 cm per key press in Z
-STEP_MIN = 0.001        # 1 mm
-STEP_MAX = 0.10         # 10 cm
+
+NODE_NAME = "auto_needle_insertion"
+DEFAULT_STEP_XY = 0.01  # m
+DEFAULT_STEP_Z = 0.01   # m
+STEP_MIN = 0.001
+STEP_MAX = 0.10
 STEP_SCALE_UP = 1.5
 STEP_SCALE_DOWN = 1.0 / STEP_SCALE_UP
 
-MAX_VELOCITY_SCALING = 0.2
-MAX_ACCELERATION_SCALING = 0.2
+MAX_VELOCITY_SCALING = 0.1
+MAX_ACCELERATION_SCALING = 0.1
 
-# Controller fallback order (hardware/sim)
 CONTROLLER_NAMES = [
-    "scaled_joint_trajectory_controller",  # typical for UR hardware
-    "",                                    # default
-    "joint_trajectory_controller"          # sim/common
+    "scaled_joint_trajectory_controller",
+    "",
+    "joint_trajectory_controller",
 ]
 
-# Preferred tip links to choose from a planning group
 PREFERRED_TIP_LINKS = ["tool0", "ee_link"]
-
-# Logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 
 def get_planning_group_name(robot: MoveItPy) -> str:
-    """
-        Select planning group using heuristics.
-    """
-    group_names = robot.get_robot_model().joint_model_group_names
-    if not group_names:
+    names = robot.get_robot_model().joint_model_group_names
+    if not names:
         raise RuntimeError("No planning groups available")
-    logger.info(f"Available planning groups: {group_names}")
-    for name in group_names:
-        if "manipulator" in name or "ur" in name:
-            return name
-    return group_names[0]
+    for n in names:
+        if "manipulator" in n or "ur" in n:
+            return n
+    return names[0]
 
 
 def get_tip_link_name(robot: MoveItPy, group_name: str) -> str:
-    """
-        Resolve appropriate tip link for the planning group.
-    """
     group = robot.get_robot_model().get_joint_model_group(group_name)
     if not group:
         raise RuntimeError(f"Planning group '{group_name}' not found.")
-    link_names = list(group.link_model_names)
-    if not link_names:
+    links = list(group.link_model_names)
+    if not links:
         raise RuntimeError(f"No links in planning group '{group_name}'.")
-    for preferred in PREFERRED_TIP_LINKS:
-        if preferred in link_names:
-            return preferred
-    return link_names[-1]
+    for pref in PREFERRED_TIP_LINKS:
+        if pref in links:
+            return pref
+    return links[-1]
 
 
-def execute_trajectory_with_fallback(
-    robot: MoveItPy, 
-    trajectory, 
-    controllers: List[str] = CONTROLLER_NAMES
-) -> bool:
-    """
-        Execute trajectory with controller fallback strategy.
-    """
-    for controller in controllers:
+def execute_trajectory_with_fallback(robot: MoveItPy, trajectory, controllers: List[str]) -> bool:
+    for c in controllers:
         try:
-            if controller:
-                robot.execute(trajectory, controllers=[controller])
+            if c:
+                robot.execute(trajectory, controllers=[c])
             else:
                 robot.execute(trajectory)
             return True
         except Exception as e:
-            logger.warning(f"Controller '{controller}' failed: {e}")
-            continue
+            logger.warning(f"Controller '{c}' failed: {e}")
     logger.error("All controllers failed.")
     return False
 
@@ -111,12 +96,13 @@ def create_pose_stamped_local_increment(
     planning_frame: str,
     dx: float,
     dy: float,
-    dz: float = 0.0
+    dz: float,
 ) -> PoseStamped:
     """
-        Read current EE transform, apply local-frame translation (dx,dy,dz).
+        Read current transform, apply local-frame translation (dx,dy,dz).
     """
-    with robot.get_planning_scene_monitor().read_only() as scene:
+    psm = robot.get_planning_scene_monitor()
+    with psm.read_only() as scene:
         scene.current_state.update()
         T = scene.current_state.get_global_link_transform(tip_link)
         current_pose = scene.current_state.get_pose(tip_link)
@@ -138,107 +124,187 @@ def create_pose_stamped_local_increment(
     return pose_stamped
 
 
-def _getch_nonblocking() -> Optional[Union[str, bytes]]:
-    """Non-blocking single keystroke reader.
-    - Windows: uses msvcrt
-    - POSIX: uses termios/tty/select; parses arrow escape sequences
-    Returns:
-      - bytes for Windows special keys (e.g., b'\xe0M' for Right)
-      - str for POSIX keys (e.g., '\x1b[C' for Right)
-      - None if no key available
-    """
-    import tty
-    import termios
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-    try:
-        tty.setcbreak(fd)
-        dr, _, _ = select.select([sys.stdin], [], [], 0.05)
-        if not dr:
-            return None
-        ch = sys.stdin.read(1)
-        # Arrow keys are ESC [ A/B/C/D
-        if ch == '\x1b':
-            # Try to read the rest quickly
-            dr, _, _ = select.select([sys.stdin], [], [], 0.01)
-            if dr:
-                ch2 = sys.stdin.read(1)
-                dr, _, _ = select.select([sys.stdin], [], [], 0.01)
-                if dr:
-                    ch3 = sys.stdin.read(1)
-                    return ch + ch2 + ch3
-            return ch
-        return ch
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
-
-
-def _map_key_to_command(
-    key: Union[str, bytes],
-    step_xy: float,
-    step_z: float
-) -> Optional[Tuple[str, Tuple[float, float, float]]]:
-    """Map a key to a command.
-    Returns:
-      ('MOVE', (dx, dy, dz)) or ('QUIT', (0,0,0)) or ('HELP', ...) or ('NOP', ...)
-      None if unrecognized
-    """
-    if key == '\x1b[C':  # Right
-        return ('MOVE', ( step_xy, 0.0, 0.0))
-    if key == '\x1b[D':  # Left
-        return ('MOVE', (-step_xy, 0.0, 0.0))
-    if key == '\x1b[A':  # Up
-        return ('MOVE', (0.0,  step_xy, 0.0))
-    if key == '\x1b[B':  # Down
-        return ('MOVE', (0.0, -step_xy, 0.0))
-    # Single chars
-    if key in ('w', 'W'):
-        return ('MOVE', (0.0, 0.0,  step_z))
-    if key in ('s', 'S'):
-        return ('MOVE', (0.0, 0.0, -step_z))
-    if key in ('h', 'H'):
-        return ('HELP', (0.0, 0.0, 0.0))
-    if key in (' ',):
-        return ('NOP', (0.0, 0.0, 0.0))
-    if key in ('q', 'Q'):
-        return ('QUIT', (0.0, 0.0, 0.0))
-    if key in ('+', '='):
-        return ('STEP_UP', (0.0, 0.0, 0.0))
-    if key == '-':
-        return ('STEP_DOWN', (0.0, 0.0, 0.0))
-    return None
-
-
-def _print_help(step_xy: float, step_z: float) -> None:
+def _help_text(
+    step_xy: float, 
+    step_z: float, 
+    angle_x: float,
+    angle_y: float,
+    angle_z: float
+) -> None:
     logger.info(
-        "\n[Teleop Help]\n"
-        "  Arrows: X/Y moves (Right=+X, Left=-X, Up=+Y, Down=-Y)\n"
-        "  W/S:    Z move (+Z/-Z)\n"
-        "  + / - : Increase / Decrease step (current: xy=%.3f m, z=%.3f m)\n"
-        "  Space:  no-op\n"
-        "  H:      help\n"
-        "  Q:      quit\n" % (step_xy, step_z)
+        "[Teleop Help]\n"
+        " Arrows: X/Y moves (Right=+X, Left=-X, Up=+Y, Down=-Y)\n"
+        " W/S:    Z move (+Z/-Z)\n"
+        " + / - : Increase / Decrease translation step (current: xy=%.3f m, z=%.3f m)\n"
+        " R/P/Y:  Rotate counterclockwise (+)\n"
+        " E/O/T:  Rotate clockwise (-)"
+        " I / D:  Increase / Decrease rotation step"
+        " Space:  no-op\n"
+        " H:      help\n"
+        " Q:      quit\n" % (step_xy, step_z)
     )
 
-
-def keyboard_teleop_end_effector(
-    robot: MoveItPy,
-    arm_group_name: Optional[str] = None,
-    tip_link: Optional[str] = None,
-    initial_step_xy: float = DEFAULT_STEP_XY,
-    initial_step_z: float = DEFAULT_STEP_Z
-) -> None:
+class TTYInput:
     """
-        Main teleop loop: incremental local-frame moves keeping orientation.
+        Capture key from /dev/tty. Using curses to enter raw mode without blocking reads 
+        and restore terminal state upon destruction.
+    """
+    def __init__(self):
+        # Open /dev/tty. If failed, back to stdin
+        self.tty_path = "/dev/tty"
+        self.tty_file = None
+        self.fd = None
+        self._curses_screen = None
+        self._orig_fl = None  # non-blocking flag 
+        self._init_ok = False
+
+        try:
+            self.tty_file = open(self.tty_path, "rb+", buffering=0)
+            self.fd = self.tty_file.fileno()
+        except Exception as e:
+            logger.warning(f"Cannot open {self.tty_path}: {e}, try to use stdin.")
+            self.fd = sys.stdin.fileno()
+
+        self._saved_stdin = os.dup(0)
+        self._saved_stdout = os.dup(1)
+        os.dup2(self.fd, 0)
+        os.dup2(self.fd, 1)
+
+        try:
+            self._orig_fl = fcntl.fcntl(self.fd, fcntl.F_GETFL)
+            fcntl.fcntl(self.fd, fcntl.F_SETFL, self._orig_fl | os.O_NONBLOCK)
+
+            self._curses_screen = curses.initscr()
+            curses.noecho()
+            curses.cbreak()
+            self._curses_screen.keypad(True)
+            self._curses_screen.nodelay(True)  # 非阻塞 getch
+            self._init_ok = True
+        except Exception as e:
+            logger.error(f"Initialize TTY/curses: {e} failed")
+            self.close()
+            raise
+
+    def get_key(self) -> Optional[int]:
+        """
+            Non-blocking read of a key code; returns None if no key is pressed.
+        """
+        if not self._init_ok:
+            return None
+        try:
+            ch = self._curses_screen.getch()
+            if ch == -1:
+                return None
+            return ch
+        except Exception:
+            return None
+
+    def write_line(self, text: str):
+        """
+            Output a prompt line at the bottom.
+        """
+        if not self._init_ok:
+            return
+        try:
+            self._curses_screen.move(curses.LINES - 1, 0)
+            self._curses_screen.clrtoeol()
+            self._curses_screen.addstr(curses.LINES - 1, 0, text[:curses.COLS - 1])
+            self._curses_screen.refresh()
+        except Exception:
+            pass
+
+    def close(self):
+        # recover curses
+        try:
+            if self._curses_screen is not None:
+                self._curses_screen.keypad(False)
+                curses.nocbreak()
+                curses.echo()
+                curses.endwin()
+        except Exception:
+            pass
+
+        try:
+            if self.fd is not None and self._orig_fl is not None:
+                fcntl.fcntl(self.fd, fcntl.F_SETFL, self._orig_fl)
+        except Exception:
+            pass
+
+        try:
+            os.dup2(self._saved_stdin, 0)
+            os.dup2(self._saved_stdout, 1)
+            os.close(self._saved_stdin)
+            os.close(self._saved_stdout)
+        except Exception:
+            pass
+
+        # close /dev/tty file
+        try:
+            if self.tty_file is not None:
+                self.tty_file.close()
+        except Exception:
+            pass
+
+        self._init_ok = False
+
+
+# Key mapping
+# ---------- transaltion ------------ # 
+KEY_UP = curses.KEY_UP
+KEY_DOWN = curses.KEY_DOWN
+KEY_LEFT = curses.KEY_LEFT
+KEY_RIGHT = curses.KEY_RIGHT
+ORD_w = ord('w')
+ORD_W = ord('W')
+ORD_s = ord('s')
+ORD_S = ord('S')
+
+# ------------ quit & help ----------- #
+ORD_q = ord('q')
+ORD_Q = ord('Q')
+ORD_h = ord('h')
+ORD_H = ord('H')
+ORD_SPACE = ord(' ')
+
+# ------------ Adjust translation step length ------------ #
+ORD_PLUS = ord('+')
+ORD_EQ = ord('=')
+ORD_MINUS = ord('-')
+
+# ------------- Orientation ------------ #
+ORD_roll = ord('r')     # x-axis  counterclockwise (+)
+ORD_ROLL = ord('R')
+ORD_pitch = ord('p')    # y-axis  counterclockwise (+)
+ORD_PITCH = ord('P')
+ORD_yaw = ord('y')      # z-axis  counterclockwise  (+)
+ORD_YAW = ord('Y') 
+ORD_n_roll = ord('e')   # x-axis  clockwise (-)
+ORD_N_ROLL = ord('E')
+ORD_n_pitch = ord('o')  # x-axis  clockwise (-)
+ORD_N_PITCH = ord('O')
+ORD_n_yaw = ord('t')    # x-axis  clockwise (-)
+ORD_N_YAW = ord('T')
+
+# --------------- Adjust rotation step length -------- #
+ORD_ORI_PLUS = ord('I')
+ORD_ori_plus = ord('i')
+ORD_ORI_DEC = ord('D')
+ORD_ori_dec = ord('d')
+
+
+def teleop_loop(
+    robot: MoveItPy,
+    arm_group_name: str,
+    tip_link: str,
+    initial_step_xy: float,
+    initial_step_z: float,
+):
+    """
+        Main teleop loop: incremental local-frame moves.
     """
     psm = robot.get_planning_scene_monitor()
     with psm.read_only() as scene_ro:
         planning_frame = scene_ro.planning_frame
-
-    if arm_group_name is None:
-        arm_group_name = get_planning_group_name(robot)
-    if tip_link is None:
-        tip_link = get_tip_link_name(robot, arm_group_name)
 
     arm = robot.get_planning_component(arm_group_name)
     step_xy = float(initial_step_xy)
@@ -247,113 +313,135 @@ def keyboard_teleop_end_effector(
     logger.info(f"[Teleop] Planning group: {arm_group_name}")
     logger.info(f"[Teleop] Tip link: {tip_link}")
     logger.info(f"[Teleop] Planning frame: {planning_frame}")
-    logger.info(f"[Teleop] Initial step: XY={step_xy:.3f} m, Z={step_z:.3f} m")
-    _print_help(step_xy, step_z)
+    logger.info(f"[Teleop] Initial step length: XY={step_xy:.3f} m, Z={step_z:.3f} m")
+    _help_text(step_xy, step_z)
 
-    # Main loop
-    while rclpy.ok():
-        key = _getch_nonblocking()
-        if key is None:
-            time.sleep(0.01)
-            continue
+    tty_in = TTYInput()
+    tty_in.write_line("\nTeleop: Arrows/W/S--move, +/- set step llength, H-help, Q-Exit\n")
 
-        mapped = _map_key_to_command(key, step_xy, step_z)
-        if mapped is None:
-            continue
+    try:
+        while rclpy.ok():
+            ch = tty_in.get_key()
+            if ch is None:
+                time.sleep(0.02)
+                continue
 
-        cmd, data = mapped
+            # Exit
+            if ch in (ORD_q, ORD_Q):
+                logger.info("\n [Teleop] Exit\n")
+                break
 
-        if cmd == 'QUIT':
-            logger.info("[Teleop] Quit requested.")
-            break
-        elif cmd == 'HELP':
-            _print_help(step_xy, step_z)
-            continue
-        elif cmd == 'NOP':
-            logger.info("[Teleop] No-op.")
-            continue
-        elif cmd == 'STEP_UP':
-            step_xy = min(STEP_MAX, step_xy * STEP_SCALE_UP)
-            step_z = min(STEP_MAX, step_z * STEP_SCALE_UP)
-            logger.info(f"[Teleop] Step increased: XY={step_xy:.3f} m, Z={step_z:.3f} m")
-            continue
-        elif cmd == 'STEP_DOWN':
-            step_xy = max(STEP_MIN, step_xy * STEP_SCALE_DOWN)
-            step_z = max(STEP_MIN, step_z * STEP_SCALE_DOWN)
-            logger.info(f"[Teleop] Step decreased: XY={step_xy:.3f} m, Z={step_z:.3f} m")
-            continue
+            # Help
+            if ch in (ORD_h, ORD_H):
+                _help_text(step_xy, step_z)
+                tty_in.write_line("\n Show the help\n")
+                continue
 
-        # MOVE command
-        dx, dy, dz = data
+            # Translation step length adjustment
+            if ch in (ORD_PLUS, ORD_EQ):
+                step_xy = min(STEP_MAX, step_xy * STEP_SCALE_UP)
+                step_z = min(STEP_MAX, step_z * STEP_SCALE_UP)
+                logger.info(f"\n [Teleop] increase step length: XY={step_xy:.3f} m, Z={step_z:.3f} m\n")
+                tty_in.write_line(f"\n increase step length: XY={step_xy:.3f} Z={step_z:.3f}\n")
+                continue
 
-        # Compose goal pose from current EE pose + local increment
-        waypoint_pose = create_pose_stamped_local_increment(
-            robot=robot,
-            tip_link=tip_link,
-            planning_frame=planning_frame,
-            dx=dx, dy=dy, dz=dz
-        )
+            if ch == ORD_MINUS:
+                step_xy = max(STEP_MIN, step_xy * STEP_SCALE_DOWN)
+                step_z = max(STEP_MIN, step_z * STEP_SCALE_DOWN)
+                logger.info(f"\n [Teleop] decrease step length: XY={step_xy:.3f} m, Z={step_z:.3f} m\n")
+                tty_in.write_line(f"\n decrease step length: XY={step_xy:.3f} Z={step_z:.3f}\n")
+                continue
 
-        # Plan and execute
-        try:
-            arm.set_start_state_to_current_state()
-            arm.set_goal_state(pose_stamped_msg=waypoint_pose, pose_link=tip_link)
+            # Rotation step length adjustment
 
-            plan_params = PlanRequestParameters(robot, "")
-            plan_params.max_velocity_scaling_factor = MAX_VELOCITY_SCALING
-            plan_params.max_acceleration_scaling_factor = MAX_ACCELERATION_SCALING
-            # If supported in your MoveItPy version:
-            # plan_params.planning_time = 5.0
-
-            plan_result = arm.plan(single_plan_parameters=plan_params)
-
-            # Robustness check across MoveItPy versions
-            ok = False
-            if plan_result is None:
-                ok = False
+            # Move
+            dx = dy = dz = 0.0
+            if ch == KEY_RIGHT:
+                dx = +step_xy
+            elif ch == KEY_LEFT:
+                dx = -step_xy
+            elif ch == KEY_UP:
+                dy = +step_xy
+            elif ch == KEY_DOWN:
+                dy = -step_xy
+            elif ch in (ORD_w, ORD_W):
+                dz = +step_z
+            elif ch in (ORD_s, ORD_S):
+                dz = -step_z
+            elif ch in (ORD_roll, ORD_ROLL):
+                pass
+            elif ch in (ORD_pitch, ORD_PITCH):
+                pass
+            elif ch in (ORD_yaw, ORD_YAW):
+                pass 
+            elif ch == ORD_SPACE:
+                tty_in.write_line("\n Space: No-operation\n")
+                continue
             else:
-                traj = getattr(plan_result, "trajectory", None)
-                ok = traj is not None
-
-            if not ok:
-                logger.warning("[Teleop] Planning failed for this step.")
+                # ignore other keys
                 continue
 
-            if not execute_trajectory_with_fallback(robot, plan_result.trajectory):
-                logger.warning("[Teleop] Execution failed for this step.")
+            waypoint_pose = create_pose_stamped_local_increment(
+                robot=robot,
+                tip_link=tip_link,
+                planning_frame=planning_frame,
+                dx=dx, dy=dy, dz=dz
+            )
+
+            try:
+                arm.set_start_state_to_current_state()
+                arm.set_goal_state(pose_stamped_msg=waypoint_pose, pose_link=tip_link)
+
+                plan_params = PlanRequestParameters(robot, "")
+                plan_params.max_velocity_scaling_factor = MAX_VELOCITY_SCALING
+                plan_params.max_acceleration_scaling_factor = MAX_ACCELERATION_SCALING
+
+                plan_result = arm.plan(single_plan_parameters=plan_params)
+
+                ok = False
+                if plan_result is not None:
+                    traj = getattr(plan_result, "trajectory", None)
+                    ok = traj is not None
+
+                if not ok:
+                    logger.warning("\n [Teleop] Planning failed (this increment)\n")
+                    tty_in.write_line("\n Planning failed\n")
+                    continue
+
+                if not execute_trajectory_with_fallback(robot, plan_result.trajectory, CONTROLLER_NAMES):
+                    logger.warning("\n [Teleop] Excute failed (this increment)\n")
+                    tty_in.write_line("\n Execute failed\n")
+                    continue
+
+                logger.info(f"\n [Teleop] Move: dX={dx:.3f}, dY={dy:.3f}, dZ={dz:.3f}\n")
+                tty_in.write_line(f"\n Move: dX={dx:.3f} dY={dy:.3f} dZ={dz:.3f}\n")
+            except Exception as e:
+                logger.error(f"\n [Teleop] Planning/Execution error: {e}\n")
+                tty_in.write_line("\n Planning/Execution error\n")
                 continue
-
-            logger.info(f"[Teleop] Moved: dX={dx:.3f}, dY={dy:.3f}, dZ={dz:.3f}")
-        except Exception as e:
-            logger.error(f"[Teleop] Error during plan/execute: {e}")
-
-    logger.info("[Teleop] Exiting teleop loop.")
+    finally:
+        tty_in.close()
 
 
-def main() -> None:
+def main():
     rclpy.init()
     try:
         robot = MoveItPy(node_name=NODE_NAME)
 
-        # Allow planning scene to sync with current joint states
-        time.sleep(PLANNING_SCENE_SYNC_DELAY)
-
-        # Force an initial state update
+        time.sleep(0.2)
         psm = robot.get_planning_scene_monitor()
         with psm.read_write() as scene:
             scene.current_state.update()
 
-        # Determine group and tip link automatically
         arm_group_name = get_planning_group_name(robot)
         tip_link = get_tip_link_name(robot, arm_group_name)
 
-        # Enter keyboard teleoperation
-        keyboard_teleop_end_effector(
+        teleop_loop(
             robot=robot,
             arm_group_name=arm_group_name,
             tip_link=tip_link,
             initial_step_xy=DEFAULT_STEP_XY,
-            initial_step_z=DEFAULT_STEP_Z
+            initial_step_z=DEFAULT_STEP_Z,
         )
 
     except Exception as e:

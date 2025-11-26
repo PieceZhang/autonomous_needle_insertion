@@ -85,6 +85,7 @@ RUN apt-get update \
  && apt-get install -y \
       ros-$ROS_DISTRO-rmw-cyclonedds-cpp \
       python3-colcon-common-extensions \
+      python3-pip\
       git \
       build-essential \
       cmake \
@@ -101,12 +102,13 @@ RUN apt-get update \
       ros-$ROS_DISTRO-moveit-py \
       ros-$ROS_DISTRO-moveit-planners-ompl \
       ros-$ROS_DISTRO-moveit-ros-control-interface \
-      ros-$ROS_DISTRO-moveit-simple-controller-manager\
-      pynput
+      ros-$ROS_DISTRO-moveit-simple-controller-manager
 #      ros-$ROS_DISTRO-launch-param-builder \
 #      ros-$ROS_DISTRO-moveit-configs-utils
 # && rm -rf /var/lib/apt/lists/* \
 
+RUN python3 -m pip install --no-cache-dir pynput --break-system-packages \
+  && python3 -m pip install --no-cache-dir prompt-toolkit --break-system-packages
 
 # --- Build NDI ROS 2 driver from local source into /opt/ndi_ws ---
 ARG WS=/opt/ndi_ws
