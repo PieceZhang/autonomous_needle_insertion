@@ -101,9 +101,17 @@ RUN apt-get update \
       ros-$ROS_DISTRO-moveit-py \
       ros-$ROS_DISTRO-moveit-planners-ompl \
       ros-$ROS_DISTRO-moveit-ros-control-interface \
-      ros-$ROS_DISTRO-moveit-simple-controller-manager
+      ros-$ROS_DISTRO-moveit-simple-controller-manager \
 #      ros-$ROS_DISTRO-launch-param-builder \
-#      ros-$ROS_DISTRO-moveit-configs-utils
+#      ros-$ROS_DISTRO-moveit-configs-utils \
+      libgstreamer1.0-dev \
+      libgstreamer-plugins-base1.0-dev \
+      gstreamer1.0-tools \
+      gstreamer1.0-plugins-base \
+      gstreamer1.0-plugins-good \
+      gstreamer1.0-plugins-bad \
+      gstreamer1.0-plugins-ugly \
+      gstreamer1.0-libav
 # && rm -rf /var/lib/apt/lists/* \
 
 
@@ -113,6 +121,7 @@ ARG WS=/opt/ndi_ws
 # Prepare workspace and copy local subtree (ensure .dockerignore does not exclude it)
 RUN mkdir -p ${WS}/src
 COPY ndi_ros2_driver ${WS}/src/ndi_ros2_driver
+COPY third_party/gscam2 ${WS}/src/gscam2
 
 RUN set -eo pipefail \
  && rosdep init || true \
