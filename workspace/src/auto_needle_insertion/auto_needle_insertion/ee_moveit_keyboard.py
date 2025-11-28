@@ -162,6 +162,39 @@ def axis_angle_to_quat(
     return np.array([axis[0] * s, axis[1] * s, axis[2] * s, c], dtype=float)
 
 
+# -------------------- Debug related -------------------------- #
+def quat_to_rotmat(
+    q: np.ndarray
+) -> np.ndarray:
+    """
+        Construct a rotation matrix from quaterion
+    """
+    x, y, z, w = q
+    xx, yy, zz = x*x, y*y, z*z
+    xy, xz, yz = x*y, x*z, y*z
+    wx, wy, wz = w*x, w*y, w*z
+    R = np.array([
+        [2*(w*w+xx)-1, 2*(xy-wz),    2*(xz+wy)],
+        [2*(xy+wz),   2*(w*w+yy)-1,  2*(yz-wx)],
+        [2*(xz-wy),   2*(yz+wx),     2*(w*w+zz)-1]
+    ])
+    return R
+
+def euler_x_to_rotmat(
+    theta: np.ndarray
+) -> np.ndarray:
+    """
+        Construct a rotation matrix from euler angle (x)
+    """
+    R = np.array([
+        [1, 0, 0],
+        [0, np.cos(theta), -np.sin(theta)],
+        [0, np.sin(theta), np.cos(theta)]
+    ])
+    return R
+# -------------------- Debug related -------------------------- #
+
+
 def create_pose_stamped_local_increment(
     robot: MoveItPy,
     tip_link: str,
@@ -199,9 +232,9 @@ def create_pose_stamped_local_increment(
         dtype=float
     )
 
-    q_rx = axis_angle_to_quat(x_axis, droll_rad) if abs(droll_rad) > 1e-12 else np.array([0.0, 0.0, 0.0, 1.0])
-    q_ry = axis_angle_to_quat(y_axis, dpitch_rad) if abs(dpitch_rad) > 1e-12 else np.array([0.0, 0.0, 0.0, 1.0])
-    q_rz = axis_angle_to_quat(z_axis, dyaw_rad) if abs(dyaw_rad) > 1e-12 else np.array([0.0, 0.0, 0.0, 1.0])
+    q_rx = axis_angle_to_quat(np.array([1,0,0]), droll_rad) if abs(droll_rad) > 1e-12 else np.array([0.0, 0.0, 0.0, 1.0])
+    q_ry = axis_angle_to_quat(np.array([0,1,0]), dpitch_rad) if abs(dpitch_rad) > 1e-12 else np.array([0.0, 0.0, 0.0, 1.0])
+    q_rz = axis_angle_to_quat(np.array([0,0,1]), dyaw_rad) if abs(dyaw_rad) > 1e-12 else np.array([0.0, 0.0, 0.0, 1.0])
 
     q_inc = quat_multiply(quat_multiply(q_rx, q_ry), q_rz)
     q_target = quat_normalize(quat_multiply(q_curr, q_inc))
@@ -409,7 +442,7 @@ def teleop_loop(
     _help_text(step_xy, step_z, angle_deg)
 
     tty_in = TTYInput()
-    tty_in.write_line("\nTeleop: Arrows/W/S--move, +/- set step llength, H-help, Q-Exit\n")
+    # tty_in.write_line("\nTeleop: Arrows/W/S--move, +/- set step llength, H-help, Q-Exit\n")
 
     try:
         while rclpy.ok():
@@ -426,7 +459,7 @@ def teleop_loop(
             # Help
             if ch in (ORD_h, ORD_H):
                 _help_text(step_xy, step_z, angle_deg)
-                tty_in.write_line("\n Show the help\n")
+                # tty_in.write_line("\n Show the help\n")
                 continue
 
             # Translation step length adjustment
@@ -434,27 +467,27 @@ def teleop_loop(
                 step_xy = min(STEP_MAX, step_xy * STEP_SCALE_UP)
                 step_z = min(STEP_MAX, step_z * STEP_SCALE_UP)
                 logger.info(f"\n [Teleop] increase step length: XY={step_xy:.3f} m, Z={step_z:.3f} m\n")
-                tty_in.write_line(f"\n increase step length: XY={step_xy:.3f} Z={step_z:.3f}\n")
+                # tty_in.write_line(f"\n increase step length: XY={step_xy:.3f} Z={step_z:.3f}\n")
                 continue
 
             if ch == ORD_MINUS:
                 step_xy = max(STEP_MIN, step_xy * STEP_SCALE_DOWN)
                 step_z = max(STEP_MIN, step_z * STEP_SCALE_DOWN)
                 logger.info(f"\n [Teleop] decrease step length: XY={step_xy:.3f} m, Z={step_z:.3f} m\n")
-                tty_in.write_line(f"\n decrease step length: XY={step_xy:.3f} Z={step_z:.3f}\n")
+                # tty_in.write_line(f"\n decrease step length: XY={step_xy:.3f} Z={step_z:.3f}\n")
                 continue
 
             # Rotation step length adjustment
             if ch in (ORD_ORI_PLUS, ORD_ori_plus):
                 angle_deg = min(ANGLE_MAX_DEG, angle_deg * ANGLE_SCALE_UP)
                 logger.info(f"[Teleop] Increase rotation step: Angle={angle_deg:.2f} deg")
-                tty_in.write_line(f"Angle step={angle_deg:.2f} deg")
+                # tty_in.write_line(f"Angle step={angle_deg:.2f} deg")
                 continue
 
             if ch in (ORD_ORI_DEC, ORD_ori_dec):
                 angle_deg = max(ANGLE_MIN_DEG, angle_deg * ANGLE_SCALE_DOWN)
                 logger.info(f"[Teleop] Decrease rotation step: Angle={angle_deg:.2f} deg")
-                tty_in.write_line(f"Angle step={angle_deg:.2f} deg")
+                # tty_in.write_line(f"Angle step={angle_deg:.2f} deg")
                 continue
 
             # Move and rotate
@@ -517,27 +550,25 @@ def teleop_loop(
 
                 if not ok:
                     logger.warning("\n [Teleop] Planning failed (this increment)\n")
-                    tty_in.write_line("\n Planning failed\n")
+                    # tty_in.write_line("\n Planning failed\n")
                     continue
 
                 if not execute_trajectory_with_fallback(robot, plan_result.trajectory, CONTROLLER_NAMES):
                     logger.warning("\n [Teleop] Excute failed (this increment)\n")
-                    tty_in.write_line("\n Execute failed\n")
+                    # tty_in.write_line("\n Execute failed\n")
                     continue
 
-                # logger.info(f"\n [Teleop] Move: dX={dx:.3f}, dY={dy:.3f}, dZ={dz:.3f}\n")
-                # tty_in.write_line(f"\n Move: dX={dx:.3f} dY={dy:.3f} dZ={dz:.3f}\n")
                 logger.info(
                     "[Teleop] Move: dX=%.3f, dY=%.3f, dZ=%.3f, dR=%.2fdeg, dP=%.2fdeg, dY=%.2fdeg"
                     % (dx, dy, dz, np.degrees(droll), np.degrees(dpitch), np.degrees(dyaw))
                 )
-                tty_in.write_line(
-                    "Move dX=%.3f dY=%.3f dZ=%.3f dR=%.2f dP=%.2f dY=%.2f"
-                    % (dx, dy, dz, np.degrees(droll), np.degrees(dpitch), np.degrees(dyaw))
-                )
+                # tty_in.write_line(
+                #     "Move dX=%.3f dY=%.3f dZ=%.3f dR=%.2f dP=%.2f dY=%.2f"
+                #     % (dx, dy, dz, np.degrees(droll), np.degrees(dpitch), np.degrees(dyaw))
+                # )
             except Exception as e:
                 logger.error(f"\n [Teleop] Planning/Execution error: {e}\n")
-                tty_in.write_line("\n Planning/Execution error\n")
+                # tty_in.write_line("\n Planning/Execution error\n")
                 continue
     finally:
         tty_in.close()
