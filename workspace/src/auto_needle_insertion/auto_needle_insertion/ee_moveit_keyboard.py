@@ -7,7 +7,11 @@ Controls (default):
   - Arrow Right/Left:  +X / -X  (right/left when facing the flange)
   - Arrow Up/Down:     +Y / -Y  (flange face pointing outward is +Y)
   - W / S:             +Z / -Z
-  - + / -:             increase/decrease step (xy & z together)
+  - + (or =) / -:      increase/decrease step (xy & z together)
+  - R / E:             +roll / -roll   (local X axis)
+  - P / O:             +pitch / -pitch (local Y axis)
+  - Y / T:             +yaw / -yaw     (local Z axis)
+  - I / D:             increase/decrease rotation step (degrees)
   - H:                 show help
   - Space:             no-op (useful for refresh)
   - Q:                 quit
@@ -26,7 +30,7 @@ import fcntl
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Quaternion
 from moveit.planning import MoveItPy, PlanRequestParameters
 
 logging.basicConfig(level=logging.INFO)
@@ -34,6 +38,8 @@ logger = logging.getLogger("auto_needle_insertion.ee_moveit_keyboard")
 
 
 NODE_NAME = "auto_needle_insertion"
+
+# Translation steps
 DEFAULT_STEP_XY = 0.01  # m
 DEFAULT_STEP_Z = 0.01   # m
 STEP_MIN = 0.001
@@ -43,6 +49,13 @@ STEP_SCALE_DOWN = 1.0 / STEP_SCALE_UP
 
 MAX_VELOCITY_SCALING = 0.1
 MAX_ACCELERATION_SCALING = 0.1
+
+# Rotation steps (degrees)
+DEFAULT_ANGLE_DEG = 2.0  
+ANGLE_MIN_DEG = 0.2
+ANGLE_MAX_DEG = 15
+ANGLE_SCALE_UP = 1.5
+ANGLE_SCALE_DOWN = 1.0 / ANGLE_SCALE_UP
 
 CONTROLLER_NAMES = [
     "scaled_joint_trajectory_controller",
@@ -90,6 +103,65 @@ def execute_trajectory_with_fallback(robot: MoveItPy, trajectory, controllers: L
     return False
 
 
+def quaternion_from_xyzw(
+    q: tuple[float, float, float, float]
+) -> Quaternion:
+    """
+        Create Quaternion message from (x,y,z,w) tuple.
+    """
+    quat = Quaternion()
+    quat.x = float(q[0])
+    quat.y = float(q[1])
+    quat.z = float(q[2])
+    quat.w = float(q[3])
+    return quat
+
+
+def quat_multiply(
+    q1: np.ndarray, 
+    q2: np.ndarray
+) -> np.ndarray:
+    """
+        Multiply two quaternions: q = q1 * q2
+    """
+    x1, y1, z1, w1 = q1
+    x2, y2, z2, w2 = q2
+    x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+    y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+    z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+    w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+    return np.array([x, y, z, w], dtype=float)
+
+
+def quat_normalize(
+    q: np.ndarray
+) -> np.ndarray:
+    """
+        Normalize quaternion to unit length.
+    """
+    n = np.linalg.norm(q)
+    if n < 1e-16:
+        return np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
+    return q / n
+
+
+def axis_angle_to_quat(
+    axis: np.ndarray, 
+    angle_rad: float
+) -> np.ndarray:
+    """
+        Convert axis-angle to quaternion.
+    """
+    axis = np.asarray(axis, dtype=float)
+    n = np.linalg.norm(axis)
+    if n < 1e-16:
+        return np.array([0.0, 0.0, 0.0, 1.0], dtype=float)
+    axis = axis / n
+    s = np.sin(angle_rad / 2.0)
+    c = np.cos(angle_rad / 2.0)
+    return np.array([axis[0] * s, axis[1] * s, axis[2] * s, c], dtype=float)
+
+
 def create_pose_stamped_local_increment(
     robot: MoveItPy,
     tip_link: str,
@@ -97,9 +169,14 @@ def create_pose_stamped_local_increment(
     dx: float,
     dy: float,
     dz: float,
+    droll_rad: float,
+    dpitch_rad: float,
+    dyaw_rad: float,
 ) -> PoseStamped:
     """
         Read current transform, apply local-frame translation (dx,dy,dz).
+        Rotations are applied in local frame by composing current orientation with incremental quats:
+        q_target = q_curr * (Rx(droll) * Ry(dpitch) * Rz(dyaw))
     """
     psm = robot.get_planning_scene_monitor()
     with psm.read_only() as scene:
@@ -115,33 +192,46 @@ def create_pose_stamped_local_increment(
 
     target = origin + dx * x_axis + dy * y_axis + dz * z_axis
 
+    # Current orientation -> [x, y, z, w]
+    q_curr = np.array(
+        [current_pose.orientation.x, current_pose.orientation.y,
+         current_pose.orientation.z, current_pose.orientation.w],
+        dtype=float
+    )
+
+    q_rx = axis_angle_to_quat(x_axis, droll_rad) if abs(droll_rad) > 1e-12 else np.array([0.0, 0.0, 0.0, 1.0])
+    q_ry = axis_angle_to_quat(y_axis, dpitch_rad) if abs(dpitch_rad) > 1e-12 else np.array([0.0, 0.0, 0.0, 1.0])
+    q_rz = axis_angle_to_quat(z_axis, dyaw_rad) if abs(dyaw_rad) > 1e-12 else np.array([0.0, 0.0, 0.0, 1.0])
+
+    q_inc = quat_multiply(quat_multiply(q_rx, q_ry), q_rz)
+    q_target = quat_normalize(quat_multiply(q_curr, q_inc))
+
     pose_stamped = PoseStamped()
     pose_stamped.header.frame_id = planning_frame
     pose_stamped.pose.position.x = float(target[0])
     pose_stamped.pose.position.y = float(target[1])
     pose_stamped.pose.position.z = float(target[2])
-    pose_stamped.pose.orientation = current_pose.orientation  # lock orientation
+    # pose_stamped.pose.orientation = current_pose.orientation  # lock orientation
+    pose_stamped.pose.orientation = quaternion_from_xyzw(tuple(q_target.tolist()))
     return pose_stamped
 
 
 def _help_text(
     step_xy: float, 
     step_z: float, 
-    angle_x: float,
-    angle_y: float,
-    angle_z: float
+    angle_deg: float,
 ) -> None:
     logger.info(
         "[Teleop Help]\n"
         " Arrows: X/Y moves (Right=+X, Left=-X, Up=+Y, Down=-Y)\n"
         " W/S:    Z move (+Z/-Z)\n"
-        " + / - : Increase / Decrease translation step (current: xy=%.3f m, z=%.3f m)\n"
+        " +(=)/-: Inc./Dec. translation (current: xy=%.3f m, z=%.3f m)\n"
         " R/P/Y:  Rotate counterclockwise (+)\n"
         " E/O/T:  Rotate clockwise (-)"
-        " I / D:  Increase / Decrease rotation step"
+        " I / D:  Inc./Dec. rotation (current: %.2f deg)"
         " Space:  no-op\n"
         " H:      help\n"
-        " Q:      quit\n" % (step_xy, step_z)
+        " Q:      quit\n" % (step_xy, step_z, angle_deg)
     )
 
 class TTYInput:
@@ -298,9 +388,10 @@ def teleop_loop(
     tip_link: str,
     initial_step_xy: float,
     initial_step_z: float,
+    initial_angle_deg: float,
 ):
     """
-        Main teleop loop: incremental local-frame moves.
+        Main teleop loop: incremental local-frame moves and rotations.
     """
     psm = robot.get_planning_scene_monitor()
     with psm.read_only() as scene_ro:
@@ -309,12 +400,13 @@ def teleop_loop(
     arm = robot.get_planning_component(arm_group_name)
     step_xy = float(initial_step_xy)
     step_z = float(initial_step_z)
+    angle_deg = float(initial_angle_deg)
 
     logger.info(f"[Teleop] Planning group: {arm_group_name}")
     logger.info(f"[Teleop] Tip link: {tip_link}")
     logger.info(f"[Teleop] Planning frame: {planning_frame}")
     logger.info(f"[Teleop] Initial step length: XY={step_xy:.3f} m, Z={step_z:.3f} m")
-    _help_text(step_xy, step_z)
+    _help_text(step_xy, step_z, angle_deg)
 
     tty_in = TTYInput()
     tty_in.write_line("\nTeleop: Arrows/W/S--move, +/- set step llength, H-help, Q-Exit\n")
@@ -333,7 +425,7 @@ def teleop_loop(
 
             # Help
             if ch in (ORD_h, ORD_H):
-                _help_text(step_xy, step_z)
+                _help_text(step_xy, step_z, angle_deg)
                 tty_in.write_line("\n Show the help\n")
                 continue
 
@@ -353,9 +445,22 @@ def teleop_loop(
                 continue
 
             # Rotation step length adjustment
+            if ch in (ORD_ORI_PLUS, ORD_ori_plus):
+                angle_deg = min(ANGLE_MAX_DEG, angle_deg * ANGLE_SCALE_UP)
+                logger.info(f"[Teleop] Increase rotation step: Angle={angle_deg:.2f} deg")
+                tty_in.write_line(f"Angle step={angle_deg:.2f} deg")
+                continue
 
-            # Move
+            if ch in (ORD_ORI_DEC, ORD_ori_dec):
+                angle_deg = max(ANGLE_MIN_DEG, angle_deg * ANGLE_SCALE_DOWN)
+                logger.info(f"[Teleop] Decrease rotation step: Angle={angle_deg:.2f} deg")
+                tty_in.write_line(f"Angle step={angle_deg:.2f} deg")
+                continue
+
+            # Move and rotate
             dx = dy = dz = 0.0
+            droll = dpitch = dyaw = 0.0
+
             if ch == KEY_RIGHT:
                 dx = +step_xy
             elif ch == KEY_LEFT:
@@ -369,11 +474,17 @@ def teleop_loop(
             elif ch in (ORD_s, ORD_S):
                 dz = -step_z
             elif ch in (ORD_roll, ORD_ROLL):
-                pass
+                droll = np.radians(+angle_deg)
+            elif ch in (ORD_n_roll, ORD_N_ROLL):
+                droll = np.radians(-angle_deg)
             elif ch in (ORD_pitch, ORD_PITCH):
-                pass
+                dpitch = np.radians(+angle_deg)
+            elif ch in (ORD_n_pitch, ORD_N_PITCH):
+                dpitch = np.radians(-angle_deg)
             elif ch in (ORD_yaw, ORD_YAW):
-                pass 
+                dyaw = np.radians(+angle_deg)  
+            elif ch in (ORD_n_yaw, ORD_N_YAW):
+                dyaw = np.radians(-angle_deg)
             elif ch == ORD_SPACE:
                 tty_in.write_line("\n Space: No-operation\n")
                 continue
@@ -385,7 +496,8 @@ def teleop_loop(
                 robot=robot,
                 tip_link=tip_link,
                 planning_frame=planning_frame,
-                dx=dx, dy=dy, dz=dz
+                dx=dx, dy=dy, dz=dz,
+                droll_rad=droll, dpitch_rad=dpitch, dyaw_rad=dyaw,
             )
 
             try:
@@ -413,8 +525,16 @@ def teleop_loop(
                     tty_in.write_line("\n Execute failed\n")
                     continue
 
-                logger.info(f"\n [Teleop] Move: dX={dx:.3f}, dY={dy:.3f}, dZ={dz:.3f}\n")
-                tty_in.write_line(f"\n Move: dX={dx:.3f} dY={dy:.3f} dZ={dz:.3f}\n")
+                # logger.info(f"\n [Teleop] Move: dX={dx:.3f}, dY={dy:.3f}, dZ={dz:.3f}\n")
+                # tty_in.write_line(f"\n Move: dX={dx:.3f} dY={dy:.3f} dZ={dz:.3f}\n")
+                logger.info(
+                    "[Teleop] Move: dX=%.3f, dY=%.3f, dZ=%.3f, dR=%.2fdeg, dP=%.2fdeg, dY=%.2fdeg"
+                    % (dx, dy, dz, np.degrees(droll), np.degrees(dpitch), np.degrees(dyaw))
+                )
+                tty_in.write_line(
+                    "Move dX=%.3f dY=%.3f dZ=%.3f dR=%.2f dP=%.2f dY=%.2f"
+                    % (dx, dy, dz, np.degrees(droll), np.degrees(dpitch), np.degrees(dyaw))
+                )
             except Exception as e:
                 logger.error(f"\n [Teleop] Planning/Execution error: {e}\n")
                 tty_in.write_line("\n Planning/Execution error\n")
@@ -442,6 +562,7 @@ def main():
             tip_link=tip_link,
             initial_step_xy=DEFAULT_STEP_XY,
             initial_step_z=DEFAULT_STEP_Z,
+            initial_angle_deg=DEFAULT_ANGLE_DEG,
         )
 
     except Exception as e:
