@@ -85,6 +85,7 @@ RUN apt-get update \
  && apt-get install -y \
       ros-$ROS_DISTRO-rmw-cyclonedds-cpp \
       python3-colcon-common-extensions \
+      python3-pip\
       git \
       build-essential \
       cmake \
@@ -114,6 +115,8 @@ RUN apt-get update \
       gstreamer1.0-libav
 # && rm -rf /var/lib/apt/lists/* \
 
+RUN python3 -m pip install --no-cache-dir pynput --break-system-packages \
+  && python3 -m pip install --no-cache-dir prompt-toolkit --break-system-packages
 
 # --- Build NDI ROS 2 driver from local source into /opt/ndi_ws ---
 ARG WS=/opt/ndi_ws
