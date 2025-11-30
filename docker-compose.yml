@@ -18,8 +18,12 @@ services:
       - RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
       - DISPLAY=${DISPLAY}
       - QT_X11_NO_MITSHM=1
+      - LIBGL_ALWAYS_SOFTWARE=1
       - ROS_HOME=${WS_DIR:-/ani_ws}/.ros
       - ROS_LOG_DIR=${WS_DIR:-/ani_ws}/.ros/log
+      - GSCAM_CONFIG=${GSCAM_CONFIG:-"rtspsrc location=rtsp://${POLARIS_IP}:554/video latency=100 protocols=udp drop-on-latency=true do-retransmission=false ! rtph264depay ! h264parse ! avdec_h264 ! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! videoconvert"}
+      - GSCAM_FRAME_ID=${GSCAM_FRAME_ID:-polaris_vt_camera}
+      - GSCAM_NAMESPACE=${GSCAM_NAMESPACE:-/polaris_camera}
     volumes:
       - ./workspace:${WS_DIR:-/ani_ws}:rw
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
@@ -71,7 +75,7 @@ services:
       start_period: 15s
     restart: unless-stopped
 
-  # Service 2: NDI Polaris driver (long-running)
+  # Service 3: NDI Polaris driver (long-running)
   polaris_driver:
     <<: *ros_common
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-polaris-driver"
@@ -90,7 +94,27 @@ services:
       start_period: 15s
     restart: unless-stopped
 
-  # Service 3: Container for development
+  # Service 4: NDI Polaris Vega VT camera driver (long-running)
+  polaris_camera_driver:
+    <<: *ros_common
+    container_name: "${COMPOSE_PROJECT_NAME:-ros2}-polaris-camera-driver"
+    profiles: ["default", "gscam2-test", "dev"]
+    command: >
+      bash -lc "
+        set -e;
+        if [ -f /opt/ndi_ws/install/setup.bash ]; then source /opt/ndi_ws/install/setup.bash; fi;
+        echo 'Starting gscam2 for Polaris Vega VT camera with config:' ${GSCAM_CONFIG};
+        ros2 run gscam2 gscam_main --ros-args -p frame_id:=vega_vt_camera -p camera_name:=vega_vt_visible -p image_encoding:=rgb8 -p use_gst_timestamps:=true -p sync_sink:=false -r image_raw:=vega_vt/image_raw -r camera_info:=vega_vt/camera_info
+      "
+    healthcheck:
+      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q '/vega_vt/image_raw'"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  # Service 4: Container for development
   dev:
     <<: *ros_common
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-dev"
@@ -99,6 +123,8 @@ services:
       ur_driver:
         condition: service_healthy
       polaris_driver:
+        condition: service_healthy
+      polaris_camera_driver:
         condition: service_healthy
     command: >
       bash -lc "
@@ -110,5 +136,23 @@ services:
         source ${WS_DIR:-/ani_ws}/install/setup.bash;
         echo 'Development container with all drivers';
         exec sleep infinity
+      "
+    restart: unless-stopped
+
+  # Service 5: Container for development
+  gscam2-test:
+    <<: *ros_common
+    container_name: "${COMPOSE_PROJECT_NAME:-ros2}-gscam2-test"
+    profiles: ["gscam2-test"]
+    depends_on:
+      polaris_camera_driver:
+        condition: service_healthy
+    command: >
+      bash -lc "
+        set -e;
+        if [ -f /opt/ros/$ROS_DISTRO/setup.bash ]; then source /opt/ros/$ROS_DISTRO/setup.bash; fi;
+        if [ -f /opt/ndi_ws/install/setup.bash ]; then source /opt/ndi_ws/install/setup.bash; fi;
+        echo 'Starting GUI for room camera ...';
+        ros2 run rqt_image_view rqt_image_view /vega_vt/image_raw
       "
     restart: unless-stopped

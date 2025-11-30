@@ -125,6 +125,7 @@ ARG WS=/opt/ndi_ws
 RUN mkdir -p ${WS}/src
 COPY ndi_ros2_driver ${WS}/src/ndi_ros2_driver
 COPY third_party/gscam2 ${WS}/src/gscam2
+COPY third_party/ros2_shared ${WS}/src/ros2_shared
 
 RUN set -eo pipefail \
  && rosdep init || true \
