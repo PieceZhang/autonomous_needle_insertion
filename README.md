@@ -1,21 +1,32 @@
-# Autonomous Needle Insertion Guided by Robotic Ultrasound
+#  Robotic Ultrasound-Guided Autonomous Needle Insertion (RUGANI)
+
+[![License](https://img.shields.io/badge/license-Apache%20License%202.0-blue)](LICENSE)
+[![Docker Pulls](https://img.shields.io/docker/pulls/your_dockerhub_username/your_image_name.svg)](https://hub.docker.com/r/your_dockerhub_username/your_image_name)
+
+## TL;DR
+End users can jump to **Quick start** to clone the repo, generate a `.env`, and bring up the stack.
+Administrators can refer to **For administrators** for host setup details.
+Interested developers can read **Under the hood** for architecture and implementation details.
 
 ## Overview
 This repository provides a reproducible, Dockerized ROS 2 workspace for autonomous needle insertion R&D guided by robotic ultrasound.
-It integrates a Universal Robots (UR) arm (hardware or mock), an NDI Polaris optical tracker, and an ultrasound system.
-The workspace includes MoveItPy‑based motion control in both trajectory (“profile”) and real‑time servo modes, along with calibration and monitoring utilities.
+It integrates a Universal Robots (UR) arm (hardware or mock), an NDI Polaris Vega VT optical tracker, and an ultrasound system.
+The workspace includes MoveItPy‑based robot motion control, RGB data collection, along with calibration and monitoring utilities.
 
 **Key features**
-- End‑effector profile‑tracing with MoveItPy.
+- Maker-based registration of pre-operative images to intra-operative tracker frame.
+- End‑effector profile‑tracing.
+- End‑effector mirroring tracker pose in servo mode.
+- Keyboard control of the end-effector in local frame.
 - Hand–eye calibration (UR + NDI Polaris) using OpenCV with residual checks.
 - Lightweight PoseStamped/TF tool‑pose reporter.
+- Integrated GStreamer pipeline for RGB data capture.
 - Docker Compose services:
   - `ur_driver` (UR5e hardware)
   - `ur_driver_mock` (mock hardware)
-  - `polaris_driver` (NDI)
+  - `polaris_driver` (optical tracking with NDI Polaris)
+  - `polaris_camera_driver` (RGB camera with NDI Polaris Vega VT)
   - `dev` (interactive shell with the workspace mounted)
-
-End users can jump to **Quick start** to clone the repo, generate a `.env`, and bring up the stack. Administrators can refer to **For administrators** for host setup details.
 
 ## Key concepts
 
@@ -32,6 +43,7 @@ End users can jump to **Quick start** to clone the repo, generate a `.env`, and 
 | **UR ROS 2 driver**        | The official ROS 2 driver for Universal Robots arm (e.g., UR5e); `UR_ROBOT_IP` points to the controller.                       |
 | **Mock hardware**          | Run the stack without real devices (simulated/mock drivers only) by setting `USE_MOCK_HARDWARE=true`.                          |
 | **NDI Polaris**            | Optical tracking system reporting tool poses in real time; `POLARIS_IP` is its host.                                           |
+| **GStreamer**              | Streaming service to capture RGB camera data; `gscam2` is a ROS 2 wrapper of it.                                               |
 | **Tailscale / tailnet**    | Mesh VPN used to reach lab devices remotely; a **tailnet** is the Tailscale network.                                           |
 
 ## Quick start
@@ -112,6 +124,9 @@ Download and build the images:
 ```bash
 docker compose build
 # It might take a while depending on your internet connection.
+
+# Optional: Sometimes you may want to get the latest base docker image and rebuild completely with:
+docker compose build --no-cache
 ```
 
 ### 4) Fire up hardware
@@ -135,12 +150,12 @@ Bring up the stack in the background:
 docker compose --profile dev up -d
 ```
 and wait for all the container health checks to pass.
-Check container status and logs with:
+In cases of failed health checks, get container status and logs with:
 ```bash
+# List all containers and their status:
 docker compose ps -a
-# and for example:
+# Then check the log of a container, for example:
 docker logs autonomous_needle_insertion-ur5e-driver 
-
 ```
 
 ### 6) Open a development shell
@@ -154,19 +169,36 @@ Run ROS 2 commands inside the container to start your experiments or development
 ros2 topic list
 ```
 
-### 7) Control the robot arm
+### 7) Available commands in the package
+In the container shell, you can run control commands from the auto_needle_insertion package and visualization commands.
+```bash
+# First source the package setup file to make ROS 2 aware of the package
+source install/setup.bash
+# Then launch a command
+ros2 somecommand ...
+```
+
+#### 7.1) Control the robot arm
 Run the external control program. On the UR pendant:
 > Press the play button to run the `ani_external_control` program.
 > 
 > If prompted error, check on the pendent in Installation -> URCaps -> External Control if the host IP setting is correct.
 
-In the container shell, you can run control commands from the auto_needle_insertion package.
-For example, to run a simple trajectory profile:
 ```bash
-# First source the package setup file to make ROS 2 aware of the package
-source install/setup.bash
-# Then launch a command
+# Some available commands are:
+# Run a simple trajectory profile:
 ros2 launch auto_needle_insertion move_robot.launch.py mode:=ee_moveit_square
+
+# Run keyboard control in the end-effector local frame:
+ros2 launch auto_needle_insertion move_robot.launch.py mode:=keyboard
+```
+
+#### 7.2) Bring up visualization for cameras
+```bash
+# First, check the available image topics:
+ros2 topic list | grep image
+# Then, for example, view the raw image from the Polaris Vega VT camera:
+ros2 run rqt_image_view rqt_image_view /vega_vt/image_raw
 ```
 
 ### 8) Stop / Remove
@@ -177,14 +209,15 @@ docker stop $(docker ps -q)
 
 ## Under the hood
 ### Repository & runtime layout
-- **Docker Compose orchestration.** `compose.yaml` declares four services that you enable via profiles and `.env` flags:
+- **Docker Compose orchestration.** `docker-compose.yaml` declares several services that you enable via profiles and `.env` flags:
   - **`dev`** – an interactive development container with the ROS 2 workspace mounted at `$WS_DIR`.
-  - **`ur_driver`** – Universal Robots ROS 2 driver for **physical** UR arms; enabled when `USE_MOCK_HARDWARE=false` and `UR_ROBOT_IP` is reachable.
+  - **`ur_driver`** – Universal Robots ROS 2 driver for the **physical** UR arm; enabled when `USE_MOCK_HARDWARE=false` and `UR_ROBOT_IP` is reachable.
   - **`ur_driver_mock`** – mock hardware for local development; enabled when `USE_MOCK_HARDWARE=true`.
   - **`polaris_driver`** – NDI Polaris client that publishes tracked tool poses; enabled when `POLARIS_IP` is set.
+  - **`polaris_camera_driver`** – Client that publishes camera stream from the NDI Polaris Vega VT; enabled when `POLARIS_IP` is set.
 - **Environment configuration.** `gen-dotenv.sh` generates a project `.env` (UID/GID, `WS_DIR`, `PACKAGE_NAME`, device IPs, and flags). Docker Compose reads these at launch to parameterize services.
-- **ROS 2 workspace.** The workspace mounted at `$WS_DIR` contains your package `${PACKAGE_NAME}`. Within it you will find:
-  - **Motion modules** based on *MoveItPy* for both trajectory (“profile”) planning/execution and real‑time servo control.
+- **ROS 2 workspace.** The workspace mounted at `$WS_DIR` contains the package `${PACKAGE_NAME}` under development. Within it you will find:
+  - **Motion modules** based on *MoveItPy* for trajectory (“profile”) planning/execution, real‑time servo control, and keyboard control.
   - **Calibration utilities** for hand–eye (robot↔tracker) and ultrasound probe/image plane.
   - **Monitoring tools** including a lightweight PoseStamped/TF tool‑pose reporter for downstream consumers.
 
@@ -195,6 +228,7 @@ docker stop $(docker ps -q)
    - *Probe calibration* provides the transform from the optical tracker to the ultrasound **image plane**. These transforms are broadcast as static TF and consumed by planning/servo and visualization nodes.
 3. **Motion layers.**
    - *Trajectory (“profile”) mode*: MoveIt 2 plans a collision‑aware path which the UR driver executes.
+   - *Keyboard control mode*: Built upon the trajectory mode, get incremental motion in all 6 axis of the end effector local frame.
    - *Real‑time servo mode*: small Cartesian/velocity commands are streamed for compliant, interactive motions.
 4. **State reporting.** A pose reporter publishes the tool pose (PoseStamped) and TF so external clients (UI, planners, logging) can subscribe.
 5. **Networking.** Drivers talk to hardware over the lab LAN; ROS 2 nodes discover each other inside the Compose network via DDS. No host‑side ROS 2 install is required.
@@ -215,6 +249,8 @@ docker stop $(docker ps -q)
   - **Universal Robots ROS 2 driver** for CB3/e‑Series controllers (connect using `UR_ROBOT_IP`).
 - **Tracking interface**
   - **NDI Polaris (Vega XT/VT/ST)** over the network, publishing 6‑DoF tool frames.
+- **Camera interface**
+    - **gscam2** for capturing video stream over the network.
 - **Ultrasound probe calibration (optional)**
   - Compatible with **PLUS Toolkit** N‑wire phantom–based workflows; the resulting transforms are consumed as static TF.
 
@@ -227,15 +263,14 @@ docker stop $(docker ps -q)
 ### Service lifecycle & health
 - Bring services up with `docker compose up --profile dev -d`; health checks ensure dependencies are ready.
 - If a health check fails, inspect the affected container’s logs to diagnose the problem (for example: `docker compose logs -f <service>`).
-- Stop and remove containers with `docker compose down` when finished.
 
 ## For administrators
 This section explains how to prepare a **host machine** to run the Dockerized ROS 2 workspace reliably.
 A Linux lab box is recommended; macOS/Windows hosts work via Docker Desktop.
 
 ### 1) Choose a host platform
-**Linux** is recommended. Choose Ubuntu 22.04 LTS or 24.04 LTS for best compatibility with ROS 2 and Docker.
-> Project‑level recommendations (not hard requirements): ≥4 physical cores (8 threads), 16 GB RAM, and ≥50 GB free SSD space for images/logs. Wired Ethernet to your device LAN is strongly preferred.
+**Linux** is recommended. Choose Ubuntu 22.04 LTS or 24.04 LTS for best compatibility with Docker.
+> Project‑level recommendations (not hard requirements): ≥ 4 physical cores (8 threads), 16 GB RAM, and ≥ 50 GB free SSD space for images/logs. Wired Ethernet LAN to your device is strongly preferred.
 
 ### 2) Install Git and Docker
 Install Git, Docker Engine and the Compose v2 plugin, then check with:
