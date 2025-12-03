@@ -9,6 +9,7 @@ services:
     image: aniros:jazzy-dev
     network_mode: "host"
     ipc: "host"
+    privileged: true
     working_dir: ${WS_DIR:-/ani_ws}
     stdin_open: true
     tty: true
@@ -29,6 +30,7 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /etc/passwd:/etc/passwd:ro
       - /etc/group:/etc/group:ro
+      - /dev:/dev
 
   # Service 1: UR driver (long-running)
   ur_driver:
@@ -114,7 +116,25 @@ services:
       start_period: 15s
     restart: unless-stopped
 
-  # Service 4: Container for development
+  # Service 5: RealSense driver (long-running)
+  realsense_driver:
+    <<: *ros_common
+    container_name: "${COMPOSE_PROJECT_NAME:-ros2}-realsense-driver"
+    profiles: ["default", "dev"]
+    command: >
+      bash -lc "
+        echo 'Starting RealSense driver';
+        ros2 launch realsense2_camera rs_launch.py
+      "
+    healthcheck:
+      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q '/camera/color/image_raw'"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  # Service 6: Container for development
   dev:
     <<: *ros_common
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-dev"
@@ -125,6 +145,8 @@ services:
       polaris_driver:
         condition: service_healthy
       polaris_camera_driver:
+        condition: service_healthy
+      realsense_driver:
         condition: service_healthy
     command: >
       bash -lc "
@@ -139,7 +161,7 @@ services:
       "
     restart: unless-stopped
 
-  # Service 5: Container for development
+  # Service 7: Container for testing gscam2
   gscam2-test:
     <<: *ros_common
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-gscam2-test"
