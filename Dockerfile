@@ -112,7 +112,8 @@ RUN apt-get update \
       gstreamer1.0-plugins-good \
       gstreamer1.0-plugins-bad \
       gstreamer1.0-plugins-ugly \
-      gstreamer1.0-libav
+      gstreamer1.0-libav \
+      ros-$ROS_DISTRO-realsense2-*
 # && rm -rf /var/lib/apt/lists/* \
 
 RUN python3 -m pip install --no-cache-dir pynput --break-system-packages \
