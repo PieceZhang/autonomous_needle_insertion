@@ -9,7 +9,6 @@ services:
     image: aniros:jazzy-dev
     network_mode: "host"
     ipc: "host"
-    privileged: true
     working_dir: ${WS_DIR:-/ani_ws}
     stdin_open: true
     tty: true
@@ -25,6 +24,9 @@ services:
       - GSCAM_CONFIG=${GSCAM_CONFIG:-"rtspsrc location=rtsp://${POLARIS_IP}:554/video latency=100 protocols=udp drop-on-latency=true do-retransmission=false ! rtph264depay ! h264parse ! avdec_h264 ! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! videoconvert"}
       - GSCAM_FRAME_ID=${GSCAM_FRAME_ID:-polaris_vt_camera}
       - GSCAM_NAMESPACE=${GSCAM_NAMESPACE:-/polaris_camera}
+    device_cgroup_rules:
+      - 'c 81:* rmw'   # V4L2 video devices
+      - 'c 189:* rmw'  # USB devices
     volumes:
       - ./workspace:${WS_DIR:-/ani_ws}:rw
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
