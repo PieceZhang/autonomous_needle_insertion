@@ -116,24 +116,29 @@ RUN apt-get update \
       ros-$ROS_DISTRO-realsense2-*
 # && rm -rf /var/lib/apt/lists/* \
 
-RUN python3 -m pip install --no-cache-dir pynput --break-system-packages \
-  && python3 -m pip install --no-cache-dir prompt-toolkit --break-system-packages
-
-# --- Build NDI ROS 2 driver from local source into /opt/ndi_ws ---
-ARG WS=/opt/ndi_ws
+# --- Build drivers from local source into their workspaces ---
+ARG NDI_WS=/opt/ndi_ws
+ARG ATI_WS=/opt/ati_ws
 
 # Prepare workspace and copy local subtree (ensure .dockerignore does not exclude it)
-RUN mkdir -p ${WS}/src
-COPY ndi_ros2_driver ${WS}/src/ndi_ros2_driver
-COPY third_party/gscam2 ${WS}/src/gscam2
-COPY third_party/ros2_shared ${WS}/src/ros2_shared
+RUN mkdir -p ${NDI_WS}/src ${ATI_WS}/src
+# NDI Polaris drivers
+COPY ndi_ros2_driver ${NDI_WS}/src/ndi_ros2_driver
+COPY third_party/gscam2 ${NDI_WS}/src/gscam2
+COPY third_party/ros2_shared ${NDI_WS}/src/ros2_shared
+# ATI Net F/T driver
+COPY third_party/ros2_net_ft_driver ${ATI_WS}/src/ros2_net_ft_driver
 
 RUN set -eo pipefail \
  && rosdep init || true \
  && rosdep update --rosdistro $ROS_DISTRO \
  && source /opt/ros/$ROS_DISTRO/setup.bash \
- && rosdep install --from-paths ${WS}/src -i -y --rosdistro $ROS_DISTRO \
- && colcon build --merge-install --base-paths ${WS}/src --install-base ${WS}/install
+ # Install and build NDI workspace
+ && rosdep install --from-paths ${NDI_WS}/src -i -y --rosdistro $ROS_DISTRO \
+ && colcon build --merge-install --base-paths ${NDI_WS}/src --install-base ${NDI_WS}/install \
+ # Install and build ATI workspace
+ && rosdep install --from-paths ${ATI_WS}/src -i -y --rosdistro $ROS_DISTRO \
+ && colcon build --merge-install --base-paths ${ATI_WS}/src --install-base ${ATI_WS}/install
 
 # --- ROS-aware Python & Pip wrappers for IDEs (PyCharm) ---
 RUN set -Eeuo pipefail; \
@@ -144,8 +149,8 @@ RUN set -Eeuo pipefail; \
   'fi' \
   '# Source any overlay workspaces if present' \
   'for ws in /opt/ndi_ws /ws /root/ws; do' \
-  '  if [ -f "$ws/install/setup.bash" ]; then' \
-  '    source "$ws/install/setup.bash"' \
+  '  if [ -f "$NDI_WS/install/setup.bash" ]; then' \
+  '    source "$NDI_WS/install/setup.bash"' \
   '  fi' \
   'done' \
   '# Hand off to the real interpreter' \
@@ -157,8 +162,8 @@ RUN set -Eeuo pipefail; \
   '  source "/opt/ros/$ROS_DISTRO/setup.bash"' \
   'fi' \
   'for ws in /opt/ndi_ws /ws /root/ws; do' \
-  '  if [ -f "$ws/install/setup.bash" ]; then' \
-  '    source "$ws/install/setup.bash"' \
+  '  if [ -f "$NDI_WS/install/setup.bash" ]; then' \
+  '    source "$NDI_WS/install/setup.bash"' \
   '  fi' \
   'done' \
   'exec /usr/bin/python3 -m pip "$@"' \

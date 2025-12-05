@@ -27,6 +27,7 @@ The workspace includes MoveItPy‑based robot motion control, RGB data collectio
   - `polaris_driver` (optical tracking with NDI Polaris)
   - `polaris_camera_driver` (RGB camera with NDI Polaris Vega VT)
   - `realsense_driver` (Intel Realsense)
+  - `ati_ft_driver` (ATI F/T sensor)
   - `dev` (interactive shell with the workspace mounted)
 
 ## Key concepts
@@ -208,14 +209,23 @@ Stop all the containers in one go:
 docker stop $(docker ps -q)
 ```
 
+## Key ROS 2 topics
+| Topic name                 | Data type      | Published by service  | Data source     |
+|----------------------------|----------------|-----------------------|-----------------|
+| /vega_vt/image_raw         | Video stream   | polaris_camera_driver | Polaris Vega VT |
+| /camera/color/image_raw    | Video stream   | realsense_driver      | Realsense       |
+| /ati_ft_broadcaster/wrench | Force / Torque | ati_ft_driver         | ATI Axia80-M8   |
+
 ## Under the hood
 ### Repository & runtime layout
 - **Docker Compose orchestration.** `docker-compose.yaml` declares several services that you enable via profiles and `.env` flags:
   - **`dev`** – an interactive development container with the ROS 2 workspace mounted at `$WS_DIR`.
   - **`ur_driver`** – Universal Robots ROS 2 driver for the **physical** UR arm; enabled when `USE_MOCK_HARDWARE=false` and `UR_ROBOT_IP` is reachable.
   - **`ur_driver_mock`** – mock hardware for local development; enabled when `USE_MOCK_HARDWARE=true`.
-  - **`polaris_driver`** – NDI Polaris client that publishes tracked tool poses; enabled when `POLARIS_IP` is set.
-  - **`polaris_camera_driver`** – Client that publishes camera stream from the NDI Polaris Vega VT; enabled when `POLARIS_IP` is set.
+  - **`polaris_driver`** –  service that publishes tracked tool poses from NDI Polaris; enabled when `POLARIS_IP` is set.
+  - **`polaris_camera_driver`** – Service that publishes camera stream from the NDI Polaris Vega VT; enabled when `POLARIS_IP` is set.
+  - **`realsense_driver`** – Service that publishes camera stream from Realsense.
+  - **`ati_ft_driver`** – Service that publishes force and torque from ATI F/T sensors.
 - **Environment configuration.** `gen-dotenv.sh` generates a project `.env` (UID/GID, `WS_DIR`, `PACKAGE_NAME`, device IPs, and flags). Docker Compose reads these at launch to parameterize services.
 - **ROS 2 workspace.** The workspace mounted at `$WS_DIR` contains the package `${PACKAGE_NAME}` under development. Within it you will find:
   - **Motion modules** based on *MoveItPy* for trajectory (“profile”) planning/execution, real‑time servo control, and keyboard control.
