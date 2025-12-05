@@ -136,7 +136,26 @@ services:
       start_period: 15s
     restart: unless-stopped
 
-  # Service 6: Container for development
+  # Service 6: RealSense driver (long-running)
+  ati_ft_driver:
+    <<: *ros_common
+    container_name: "${COMPOSE_PROJECT_NAME:-ros2}-ati-ft-driver"
+    profiles: ["default", "dev"]
+    command: >
+      bash -lc "
+        if [ -f /opt/ati_ws/install/setup.bash ]; then source /opt/ati_ws/install/setup.bash; fi;
+        echo 'Starting ATI F/T sensor driver';
+        ros2 launch net_ft_driver net_ft_broadcaster_isolated.launch.py ip_address:=192.168.56.8 sensor_type:=ati_axia rdt_sampling_rate:=500
+      "
+    healthcheck:
+      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q '/force_torque_sensor_broadcaster/wrench'"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  # Service 7: Container for development
   dev:
     <<: *ros_common
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-dev"
@@ -149,6 +168,8 @@ services:
       polaris_camera_driver:
         condition: service_healthy
       realsense_driver:
+        condition: service_healthy
+      ati_ft_driver:
         condition: service_healthy
     command: >
       bash -lc "
@@ -163,7 +184,7 @@ services:
       "
     restart: unless-stopped
 
-  # Service 7: Container for testing gscam2
+  # Service 8: Container for testing gscam2
   gscam2-test:
     <<: *ros_common
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-gscam2-test"
