@@ -138,7 +138,7 @@ RUN set -eo pipefail \
  && source /opt/ros/$ROS_DISTRO/setup.bash \
  # Install and build NDI workspace
  && rosdep install --from-paths ${NDI_WS}/src -i -y --rosdistro $ROS_DISTRO \
- && colcon build --merge-install --base-paths ${NDI_WS}/src --install-base ${NDI_WS}/install
+ && colcon build --merge-install --base-paths ${NDI_WS}/src --install-base ${NDI_WS}/install \
  # Install and build ATI workspace
  && rosdep install --from-paths ${ATI_WS}/src -i -y --rosdistro $ROS_DISTRO \
  && colcon build --merge-install --base-paths ${ATI_WS}/src --install-base ${ATI_WS}/install
