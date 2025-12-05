@@ -1,14 +1,14 @@
-ft_controller_manager:
+ati_controller_manager:
   ros__parameters:
     update_rate: 500  # Hz
 
-    force_torque_sensor_broadcaster:
+    ati_ft_broadcaster:
       type: force_torque_sensor_broadcaster/ForceTorqueSensorBroadcaster
 
     net_ft_diagnostic_broadcaster:
       type: net_ft_diagnostic_broadcaster/NetFTDiagnosticBroadcaster
 
-force_torque_sensor_broadcaster:
+ati_ft_broadcaster:
   ros__parameters:
     sensor_name: tcp_fts_sensor
     state_interface_names:

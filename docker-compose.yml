@@ -148,7 +148,7 @@ services:
         ros2 launch net_ft_driver net_ft_broadcaster_isolated.launch.py ip_address:=192.168.56.8 sensor_type:=ati_axia rdt_sampling_rate:=500
       "
     healthcheck:
-      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q '/force_torque_sensor_broadcaster/wrench'"]
+      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q '/ati_ft_broadcaster/wrench'"]
       interval: 5s
       timeout: 3s
       retries: 5

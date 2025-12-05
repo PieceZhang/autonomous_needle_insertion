@@ -82,7 +82,7 @@ def launch_setup(context, *args, **kwargs):
 
     # Separate robot_description topic for the F/T sensor
     remappings = [
-        ("/robot_description", "/ft_robot_description"),
+        ("/robot_description", "/ati_robot_description"),
     ]
 
     control_node = launch_ros.actions.Node(
@@ -92,7 +92,7 @@ def launch_setup(context, *args, **kwargs):
         remappings=remappings,
         output="screen",
         # IMPORTANT: give this controller manager a unique name to avoid conflict with the ur ros2 driver
-        name="ft_controller_manager",
+        name="ati_controller_manager",
     )
 
     robot_state_publisher_node = launch_ros.actions.Node(
@@ -107,10 +107,10 @@ def launch_setup(context, *args, **kwargs):
         package="controller_manager",
         executable="spawner",
         arguments=[
-            "force_torque_sensor_broadcaster",
+            "ati_ft_broadcaster",
             "--controller-manager",
-            # IMPORTANT: point to the FT controller manager instead of the default control manager
-            "/ft_controller_manager",
+            # IMPORTANT: point to the ATI controller manager instead of the default control manager
+            "/ati_controller_manager",
         ],
     )
 
@@ -120,8 +120,8 @@ def launch_setup(context, *args, **kwargs):
         arguments=[
             "net_ft_diagnostic_broadcaster",
             "-c",
-            # IMPORTANT: point to the FT controller manager instead of the default control manager
-            "/ft_controller_manager",
+            # IMPORTANT: point to the ATI controller manager instead of the default control manager
+            "/ati_controller_manager",
         ],
     )
 
