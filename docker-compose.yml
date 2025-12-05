@@ -143,7 +143,7 @@ services:
       bash -lc "
         if [ -f /opt/ati_ws/install/setup.bash ]; then source /opt/ati_ws/install/setup.bash; fi;
         echo 'Starting ATI F/T sensor driver';
-        ros2 launch net_ft_driver net_ft_broadcaster_isolated.launch.py ip_address:=${ATI_SENSOR_IP} sensor_type:=${ATI_SENSOR_TYPE} rdt_sampling_rate:=${ATI_SAMPLING_RATE}
+        ros2 launch net_ft_driver net_ft_broadcaster_isolated.launch.py ip_address:=${ATI_SENSOR_IP} sensor_type:=${ATI_SENSOR_TYPE} rdt_sampling_rate:=${ATI_SAMPLING_RATE} use_hardware_biasing:=${ATI_HARDWARE_BIASING}
       "
     healthcheck:
       test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q '/ati_ft_broadcaster/wrench'"]
