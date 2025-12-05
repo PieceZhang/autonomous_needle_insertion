@@ -1,0 +1,18 @@
+pull_request_rules:
+  - name: Backport to humble branch
+    conditions:
+      - base=rolling
+      - label=backport-humble
+    actions:
+      backport:
+        branches:
+          - humble
+
+  - name: Backport to galactic branch
+    conditions:
+      - base=rolling
+      - label=backport-galactic
+    actions:
+      backport:
+        branches:
+          - galactic
