@@ -26,6 +26,7 @@ The workspace includes MoveItPy‑based robot motion control, RGB data collectio
   - `ur_driver_mock` (mock hardware)
   - `polaris_driver` (optical tracking with NDI Polaris)
   - `polaris_camera_driver` (RGB camera with NDI Polaris Vega VT)
+  - `realsense_driver` (Intel Realsense)
   - `dev` (interactive shell with the workspace mounted)
 
 ## Key concepts
