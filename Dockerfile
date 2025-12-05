@@ -116,9 +116,6 @@ RUN apt-get update \
       ros-$ROS_DISTRO-realsense2-*
 # && rm -rf /var/lib/apt/lists/* \
 
-RUN python3 -m pip install --no-cache-dir pynput --break-system-packages \
-  && python3 -m pip install --no-cache-dir prompt-toolkit --break-system-packages
-
 # --- Build drivers from local source into their workspaces ---
 ARG NDI_WS=/opt/ndi_ws
 ARG ATI_WS=/opt/ati_ws
