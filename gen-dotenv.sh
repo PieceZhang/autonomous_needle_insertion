@@ -6,10 +6,12 @@
 #   ./gen-dotenv.sh --from-dir-owner ./workspace   # use owner of a directory
 
 # Generated variables (overridable via environment at run time):
-#   UID, GID, WS_DIR, PACKAGE_NAME,
-#   UR_ROBOT_IP, USE_MOCK_HARDWARE,
-#   POLARIS_IP,
-#   ATI_SENSOR_IP, ATI_SENSOR_TYPE, ATI_SAMPLING_RATE
+#   Group 1: UID, GID, WS_DIR, PACKAGE_NAME
+#   Group 2: UR_ROBOT_IP, USE_MOCK_HARDWARE
+#   Group 3: POLARIS_IP
+#   Group 4: GSCAM_LATENCY, GSCAM_PROTOCOL, GSCAM_VIDEO_WIDTH, GSCAM_VIDEO_HEIGHT
+#   Group 5: ATI_SENSOR_IP, ATI_SENSOR_TYPE, ATI_SAMPLING_RATE
+#
 # Example overrides:
 #   WS_DIR=/custom_ws UR_ROBOT_IP=10.0.0.5 ATI_SENSOR_IP=10.0.0.10 ./gen-dotenv.sh
 
@@ -50,8 +52,6 @@ else
   uid="$(id -u)"
   gid="$(id -g)"
 fi
-
-# Before writing the .env file, confirm overwrite if it already exists
 
 # If .env exists, confirm overwrite; otherwise, proceed to create a new one.
 if [[ -e "${ENV_FILE}" ]]; then
@@ -97,7 +97,15 @@ fi
 
   echo
 
-  # Group 4: ATI force/torque sensor
+  # Group 4: GSCAM configuration
+  echo "GSCAM_LATENCY=${GSCAM_LATENCY:-20}"
+  echo "GSCAM_PROTOCOL=${GSCAM_PROTOCOL:-udp}"
+  echo "GSCAM_VIDEO_WIDTH=${GSCAM_VIDEO_WIDTH:-640}"
+  echo "GSCAM_VIDEO_HEIGHT=${GSCAM_VIDEO_HEIGHT:-480}"
+
+  echo
+
+  # Group 5: ATI force/torque sensor
   echo "ATI_SENSOR_IP=${ATI_SENSOR_IP:-192.168.56.8}"
   echo "ATI_SENSOR_TYPE=${ATI_SENSOR_TYPE:-ati_axia}"
   echo "ATI_SAMPLING_RATE=${ATI_SAMPLING_RATE:-500}"
@@ -107,4 +115,5 @@ echo "Wrote ${ENV_FILE} with:"
 echo "  [Group 1] UID=${uid}, GID=${gid}, WS_DIR=${WS_DIR:-/ani_ws}, PACKAGE_NAME=${PACKAGE_NAME:-auto_needle_insertion}"
 echo "  [Group 2] UR_ROBOT_IP=${UR_ROBOT_IP:-192.168.56.2}, USE_MOCK_HARDWARE=${USE_MOCK_HARDWARE:-true}"
 echo "  [Group 3] POLARIS_IP=${POLARIS_IP:-192.168.56.5}"
-echo "  [Group 4] ATI_SENSOR_IP=${ATI_SENSOR_IP:-192.168.56.8}, ATI_SENSOR_TYPE=${ATI_SENSOR_TYPE:-ati_axia}, ATI_SAMPLING_RATE=${ATI_SAMPLING_RATE:-500}"
+echo "  [Group 4] GSCAM_LATENCY=${GSCAM_LATENCY:-20}, GSCAM_PROTOCOL=${GSCAM_PROTOCOL:-udp}, GSCAM_VIDEO_WIDTH=${GSCAM_VIDEO_WIDTH:-640}, GSCAM_VIDEO_HEIGHT=${GSCAM_VIDEO_HEIGHT:-480}"
+echo "  [Group 5] ATI_SENSOR_IP=${ATI_SENSOR_IP:-192.168.56.8}, ATI_SENSOR_TYPE=${ATI_SENSOR_TYPE:-ati_axia}, ATI_SAMPLING_RATE=${ATI_SAMPLING_RATE:-500}"
