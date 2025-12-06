@@ -1,12 +1,12 @@
 #  Robotic Ultrasound-Guided Autonomous Needle Insertion (RUGANI)
 
 [![License](https://img.shields.io/badge/license-Apache%20License%202.0-blue)](LICENSE)
-[![Docker Pulls](https://img.shields.io/docker/pulls/your_dockerhub_username/your_image_name.svg)](https://hub.docker.com/r/your_dockerhub_username/your_image_name)
+[![Docker Pulls](https://img.shields.io/docker/pulls/your_dockerhub_username/your_image_name.svg)](https://hub.docker.com/layers/osrf/ros/jazzy-desktop-full/images/sha256-b706aba86d1be07e9dc2834bf54c9acf1be87c2bad1aea83cd2f49ff738b6f5e)
 
 ## TL;DR
-End users can jump to **Quick start** to clone the repo, generate a `.env`, and bring up the stack.
-Administrators can refer to **For administrators** for host setup details.
-Interested developers can read **Under the hood** for architecture and implementation details.
+End users can jump to [**Quick start**](#quick-start) to clone the repo, generate a `.env`, and bring up the stack.
+Administrators can refer to [**For administrators**](#for-administrators) for host setup details.
+Interested developers can read [**Under the hood**](#under-the-hood) for architecture and implementation details.
 
 ## Overview
 This repository provides a reproducible, Dockerized ROS 2 workspace for autonomous needle insertion R&D guided by robotic ultrasound.
@@ -147,12 +147,14 @@ ping -c 3 <UR_ROBOT_IP>
 ping -c 3 <POLARIS_IP>
 ```
 
-### 5) Start services
-Bring up the stack in the background:
+### 5) Fire up the dev stack
+Bring up the stack and go directly into the dev container bash:
 ```bash
-docker compose --profile dev up -d
+# If not yet, make the automation scripts executable:
+chmod +x ./scripts/*.sh
+# Then, just:
+./scripts/launch.sh
 ```
-and wait for all the container health checks to pass.
 In cases of failed health checks, get container status and logs with:
 ```bash
 # List all containers and their status:
@@ -161,27 +163,16 @@ docker compose ps -a
 docker logs autonomous_needle_insertion-ur5e-driver 
 ```
 
-### 6) Open a development shell
-Get inside the container shell:
+### 6) Available scripts and commands in the package
+In the dev container shell, you can run standard ROS 2 commands, and control commands or automation scripts from the auto_needle_insertion package.
 ```bash
-docker exec -it autonomous_needle_insertion-dev bash
-```
-Run ROS 2 commands inside the container to start your experiments or development:
-```bash
-# For example, list available topics:
-ros2 topic list
-```
-
-### 7) Available commands in the package
-In the container shell, you can run control commands from the auto_needle_insertion package and visualization commands.
-```bash
-# First source the package setup file to make ROS 2 aware of the package
+# For individual commands other than the automation scripts, first source the package setup file to make bash aware of the package
 source install/setup.bash
 # Then launch a command
 ros2 somecommand ...
 ```
 
-#### 7.1) Control the robot arm
+#### 6.1) Control the robot arm
 Run the external control program. On the UR pendant:
 > Press the play button to run the `ani_external_control` program.
 > 
@@ -196,7 +187,7 @@ ros2 launch auto_needle_insertion move_robot.launch.py mode:=ee_moveit_square
 ros2 launch auto_needle_insertion move_robot.launch.py mode:=keyboard
 ```
 
-#### 7.2) Bring up visualization for cameras
+#### 6.2) Bring up visualization for cameras
 ```bash
 # First, check the available image topics:
 ros2 topic list | grep image
@@ -204,10 +195,20 @@ ros2 topic list | grep image
 ros2 run rqt_image_view rqt_image_view /vega_vt/image_raw
 ```
 
-### 8) Stop / Remove
+#### 6.3) Automation scripts
+Begin dataset collection for OpenH:
+```bash
+./scripts/run_openh_collection.sh
+```
+Run keyboard control of the robotic end effector:
+```bash
+./scripts/run_keyboard_control.sh
+```
+
+### 7) Stop / Remove
 Stop all the containers in one go:
 ```bash
-docker stop $(docker ps -q)
+./scripts/stop.sh
 ```
 
 ## Key ROS 2 topics
