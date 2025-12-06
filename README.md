@@ -8,6 +8,8 @@ End users can jump to [**Quick start**](#quick-start) to clone the repo, generat
 Administrators can refer to [**For administrators**](#for-administrators) for host setup details.
 Interested developers can read [**Under the hood**](#under-the-hood) for architecture and implementation details.
 
+A [video demo](https://www.youtube.com/watch?v=AOPiP3fkReg) is available to show the deployment process.
+
 ## Overview
 This repository provides a reproducible, Dockerized ROS 2 workspace for autonomous needle insertion R&D guided by robotic ultrasound.
 It integrates a Universal Robots (UR) arm (hardware or mock), an NDI Polaris Vega VT optical tracker, and an ultrasound system.
