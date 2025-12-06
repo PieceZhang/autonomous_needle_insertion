@@ -90,6 +90,7 @@ RUN apt-get update \
       build-essential \
       cmake \
       python3-rosdep \
+      python3-pyqtgraph \
 #      iproute2 iputils-ping net-tools netcat-openbsd dnsutils traceroute tcpdump \
       # Controller and planning packages for UR
       ros-$ROS_DISTRO-ros2controlcli \
