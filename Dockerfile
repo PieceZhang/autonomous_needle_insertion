@@ -90,7 +90,9 @@ RUN apt-get update \
       build-essential \
       cmake \
       python3-rosdep \
+      python3-pyqtgraph \
 #      iproute2 iputils-ping net-tools netcat-openbsd dnsutils traceroute tcpdump \
+      # Controller and planning packages for UR
       ros-$ROS_DISTRO-ros2controlcli \
       ros-$ROS_DISTRO-ros2-control \
       ros-$ROS_DISTRO-ros2-controllers \
@@ -105,6 +107,7 @@ RUN apt-get update \
       ros-$ROS_DISTRO-moveit-simple-controller-manager \
 #      ros-$ROS_DISTRO-launch-param-builder \
 #      ros-$ROS_DISTRO-moveit-configs-utils \
+      # Dependencies for GStreamer
       libgstreamer1.0-dev \
       libgstreamer-plugins-base1.0-dev \
       gstreamer1.0-tools \
@@ -113,7 +116,13 @@ RUN apt-get update \
       gstreamer1.0-plugins-bad \
       gstreamer1.0-plugins-ugly \
       gstreamer1.0-libav \
-      ros-$ROS_DISTRO-realsense2-*
+      # Package for Intel Realsense
+      ros-$ROS_DISTRO-realsense2-* \
+      # Packages for hardware acceleration
+      mesa-utils \
+      x11-apps \
+      libgl1 \
+      libgl1-mesa-dri
 # && rm -rf /var/lib/apt/lists/* \
 
 # --- Build drivers from local source into their workspaces ---

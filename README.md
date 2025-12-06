@@ -21,6 +21,7 @@ The workspace includes MoveItPy‑based robot motion control, RGB data collectio
 - Hand–eye calibration (UR + NDI Polaris) using OpenCV with residual checks.
 - Lightweight PoseStamped/TF tool‑pose reporter.
 - Integrated GStreamer pipeline for RGB data capture.
+- Hardware GL for rendering video streams in ROS.
 - Docker Compose services:
   - `ur_driver` (UR5e hardware)
   - `ur_driver_mock` (mock hardware)
@@ -316,6 +317,17 @@ sudo usermod -aG docker <username>
 > 
 > Add a bash script to automate user creation and Docker group assignment.
 
+### 5) Hardware acceleration for sensor image rendering
+Rendering RTSP videos in `rqt_image_raw` may encounter freezing problems.
+Using hardware accelerated GL may help with performance.
+The current settings are compatible with X11 only,meaning the users should log in with Xorg.
+To force Xorg as the default session for all users:
+```bash
+# Edit this file
+sudo vim /etc/gdm3/custom.conf
+# Then remove the comment for
+WaylandEnable=false
+```
 
 ### Troubleshooting
 - **Permission denied (Linux):** ensure your user is in the `docker` group (see Tip above), then log out/in or run `newgrp docker`.
