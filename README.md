@@ -1,12 +1,12 @@
 #  Robotic Ultrasound-Guided Autonomous Needle Insertion (RUGANI)
 
 [![License](https://img.shields.io/badge/license-Apache%20License%202.0-blue)](LICENSE)
-[![Docker Pulls](https://img.shields.io/docker/pulls/your_dockerhub_username/your_image_name.svg)](https://hub.docker.com/r/your_dockerhub_username/your_image_name)
+[![Docker Pulls](https://img.shields.io/docker/pulls/your_dockerhub_username/your_image_name.svg)](https://hub.docker.com/layers/osrf/ros/jazzy-desktop-full/images/sha256-b706aba86d1be07e9dc2834bf54c9acf1be87c2bad1aea83cd2f49ff738b6f5e)
 
 ## TL;DR
-End users can jump to **Quick start** to clone the repo, generate a `.env`, and bring up the stack.
-Administrators can refer to **For administrators** for host setup details.
-Interested developers can read **Under the hood** for architecture and implementation details.
+End users can jump to [**Quick start**](#quick-start) to clone the repo, generate a `.env`, and bring up the stack.
+Administrators can refer to [**For administrators**](#for-administrators) for host setup details.
+Interested developers can read [**Under the hood**](#under-the-hood) for architecture and implementation details.
 
 ## Overview
 This repository provides a reproducible, Dockerized ROS 2 workspace for autonomous needle insertion R&D guided by robotic ultrasound.
