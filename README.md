@@ -207,6 +207,34 @@ Run keyboard control of the robotic end effector:
 ./scripts/run_keyboard_control.sh
 ```
 
+#### 6.4) Record ROS bag
+Start recording a ROS bag:
+```bash
+ros2 bag record --all
+```
+Or record specific topics only:
+```bash
+ros2 bag record <topic1> <topic2> <topic3> ...
+```
+Check available topics with:
+```bash
+ros2 topic list
+```
+Stop recording by pressing `Ctrl+C`.
+
+#### 6.5) Replay ROS bag 
+Start recording a ROS bag:
+```bash
+ros2 bag play <BAGNAME>
+```
+One may visualize the replay by:
+```bash
+# first stop the live stream
+docker compose stop polaris_camera_driver realsense_driver
+# run in the dev container shell
+ros2 run rqt_image_view rqt_image_view /vega_vt/image_raw
+```
+
 ### 7) Stop / Remove
 Stop all the containers in one go:
 ```bash
