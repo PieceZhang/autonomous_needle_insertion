@@ -122,7 +122,10 @@ RUN apt-get update \
       mesa-utils \
       x11-apps \
       libgl1 \
-      libgl1-mesa-dri
+      libgl1-mesa-dri \
+      ros-jazzy-ros2bag \
+      ros-jazzy-rosbag2-storage-default-plugins \
+      ros-jazzy-rosbag2-transport
 # && rm -rf /var/lib/apt/lists/* \
 
 # --- Build drivers from local source into their workspaces ---
