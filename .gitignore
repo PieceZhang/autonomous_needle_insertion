@@ -6,7 +6,6 @@ workspace/.ros/
 workspace/build/
 workspace/install/
 workspace/log/
-workspace/calibrations/
 workspace/rosbag_recording/
 
 # OS specific
