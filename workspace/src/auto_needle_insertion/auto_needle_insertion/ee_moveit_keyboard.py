@@ -21,6 +21,8 @@ import os
 import sys
 import time
 import logging
+from datetime import datetime
+from pathlib import Path
 from typing import List, Optional
 
 import curses
@@ -34,9 +36,24 @@ from geometry_msgs.msg import PoseStamped, Quaternion
 from moveit.planning import MoveItPy, PlanRequestParameters
 from moveit.core.kinematic_constraints import construct_link_constraint
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("auto_needle_insertion.ee_moveit_keyboard")
+def configure_run_logging(log_dir: str = "/tmp") -> str:
+    Path(log_dir).mkdir(parents=True, exist_ok=True)
 
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")  # local time
+    logfile = str(Path(log_dir) / f"keyboard_control_{ts}.log")
+
+    logging.basicConfig(
+        level=logging.INFO,
+        filename=logfile,
+        filemode="w",  # one fresh file per run
+        format="%(asctime)s.%(msecs)03d %(levelname)s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    return logfile
+
+logfile = configure_run_logging(log_dir="../log")
+logger = logging.getLogger("auto_needle_insertion.ee_moveit_keyboard")
+logger.info("Logging to %s", logfile)
 
 NODE_NAME = "auto_needle_insertion"
 
