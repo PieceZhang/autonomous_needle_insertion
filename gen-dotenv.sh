@@ -112,6 +112,10 @@ fi
   echo "ATI_SENSOR_TYPE=${ATI_SENSOR_TYPE:-ati_axia}"
   echo "ATI_SAMPLING_RATE=${ATI_SAMPLING_RATE:-500}"
   echo "ATI_HARDWARE_BIASING=${ATI_HARDWARE_BIASING:-false}"
+
+  # Group 6: USB video grabber:
+  echo "USB_VIDEO_DEVICE=${USB_VIDEO_DEVICE:-/dev/video6}"
+
 } > "${ENV_FILE}"
 
 echo "Wrote ${ENV_FILE} with:"
