@@ -32,6 +32,7 @@ import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped, Quaternion
 from moveit.planning import MoveItPy, PlanRequestParameters
+from moveit.core.kinematic_constraints import construct_link_constraint
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("auto_needle_insertion.ee_moveit_keyboard")
@@ -535,7 +536,18 @@ def teleop_loop(
 
             try:
                 arm.set_start_state_to_current_state()
-                arm.set_goal_state(pose_stamped_msg=waypoint_pose, pose_link=tip_link)
+                pos = waypoint_pose.pose.position
+                ori = waypoint_pose.pose.orientation
+                goal_c = construct_link_constraint(
+                    link_name=tip_link,
+                    source_frame=planning_frame,
+                    cartesian_position=[pos.x, pos.y, pos.z],
+                    cartesian_position_tolerance=1e-4,  # meters (start here)
+                    orientation=[ori.x, ori.y, ori.z, ori.w],
+                    orientation_tolerance=1e-4,  # radians (~0.057°) (start here)
+                )
+                arm.set_goal_state(motion_plan_constraints=[goal_c])
+                # arm.set_goal_state(pose_stamped_msg=waypoint_pose, pose_link=tip_link)
 
                 plan_params = PlanRequestParameters(robot, "")
                 plan_params.max_velocity_scaling_factor = MAX_VELOCITY_SCALING
