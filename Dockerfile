@@ -125,7 +125,8 @@ RUN apt-get update \
       libgl1-mesa-dri \
       ros-jazzy-ros2bag \
       ros-jazzy-rosbag2-storage-default-plugins \
-      ros-jazzy-rosbag2-transport
+      ros-jazzy-rosbag2-transport \
+      ros-$ROS_DISTRO-v4l2-camera
 # && rm -rf /var/lib/apt/lists/* \
 
 # --- Build drivers from local source into their workspaces ---
