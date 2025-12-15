@@ -613,9 +613,36 @@ def teleop_loop(
                     tty_in.write_log(msg)
                     continue
 
-                msg = f"[Teleop] Move: dX={dx:.3f}, dY={dy:.3f}, dZ={dz:.3f}, dR={np.degrees(droll):.2f}, dP={np.degrees(dpitch):.2f}, dY={np.degrees(dyaw):.2f}"
-                logger.info(msg)
-                tty_in.write_log(msg)
+                # Full-detail message for file log
+                full_msg = (
+                    f"[Teleop] Move: "
+                    f"dX={dx:.3f}, dY={dy:.3f}, dZ={dz:.3f}, "
+                    f"dR={np.degrees(droll):.2f}, dP={np.degrees(dpitch):.2f}, dY={np.degrees(dyaw):.2f}"
+                )
+                logger.info(full_msg)
+
+                # Compact live message: only the single active DoF
+                eps_pos = 1e-9  # m
+                eps_ang = 1e-9  # rad
+
+                if abs(dx) > eps_pos:
+                    live_part = f"dX={dx:.3f}"
+                elif abs(dy) > eps_pos:
+                    live_part = f"dY={dy:.3f}"
+                elif abs(dz) > eps_pos:
+                    live_part = f"dZ={dz:.3f}"
+                elif abs(droll) > eps_ang:
+                    live_part = f"dR={np.degrees(droll):.2f}"
+                elif abs(dpitch) > eps_ang:
+                    live_part = f"dP={np.degrees(dpitch):.2f}"
+                elif abs(dyaw) > eps_ang:
+                    live_part = f"dYaw={np.degrees(dyaw):.2f}"  # avoid confusion with dY (translation)
+                else:
+                    live_part = "no-op"
+
+                tty_in.write_log(f"Move: {live_part}")
+
+
             except Exception as e:
                 msg = f"\n [Teleop] Planning/Execution error: {e}\n"
                 logger.error(msg)
