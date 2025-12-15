@@ -7,6 +7,7 @@
 End users can jump to [**Quick start**](#quick-start) to clone the repo, generate a `.env`, and bring up the stack.
 Administrators can refer to [**For administrators**](#for-administrators) for host setup details.
 Interested developers can read [**Under the hood**](#under-the-hood) for architecture and implementation details.
+Refer to [**Troubleshooting**](#troubleshooting) for solutions of common problems.
 
 A [video demo](https://www.youtube.com/watch?v=AOPiP3fkReg) is available to show the deployment process.
 
@@ -360,6 +361,6 @@ sudo vim /etc/gdm3/custom.conf
 WaylandEnable=false
 ```
 
-### Troubleshooting
-- **Permission denied (Linux):** ensure your user is in the `docker` group (see Tip above), then log out/in or run `newgrp docker`.
-- **Compose not found:** verify `docker compose version` prints a v2.x version. If not, install the Compose plugin for your distro.
+## Troubleshooting
+- **Polaris camera streaming failure:** Reset Polaris to factory setting, and remember to change the IP back to the value in your .env file.
+- **USB video grabber failure:** The device name (/dev/video*) of the usb video grabber is not consistent across reboots. You need to plug & replug the device to figure out the exact device name, then make corresponding changes in .env.
