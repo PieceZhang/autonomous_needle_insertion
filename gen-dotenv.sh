@@ -11,6 +11,7 @@
 #   Group 3: POLARIS_IP
 #   Group 4: GSCAM_LATENCY, GSCAM_PROTOCOL, GSCAM_VIDEO_WIDTH, GSCAM_VIDEO_HEIGHT
 #   Group 5: ATI_SENSOR_IP, ATI_SENSOR_TYPE, ATI_SAMPLING_RATE
+#   Group 6: USB_VIDEO_DEVICE
 #
 # Example overrides:
 #   WS_DIR=/custom_ws UR_ROBOT_IP=10.0.0.5 ATI_SENSOR_IP=10.0.0.10 ./gen-dotenv.sh
@@ -113,14 +114,15 @@ fi
   echo "ATI_SAMPLING_RATE=${ATI_SAMPLING_RATE:-500}"
   echo "ATI_HARDWARE_BIASING=${ATI_HARDWARE_BIASING:-false}"
 
-  # Group 6: USB video grabber:
+  # Group 6: USB video grabber
   echo "USB_VIDEO_DEVICE=${USB_VIDEO_DEVICE:-/dev/video6}"
 
 } > "${ENV_FILE}"
 
 echo "Wrote ${ENV_FILE} with:"
-echo "  [Group 1] UID=${uid}, GID=${gid}, WS_DIR=${WS_DIR:-/ani_ws}, PACKAGE_NAME=${PACKAGE_NAME:-auto_needle_insertion}"
-echo "  [Group 2] UR_ROBOT_IP=${UR_ROBOT_IP:-192.168.56.2}, USE_MOCK_HARDWARE=${USE_MOCK_HARDWARE:-true}"
-echo "  [Group 3] POLARIS_IP=${POLARIS_IP:-192.168.56.5}"
-echo "  [Group 4] GSCAM_LATENCY=${GSCAM_LATENCY:-20}, GSCAM_PROTOCOL=${GSCAM_PROTOCOL:-udp}, GSCAM_VIDEO_WIDTH=${GSCAM_VIDEO_WIDTH:-640}, GSCAM_VIDEO_HEIGHT=${GSCAM_VIDEO_HEIGHT:-480}, GSCAM_FRAME_ID=${GSCAM_FRAME_ID:-polaris_vt_camera}, GSCAM_NAMESPACE=${GSCAM_NAMESPACE:-/polaris_camera}"
-echo "  [Group 5] ATI_SENSOR_IP=${ATI_SENSOR_IP:-192.168.56.8}, ATI_SENSOR_TYPE=${ATI_SENSOR_TYPE:-ati_axia}, ATI_SAMPLING_RATE=${ATI_SAMPLING_RATE:-500}, ATI_HARDWARE_BIASING=${ATI_HARDWARE_BIASING:-false}"
+echo "  [Group 1] IDs, workspace directory, and package name"
+echo "  [Group 2] UR robot configuration"
+echo "  [Group 3] Polaris tracker"
+echo "  [Group 4] GSCAM configuration"
+echo "  [Group 5] ATI force/torque sensor"
+echo "  [Group 6] USB video grabber"
