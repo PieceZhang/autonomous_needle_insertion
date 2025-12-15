@@ -246,15 +246,15 @@ services:
         fi;
       
         # make sure ROS log dir (in the workspace) exists
-        mkdir -p ${WS_DIR:-/ani_ws}/.ros/log;
+        # mkdir -p ${WS_DIR:-/ani_ws}/.ros/log;
 
         # Install v4l2_camera if not already available
-        if ! ros2 pkg list 2>/dev/null | grep -q '^v4l2_camera$'; then
-          echo 'Installing ros-'$$ROS_DISTRO'-v4l2-camera...';
-          apt-get update;
-          DEBIAN_FRONTEND=noninteractive apt-get install -y ros-$$ROS_DISTRO-v4l2-camera;
-          rm -rf /var/lib/apt/lists/*;
-        fi;
+        # if ! ros2 pkg list 2>/dev/null | grep -q '^v4l2_camera$'; then
+        #   echo 'Installing ros-'$$ROS_DISTRO'-v4l2-camera...';
+        #   apt-get update;
+        #   DEBIAN_FRONTEND=noninteractive apt-get install -y ros-$$ROS_DISTRO-v4l2-camera;
+        #   rm -rf /var/lib/apt/lists/*;
+        # fi;
 
         echo 'Running v4l2_camera_node on /dev/usb_grabber...';
         ros2 run v4l2_camera v4l2_camera_node --ros-args -p video_device:=/dev/usb_grabber -p image_size:=[$$USB_VIDEO_WIDTH,$$USB_VIDEO_HEIGHT] -p framerate:=$$USB_VIDEO_FPS -p camera_info_url:='file:///${WS_DIR:-/ani_ws}/calibration/usb_grabber_cali_dummy.yaml' -r image_raw:=/usb_grabber/image_raw
@@ -262,10 +262,7 @@ services:
 
     healthcheck:
       test:
-        ["CMD",
-        "bash",
-        "-lc",
-        "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q '/usb_grabber/image_raw'"]
+        ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q '/usb_grabber/image_raw'"]
       interval: 3s
       timeout: 3s
       retries: 3

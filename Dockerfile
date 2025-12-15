@@ -123,9 +123,11 @@ RUN apt-get update \
       x11-apps \
       libgl1 \
       libgl1-mesa-dri \
-      ros-jazzy-ros2bag \
-      ros-jazzy-rosbag2-storage-default-plugins \
-      ros-jazzy-rosbag2-transport \
+      # Packages for rosbag
+      ros-$ROS_DISTRO-ros2bag \
+      ros-$ROS_DISTRO-rosbag2-storage-default-plugins \
+      ros-$ROS_DISTRO-rosbag2-transport \
+      # Packages for usb video grabber
       ros-$ROS_DISTRO-v4l2-camera
 # && rm -rf /var/lib/apt/lists/* \
 
