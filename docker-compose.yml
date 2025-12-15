@@ -20,7 +20,6 @@ x-ros-common: &ros_common
   entrypoint: ["/ros_entrypoint.sh"]
   environment:
     <<: *ros_base_env
-    GSCAM_CONFIG: ${GSCAM_CONFIG:-"rtspsrc location=rtsp://${POLARIS_IP}:554/video latency=${GSCAM_LATENCY} protocols=${GSCAM_PROTOCOL} drop-on-latency=true do-retransmission=false ! rtph264depay ! h264parse ! avdec_h264 max-threads=1 ! videoconvert ! video/x-raw,format=RGB ! videoscale ! video/x-raw,width=${GSCAM_VIDEO_WIDTH},height=${GSCAM_VIDEO_WIDTH},framerate=30/1 ! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream"}
   device_cgroup_rules:
     - "c 81:* rmw"
     - "c 189:* rmw"
@@ -97,12 +96,15 @@ services:
     <<: *ros_common
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-polaris-camera-driver"
     profiles: ["default", "gscam2-test", "dev"]
+    environment:
+      <<: *ros_base_env
+      GSCAM_CONFIG: ${GSCAM_CONFIG:-"rtspsrc location=rtsp://${POLARIS_IP}:554/video latency=${GSCAM_LATENCY} protocols=${GSCAM_PROTOCOL} drop-on-latency=true do-retransmission=false ! rtph264depay ! h264parse ! avdec_h264 max-threads=1 ! videoconvert ! video/x-raw,format=RGB ! videoscale ! video/x-raw,width=${GSCAM_VIDEO_WIDTH},height=${GSCAM_VIDEO_WIDTH},framerate=30/1 ! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream"}
     command: >
       bash -lc "
         set -e;
         if [ -f /opt/ndi_ws/install/setup.bash ]; then source /opt/ndi_ws/install/setup.bash; fi;
-        echo 'Starting gscam2 for Polaris Vega VT camera with config:' ${GSCAM_CONFIG};
-        ros2 run gscam2 gscam_main --ros-args -p frame_id:=vega_vt_camera -p camera_name:=vega_vt_visible -p image_encoding:=rgb8 -p use_gst_timestamps:=false -p sync_sink:=false -p use_sensor_data_qos:=true -p reopen_on_eof:=true -r image_raw:=vega_vt/image_raw -r camera_info:=vega_vt/camera_info
+        echo 'Starting gscam2 for Polaris Vega VT camera ...';
+        ros2 run gscam2 gscam_main --ros-args -p frame_id:=vega_vt_camera -p camera_name:=vega_vt_visible -p image_encoding:=rgb8 -p use_gst_timestamps:=false -p sync_sink:=false -p use_sensor_data_qos:=true -p reopen_on_eof:=true -p camera_info_url:='file:///${WS_DIR:-/ani_ws}/calibration/polaris_camera_cali_dummy.yaml' -r image_raw:=vega_vt/image_raw -r camera_info:=vega_vt/camera_info
       "
     healthcheck:
       test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q '/vega_vt/image_raw'"]
@@ -151,18 +153,15 @@ services:
     <<: *ros_common
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-usb-video-grabber"
     profiles: [ "default", "dev" ]
-
-    # give this container access to /dev/video* via the 'video' group
+    # Give this container access to /dev/video* via the 'video' group
     group_add:
       - "video"
-
     # Override volumes: same as ros_common, but WITHOUT /dev:/dev
     volumes:
       - ./workspace:${WS_DIR:-/ani_ws}:rw
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /etc/passwd:/etc/passwd:ro
       - /etc/group:/etc/group:ro
-
     # Map exactly one host V4L2 device into the container as /dev/usb_grabber
     # Set USB_VIDEO_DEVICE in your .env file, e.g. USB_VIDEO_DEVICE=/dev/video3
     devices:
