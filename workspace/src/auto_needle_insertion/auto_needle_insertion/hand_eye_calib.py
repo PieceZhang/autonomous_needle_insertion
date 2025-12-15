@@ -984,13 +984,13 @@ def main() -> None:
 
                 # ---------------------- Persist calibration to JSON ----------------------
                 try:
-                    # Prefer a 'calibrations' folder in the current working directory;
+                    # Prefer a 'calibration' folder in the current working directory;
                     # fall back to next to this script if needed.
-                    out_dir = Path.cwd() / "calibrations"
+                    out_dir = Path.cwd() / "calibration"
                     try:
                         out_dir.mkdir(parents=True, exist_ok=True)
                     except Exception:
-                        out_dir = Path(__file__).resolve().parent / "calibrations"
+                        out_dir = Path(__file__).resolve().parent / "calibration"
                         out_dir.mkdir(parents=True, exist_ok=True)
 
                     payload = {
