@@ -21,6 +21,8 @@ import os
 import sys
 import time
 import logging
+from datetime import datetime
+from pathlib import Path
 from typing import List, Optional
 
 import curses
@@ -32,10 +34,26 @@ import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped, Quaternion
 from moveit.planning import MoveItPy, PlanRequestParameters
+from moveit.core.kinematic_constraints import construct_link_constraint
 
-logging.basicConfig(level=logging.INFO)
+def configure_run_logging(log_dir: str = "/tmp") -> str:
+    Path(log_dir).mkdir(parents=True, exist_ok=True)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")  # local time
+    logfile = str(Path(log_dir) / f"keyboard_control_{ts}.log")
+
+    logging.basicConfig(
+        level=logging.INFO,
+        filename=logfile,
+        filemode="w",  # one fresh file per run
+        format="%(asctime)s.%(msecs)03d %(levelname)s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    return logfile
+
+logfile = configure_run_logging(log_dir="../log")
 logger = logging.getLogger("auto_needle_insertion.ee_moveit_keyboard")
-
+logger.info("Logging to %s", logfile)
 
 NODE_NAME = "auto_needle_insertion"
 
@@ -298,6 +316,12 @@ class TTYInput:
             fcntl.fcntl(self.fd, fcntl.F_SETFL, self._orig_fl | os.O_NONBLOCK)
 
             self._curses_screen = curses.initscr()
+            lines, cols = self._curses_screen.getmaxyx()
+            lines = max(lines, 2)  # need at least 2 rows: log + status
+            self._log_win = curses.newwin(lines - 1, cols, 0, 0)
+            self._log_win.scrollok(True)
+            self._status_win = curses.newwin(1, cols, lines - 1, 0)
+
             curses.noecho()
             curses.cbreak()
             self._curses_screen.keypad(True)
@@ -322,17 +346,31 @@ class TTYInput:
         except Exception:
             return None
 
-    def write_line(self, text: str):
+    def write_log(self, text: str):
         """
-            Output a prompt line at the bottom.
+            Write a status line at the botton of the terminal screen
         """
         if not self._init_ok:
             return
         try:
-            self._curses_screen.move(curses.LINES - 1, 0)
-            self._curses_screen.clrtoeol()
-            self._curses_screen.addstr(curses.LINES - 1, 0, text[:curses.COLS - 1])
-            self._curses_screen.refresh()
+            _, cols = self._log_win.getmaxyx()
+            self._log_win.addnstr(text, cols - 1)
+            self._log_win.addstr("\n")
+            self._log_win.refresh()
+        except Exception:
+            pass
+
+    def write_line(self, text: str):
+        """
+            Write a status line at the botton of the terminal screen
+        """
+        if not self._init_ok:
+            return
+        try:
+            _, cols = self._status_win.getmaxyx()
+            self._status_win.erase()
+            self._status_win.addnstr(0, 0, text, cols - 1)
+            self._status_win.refresh()
         except Exception:
             pass
 
@@ -466,28 +504,32 @@ def teleop_loop(
             if ch in (ORD_PLUS, ORD_EQ):
                 step_xy = min(STEP_MAX, step_xy * STEP_SCALE_UP)
                 step_z = min(STEP_MAX, step_z * STEP_SCALE_UP)
-                logger.info(f"\n [Teleop] increase step length: XY={step_xy:.3f} m, Z={step_z:.3f} m\n")
-                # tty_in.write_line(f"\n increase step length: XY={step_xy:.3f} Z={step_z:.3f}\n")
+                msg = f"\n [Teleop] increase step length: XY={step_xy:.3f} m, Z={step_z:.3f} m\n"
+                logger.info(msg)
+                tty_in.write_log(msg)
                 continue
 
             if ch == ORD_MINUS:
                 step_xy = max(STEP_MIN, step_xy * STEP_SCALE_DOWN)
                 step_z = max(STEP_MIN, step_z * STEP_SCALE_DOWN)
-                logger.info(f"\n [Teleop] decrease step length: XY={step_xy:.3f} m, Z={step_z:.3f} m\n")
-                # tty_in.write_line(f"\n decrease step length: XY={step_xy:.3f} Z={step_z:.3f}\n")
+                msg = f"\n [Teleop] decrease step length: XY={step_xy:.3f} m, Z={step_z:.3f} m\n"
+                logger.info(msg)
+                tty_in.write_log(msg)
                 continue
 
             # Rotation step length adjustment
             if ch in (ORD_ORI_PLUS, ORD_ori_plus):
                 angle_deg = min(ANGLE_MAX_DEG, angle_deg * ANGLE_SCALE_UP)
-                logger.info(f"[Teleop] Increase rotation step: Angle={angle_deg:.2f} deg")
-                # tty_in.write_line(f"Angle step={angle_deg:.2f} deg")
+                msg = f"[Teleop] Increase rotation step: Angle={angle_deg:.2f} deg"
+                logger.info(msg)
+                tty_in.write_log(msg)
                 continue
 
             if ch in (ORD_ORI_DEC, ORD_ori_dec):
                 angle_deg = max(ANGLE_MIN_DEG, angle_deg * ANGLE_SCALE_DOWN)
-                logger.info(f"[Teleop] Decrease rotation step: Angle={angle_deg:.2f} deg")
-                # tty_in.write_line(f"Angle step={angle_deg:.2f} deg")
+                msg = f"[Teleop] Decrease rotation step: Angle={angle_deg:.2f} deg"
+                logger.info(msg)
+                tty_in.write_log(msg)
                 continue
 
             # Move and rotate
@@ -535,7 +577,18 @@ def teleop_loop(
 
             try:
                 arm.set_start_state_to_current_state()
-                arm.set_goal_state(pose_stamped_msg=waypoint_pose, pose_link=tip_link)
+                pos = waypoint_pose.pose.position
+                ori = waypoint_pose.pose.orientation
+                goal_c = construct_link_constraint(
+                    link_name=tip_link,
+                    source_frame=planning_frame,
+                    cartesian_position=[pos.x, pos.y, pos.z],
+                    cartesian_position_tolerance=1e-4,  # meters (start here)
+                    orientation=[ori.x, ori.y, ori.z, ori.w],
+                    orientation_tolerance=1e-4,  # radians (~0.057°) (start here)
+                )
+                arm.set_goal_state(motion_plan_constraints=[goal_c])
+                # arm.set_goal_state(pose_stamped_msg=waypoint_pose, pose_link=tip_link)
 
                 plan_params = PlanRequestParameters(robot, "")
                 plan_params.max_velocity_scaling_factor = MAX_VELOCITY_SCALING
@@ -549,26 +602,51 @@ def teleop_loop(
                     ok = traj is not None
 
                 if not ok:
-                    logger.warning("\n [Teleop] Planning failed (this increment)\n")
-                    # tty_in.write_line("\n Planning failed\n")
+                    msg = "\n [Teleop] Planning failed (this increment)\n"
+                    logger.warning(msg)
+                    tty_in.write_log(msg)
                     continue
 
                 if not execute_trajectory_with_fallback(robot, plan_result.trajectory, CONTROLLER_NAMES):
-                    logger.warning("\n [Teleop] Excute failed (this increment)\n")
-                    # tty_in.write_line("\n Execute failed\n")
+                    msg = "\n [Teleop] Excute failed (this increment)\n"
+                    logger.warning(msg)
+                    tty_in.write_log(msg)
                     continue
 
-                logger.info(
-                    "[Teleop] Move: dX=%.3f, dY=%.3f, dZ=%.3f, dR=%.2fdeg, dP=%.2fdeg, dY=%.2fdeg"
-                    % (dx, dy, dz, np.degrees(droll), np.degrees(dpitch), np.degrees(dyaw))
+                # Full-detail message for file log
+                full_msg = (
+                    f"[Teleop] Move: "
+                    f"dX={dx:.3f}, dY={dy:.3f}, dZ={dz:.3f}, "
+                    f"dR={np.degrees(droll):.2f}, dP={np.degrees(dpitch):.2f}, dY={np.degrees(dyaw):.2f}"
                 )
-                # tty_in.write_line(
-                #     "Move dX=%.3f dY=%.3f dZ=%.3f dR=%.2f dP=%.2f dY=%.2f"
-                #     % (dx, dy, dz, np.degrees(droll), np.degrees(dpitch), np.degrees(dyaw))
-                # )
+                logger.info(full_msg)
+
+                # Compact live message: only the single active DoF
+                eps_pos = 1e-9  # m
+                eps_ang = 1e-9  # rad
+
+                if abs(dx) > eps_pos:
+                    live_part = f"dX={dx:.3f}"
+                elif abs(dy) > eps_pos:
+                    live_part = f"dY={dy:.3f}"
+                elif abs(dz) > eps_pos:
+                    live_part = f"dZ={dz:.3f}"
+                elif abs(droll) > eps_ang:
+                    live_part = f"dR={np.degrees(droll):.2f}"
+                elif abs(dpitch) > eps_ang:
+                    live_part = f"dP={np.degrees(dpitch):.2f}"
+                elif abs(dyaw) > eps_ang:
+                    live_part = f"dYaw={np.degrees(dyaw):.2f}"  # avoid confusion with dY (translation)
+                else:
+                    live_part = "no-op"
+
+                tty_in.write_log(f"Move: {live_part}")
+
+
             except Exception as e:
-                logger.error(f"\n [Teleop] Planning/Execution error: {e}\n")
-                # tty_in.write_line("\n Planning/Execution error\n")
+                msg = f"\n [Teleop] Planning/Execution error: {e}\n"
+                logger.error(msg)
+                tty_in.write_log(msg)
                 continue
     finally:
         tty_in.close()
