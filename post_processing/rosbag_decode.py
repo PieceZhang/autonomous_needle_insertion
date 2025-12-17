@@ -587,16 +587,22 @@ def main() -> int:
             decoder_cache[key] = decoder
         return decoder
 
-    ndjson_paths: Dict[str, Path] = {}
-    ndjson_files: Dict[str, Any] = {}
-    ndjson_info_paths: Dict[str, Path] = {}
-    ndjson_stats: Dict[str, Dict[str, Any]] = {}
-    video_writers: Dict[str, VideoTopicWriter] = {}
+    # Modified: use (bag_name, topic) keys so outputs go under per-bag subfolders
+    ndjson_paths: Dict[Tuple[str, str], Path] = {}
+    ndjson_files: Dict[Tuple[str, str], Any] = {}
+    ndjson_info_paths: Dict[Tuple[str, str], Path] = {}
+    ndjson_stats: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    video_writers: Dict[Tuple[str, str], VideoTopicWriter] = {}
     total_messages = 0
 
     try:
         for mcap_path in iter_mcap_files(args.mcap_dir):
             print(f"[INFO] Decoding {mcap_path.name} ...")
+            # Create a bag-specific output subfolder named by the rosbag file stem
+            bag_name = mcap_path.stem
+            bag_dir = args.output_dir / bag_name
+            bag_dir.mkdir(parents=True, exist_ok=True)
+
             with mcap_path.open("rb") as stream:
                 reader = make_reader(stream)
                 for schema, channel, message in reader.iter_messages():
@@ -610,10 +616,13 @@ def main() -> int:
                         print(f"[WARN] Failed to decode {topic} in {mcap_path.name}: {exc}", file=sys.stderr)
                         continue
 
+                    # Video topics: create per-bag writer
                     if topic in selected_video_topics:
-                        if topic not in video_writers:
-                            video_writers[topic] = VideoTopicWriter(topic, args.output_dir, args.overwrite)
-                        video_writer = video_writers[topic]
+                        key = (bag_name, topic)
+                        if key not in video_writers:
+                            # pass bag_dir so VideoTopicWriter writes under <output_dir>/<bag_name>/<sanitized_topic>/
+                            video_writers[key] = VideoTopicWriter(topic, bag_dir, args.overwrite)
+                        video_writer = video_writers[key]
                         try:
                             frame = image_msg_to_bgr(decoded_msg, topic_specs.get(topic))
                         except Exception as exc:  # pragma: no cover
@@ -627,9 +636,11 @@ def main() -> int:
                         total_messages += 1
                         continue
 
-                    if topic not in ndjson_files:
+                    # Non-video topics: open per-bag NDJSON file next to messages_info.json
+                    key = (bag_name, topic)
+                    if key not in ndjson_files:
                         sanitized = sanitize_topic_name(topic)
-                        topic_dir = args.output_dir / sanitized
+                        topic_dir = bag_dir / sanitized
                         output_file = topic_dir / "messages.ndjson"
                         ensure_parent(output_file, args.overwrite)
                         info_file = topic_dir / "messages_info.json"
@@ -640,10 +651,10 @@ def main() -> int:
                                 )
                             info_file.unlink()
                         fh = output_file.open("w", encoding="utf-8")
-                        ndjson_files[topic] = fh
-                        ndjson_paths[topic] = output_file
-                        ndjson_info_paths[topic] = info_file
-                        ndjson_stats[topic] = {
+                        ndjson_files[key] = fh
+                        ndjson_paths[key] = output_file
+                        ndjson_info_paths[key] = info_file
+                        ndjson_stats[key] = {
                             "frame_count": 0,
                             "start_time_ns": None,
                             "end_time_ns": None,
@@ -660,10 +671,10 @@ def main() -> int:
                         "publish_time_ns": message.publish_time,
                         "data": to_jsonable(decoded_msg),
                     }
-                    ndjson_files[topic].write(json.dumps(record))
-                    ndjson_files[topic].write("\n")
+                    ndjson_files[key].write(json.dumps(record))
+                    ndjson_files[key].write("\n")
 
-                    stats = ndjson_stats[topic]
+                    stats = ndjson_stats[key]
                     stats["frame_count"] += 1
                     stats["bag_files"].add(mcap_path.name)
                     if stats["start_time_ns"] is None or timestamp_ns < stats["start_time_ns"]:
@@ -675,9 +686,11 @@ def main() -> int:
         for fh in ndjson_files.values():
             fh.close()
 
-    info_outputs: Dict[str, Path] = {}
-    for topic, stats in ndjson_stats.items():
-        info_path = ndjson_info_paths[topic]
+    # Write per-bag per-topic messages_info.json files
+    info_outputs: Dict[Tuple[str, str], Path] = {}
+    for key, stats in ndjson_stats.items():
+        bag_name, topic = key
+        info_path = ndjson_info_paths[key]
         frame_count = stats["frame_count"]
         start_ns = stats["start_time_ns"]
         end_ns = stats["end_time_ns"]
@@ -687,9 +700,10 @@ def main() -> int:
             duration_seconds = 0.0
         frequency_hz = frame_count / duration_seconds if duration_seconds > 0 else 0.0
         payload = {
+            "bag": bag_name,
             "topic": topic,
             "type": stats["type"],
-            "messages_path": str(ndjson_paths[topic]),
+            "messages_path": str(ndjson_paths[key]),
             "frame_count": frame_count,
             "start_time_ns": start_ns,
             "end_time_ns": end_ns,
@@ -699,19 +713,22 @@ def main() -> int:
         }
         with info_path.open("w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
-        info_outputs[topic] = info_path
+        info_outputs[key] = info_path
 
-    video_outputs: Dict[str, Tuple[Path, Path]] = {}
-    for topic, writer in video_writers.items():
+    # Finalize per-bag video writers
+    video_outputs: Dict[Tuple[str, str], Tuple[Path, Path]] = {}
+    for key, writer in video_writers.items():
         try:
             result = writer.finalize()
         except Exception as exc:  # pragma: no cover
-            print(f"[ERROR] Failed to finalize video for {topic}: {exc}", file=sys.stderr)
+            bag_name, topic = key
+            print(f"[ERROR] Failed to finalize video for {topic} in bag {bag_name}: {exc}", file=sys.stderr)
             return 1
         if result:
-            video_outputs[topic] = result
+            video_outputs[key] = result
         else:
-            print(f"[WARN] No frames decoded for {topic}; MP4 not created.", file=sys.stderr)
+            bag_name, topic = key
+            print(f"[WARN] No frames decoded for {topic} in bag {bag_name}; MP4 not created.", file=sys.stderr)
 
     print(
         f"[INFO] Finished decoding. Processed {total_messages} message(s) "
@@ -720,15 +737,15 @@ def main() -> int:
 
     if ndjson_paths:
         print("[INFO] NDJSON outputs:")
-        for topic, path in ndjson_paths.items():
-            print(f"       {topic} -> {path}")
-            info_path = info_outputs.get(topic)
+        for (bag_name, topic), path in ndjson_paths.items():
+            print(f"       {bag_name} :: {topic} -> {path}")
+            info_path = info_outputs.get((bag_name, topic))
             if info_path:
                 print(f"          info -> {info_path}")
     if video_outputs:
         print("[INFO] Video outputs:")
-        for topic, (video_path, info_path) in video_outputs.items():
-            print(f"       {topic} -> {video_path}")
+        for (bag_name, topic), (video_path, info_path) in video_outputs.items():
+            print(f"       {bag_name} :: {topic} -> {video_path}")
             print(f"          info -> {info_path}")
 
     return 0
