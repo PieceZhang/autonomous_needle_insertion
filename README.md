@@ -128,11 +128,11 @@ POLARIS_IP=192.168.56.5
 ### 3) Build images (first run)
 Download and build the images:
 ```bash
-docker compose build
+docker compose --profile dev build
 # It might take a while depending on your internet connection.
 
 # Optional: Sometimes you may want to get the latest base docker image and rebuild completely with:
-docker compose build --no-cache
+docker compose --profile dev build --no-cache
 ```
 
 ### 4) Fire up hardware
