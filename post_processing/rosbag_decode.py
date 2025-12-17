@@ -589,6 +589,8 @@ def main() -> int:
 
     ndjson_paths: Dict[str, Path] = {}
     ndjson_files: Dict[str, Any] = {}
+    ndjson_info_paths: Dict[str, Path] = {}
+    ndjson_stats: Dict[str, Dict[str, Any]] = {}
     video_writers: Dict[str, VideoTopicWriter] = {}
     total_messages = 0
 
@@ -630,10 +632,26 @@ def main() -> int:
                         topic_dir = args.output_dir / sanitized
                         output_file = topic_dir / "messages.ndjson"
                         ensure_parent(output_file, args.overwrite)
+                        info_file = topic_dir / "messages_info.json"
+                        if info_file.exists():
+                            if not args.overwrite:
+                                raise FileExistsError(
+                                    f"{info_file} already exists. Use --overwrite to replace it."
+                                )
+                            info_file.unlink()
                         fh = output_file.open("w", encoding="utf-8")
                         ndjson_files[topic] = fh
                         ndjson_paths[topic] = output_file
+                        ndjson_info_paths[topic] = info_file
+                        ndjson_stats[topic] = {
+                            "frame_count": 0,
+                            "start_time_ns": None,
+                            "end_time_ns": None,
+                            "bag_files": set(),
+                            "type": topic_specs[topic],
+                        }
 
+                    timestamp_ns = message.publish_time or message.log_time or 0
                     record = {
                         "bag_file": mcap_path.name,
                         "topic": topic,
@@ -644,10 +662,44 @@ def main() -> int:
                     }
                     ndjson_files[topic].write(json.dumps(record))
                     ndjson_files[topic].write("\n")
+
+                    stats = ndjson_stats[topic]
+                    stats["frame_count"] += 1
+                    stats["bag_files"].add(mcap_path.name)
+                    if stats["start_time_ns"] is None or timestamp_ns < stats["start_time_ns"]:
+                        stats["start_time_ns"] = timestamp_ns
+                    if stats["end_time_ns"] is None or timestamp_ns > stats["end_time_ns"]:
+                        stats["end_time_ns"] = timestamp_ns
                     total_messages += 1
     finally:
         for fh in ndjson_files.values():
             fh.close()
+
+    info_outputs: Dict[str, Path] = {}
+    for topic, stats in ndjson_stats.items():
+        info_path = ndjson_info_paths[topic]
+        frame_count = stats["frame_count"]
+        start_ns = stats["start_time_ns"]
+        end_ns = stats["end_time_ns"]
+        if start_ns is not None and end_ns is not None and end_ns >= start_ns:
+            duration_seconds = (end_ns - start_ns) / 1e9
+        else:
+            duration_seconds = 0.0
+        frequency_hz = frame_count / duration_seconds if duration_seconds > 0 else 0.0
+        payload = {
+            "topic": topic,
+            "type": stats["type"],
+            "messages_path": str(ndjson_paths[topic]),
+            "frame_count": frame_count,
+            "start_time_ns": start_ns,
+            "end_time_ns": end_ns,
+            "duration_seconds": duration_seconds,
+            "frequency_hz": frequency_hz,
+            "bag_files": sorted(stats["bag_files"]),
+        }
+        with info_path.open("w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        info_outputs[topic] = info_path
 
     video_outputs: Dict[str, Tuple[Path, Path]] = {}
     for topic, writer in video_writers.items():
@@ -670,6 +722,9 @@ def main() -> int:
         print("[INFO] NDJSON outputs:")
         for topic, path in ndjson_paths.items():
             print(f"       {topic} -> {path}")
+            info_path = info_outputs.get(topic)
+            if info_path:
+                print(f"          info -> {info_path}")
     if video_outputs:
         print("[INFO] Video outputs:")
         for topic, (video_path, info_path) in video_outputs.items():
@@ -681,3 +736,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
