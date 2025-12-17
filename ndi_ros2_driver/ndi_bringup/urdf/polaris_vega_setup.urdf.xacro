@@ -19,12 +19,12 @@
         <!-- BEGIN: add trackers here -->
         <!-- It is advised to load only the markers you are interested in broadcasting -->
         <xacro:ndi_tracker 
-            name="probe"
+            name="needle"
             srom="$(find ndi_description)/sroms/8700340.rom"
         />
         <xacro:ndi_tracker
-            name="us_tracker"
-            srom="$(find ndi_description)/sroms/8700339.rom"
+            name="us_probe"
+            srom="$(find ndi_description)/sroms/ANI-C51.rom"
         />
         <!-- END: add trackers here -->
 

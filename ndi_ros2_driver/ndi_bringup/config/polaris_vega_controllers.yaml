@@ -7,10 +7,10 @@ ndi/controller_manager:
     # BEGIN: add broadcaster for each tracker here
     # - broadcaster name should be distinct
     # - we should not add the prefix "ndi/" here as we have already done this for the controller manager
-    probe_pose_broadcaster:
+    needle_pose_broadcaster:
       type: pose_broadcaster/PoseBroadcaster
 
-    us_tracker_pose_broadcaster:
+    us_probe_pose_broadcaster:
       type: pose_broadcaster/PoseBroadcaster
     # END: add broadcaster for each tracker here
   
@@ -18,13 +18,13 @@ ndi/controller_manager:
 # - pose_name should be the same as tracker name in URDF
 # - frame_id should be the same as base link in URDF
 # - by the prefix "ndi/", we spawn the controllers under namespace "ndi"
-ndi/probe_pose_broadcaster:
+ndi/needle_pose_broadcaster:
   ros__parameters:
-    pose_name: "probe"
+    pose_name: "needle"
     frame_id: "polaris_vega_base"
 
-ndi/us_tracker_pose_broadcaster:
+ndi/us_probe_pose_broadcaster:
   ros__parameters:
-    pose_name: "us_tracker"
+    pose_name: "us_probe"
     frame_id: "polaris_vega_base"
 # END: configure broadcaster for each tracker here
