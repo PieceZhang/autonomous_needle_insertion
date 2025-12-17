@@ -565,6 +565,9 @@ def main() -> int:
         print("[ERROR] No topics selected for decoding.", file=sys.stderr)
         return 1
 
+    # remember expected topics for later missing-topic warning
+    expected_topics: Set[str] = set(topic_specs.keys())
+
     selected_video_topics = set(topic_specs) & VIDEO_TOPICS
     if selected_video_topics:
         try:
@@ -595,6 +598,9 @@ def main() -> int:
     video_writers: Dict[Tuple[str, str], VideoTopicWriter] = {}
     total_messages = 0
 
+    # Track which topics from metadata were actually found in the MCAP files
+    seen_topics: Set[str] = set()
+
     try:
         for mcap_path in iter_mcap_files(args.mcap_dir):
             print(f"[INFO] Decoding {mcap_path.name} ...")
@@ -609,6 +615,10 @@ def main() -> int:
                     topic = channel.topic
                     if topic not in topic_specs:
                         continue
+
+                    # Mark topic as seen as soon as any message for it is encountered
+                    seen_topics.add(topic)
+
                     try:
                         decoder = get_decoder(schema, channel)
                         decoded_msg = decoder(message.data)
@@ -685,6 +695,14 @@ def main() -> int:
     finally:
         for fh in ndjson_files.values():
             fh.close()
+
+    # After processing all MCAPs, warn about any expected topics never seen
+    missing_topics = sorted(list(expected_topics - seen_topics))
+    if missing_topics:
+        print(
+            f"[WARN] The following topics were listed in metadata but not found in any MCAP: {missing_topics}",
+            file=sys.stderr,
+        )
 
     # Write per-bag per-topic messages_info.json files
     info_outputs: Dict[Tuple[str, str], Path] = {}

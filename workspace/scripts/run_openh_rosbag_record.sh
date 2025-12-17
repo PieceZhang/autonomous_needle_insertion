@@ -3,7 +3,7 @@
 echo "Start recording rosbag..."
 echo "Use Ctrl+C to stop recording."
 
-sleep 1s
+sleep 0.25s
 
 ros2 bag record /vega_vt/image_raw /vega_vt/camera_info \
                 /image_raw/compressed \
@@ -16,3 +16,5 @@ ros2 bag record /vega_vt/image_raw /vega_vt/camera_info \
                 /ndi/us_probe_pose /ndi/needle_pose
 
 # TODO add topics: keyboard, procedural_phase,...
+# TODO video in depth/image_rect_raw is keep changing brightness
+
