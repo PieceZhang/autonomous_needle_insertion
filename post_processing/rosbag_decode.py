@@ -68,8 +68,8 @@ VIDEO_TOPICS: Set[str] = {
     "/vega_vt/image_raw",
     "/image_raw/compressed",
     "/camera/camera/color/image_raw/compressed",
-    "/camera/camera/depth/image_rect_raw",
-    # "/camera/camera/depth/image_rect_raw/compressedDepth",
+    # "/camera/camera/depth/image_rect_raw",
+    "/camera/camera/depth/image_rect_raw/compressedDepth",
 }
 
 KNOWN_ENCODINGS = {
@@ -315,6 +315,10 @@ def _compressed_image_to_bgr(msg: Any) -> "tnp.ndarray":
         raise ValueError("CompressedImage data is empty.")
     fmt_lower = fmt.lower()
 
+    # Handle compressedDepth format
+    if "compresseddepth" in fmt_lower:
+        return _decode_compressed_depth(data)
+
     # Direct decode (JPEG/PNG/etc.)
     if "zstd" not in fmt_lower:
         frame = _decode_cv_image(buffer)
@@ -349,6 +353,59 @@ def _compressed_image_to_bgr(msg: Any) -> "tnp.ndarray":
             f"format='{fmt}'. Include tokens such as 'encoding=16UC1; width=640; height=480'."
         )
     return _raw_bytes_to_bgr(decompressed, width, height, encoding, bigendian)
+
+
+def _decode_compressed_depth(data: bytes) -> "tnp.ndarray":
+    """
+    Decode compressedDepth format (PNG-encoded 16-bit depth data with header).
+
+    The compressedDepth format stores depth data as PNG with a special header.
+    Format: [header][PNG data]
+    Header contains depth quantization parameters.
+    """
+    if cv2 is None or np is None:
+        require_video_dependencies()
+
+    # CompressedDepth format has a header before PNG data
+    if len(data) < 12:
+        raise RuntimeError("CompressedDepth data too short")
+
+    # Try to find PNG magic bytes
+    png_start = data.find(b"\x89PNG")
+
+    if png_start == -1:
+        raise RuntimeError("PNG header not found in compressedDepth data")
+
+    # Decode PNG data
+    png_data = np.frombuffer(data[png_start:], dtype=np.uint8)
+    img = cv2.imdecode(png_data, cv2.IMREAD_UNCHANGED)
+
+    if img is None:
+        raise RuntimeError("cv2.imdecode failed for compressedDepth frame")
+
+    # The PNG contains 16-bit depth values
+    if img.dtype == np.uint16:
+        depth_image = img
+    else:
+        # If it came as uint8, we need to convert
+        depth_image = img.astype(np.uint16)
+
+    # Normalize to 0-255 range for visualization
+    min_val = np.min(depth_image)
+    max_val = np.max(depth_image)
+
+    if max_val > min_val:
+        normalized = ((depth_image - min_val) / (max_val - min_val) * 255).astype(np.uint8)
+    else:
+        normalized = np.zeros_like(depth_image, dtype=np.uint8)
+
+    # # Apply colormap for better visualization
+    # colored = cv2.applyColorMap(normalized, cv2.COLORMAP_JET)
+    # return colored
+
+    # Convert grayscale to BGR (3-channel) for video compatibility
+    grayscale_bgr = cv2.cvtColor(normalized, cv2.COLOR_GRAY2BGR)
+    return grayscale_bgr
 
 
 def _ensure_bgr(image: "tnp.ndarray") -> "tnp.ndarray":
