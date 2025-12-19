@@ -38,6 +38,9 @@ from typing import (
     TYPE_CHECKING,
 )
 
+# Add datetime import for creation timestamp
+from datetime import datetime, timezone
+
 import yaml
 from mcap.reader import make_reader
 from mcap_ros2.decoder import DecoderFactory
@@ -540,6 +543,155 @@ class VideoTopicWriter:
         return self.video_path, self.info_path
 
 
+def _safe_get_duration_seconds(info: Dict[str, Any]) -> float:
+    """
+    Try to compute bag duration in seconds from various metadata.yaml schemas.
+    """
+    # rosbag2 v4+ stores duration as dict: {"nanoseconds": <int>}
+    dur = info.get("duration")
+    if isinstance(dur, dict) and "nanoseconds" in dur:
+        try:
+            return max(float(dur["nanoseconds"]) / 1e9, 0.0)
+        except Exception:
+            pass
+    # Some versions store start/end times (nanoseconds since epoch)
+    start_ns = info.get("start_time", {}).get("nanoseconds") if isinstance(info.get("start_time"), dict) else info.get("starting_time", None)
+    end_ns = info.get("end_time", {}).get("nanoseconds") if isinstance(info.get("end_time"), dict) else info.get("ending_time", None)
+    try:
+        if isinstance(start_ns, (int, float)) and isinstance(end_ns, (int, float)):
+            return max((float(end_ns) - float(start_ns)) / 1e9, 0.0)
+    except Exception:
+        pass
+    # Fallback: 0.0 if unknown
+    return 0.0
+
+
+def _safe_get_start_end_ns(info: Dict[str, Any]) -> Tuple[Optional[int], Optional[int]]:
+    """
+    Extract start/end timestamps in nanoseconds if available.
+    """
+    start = None
+    end = None
+    st = info.get("start_time")
+    et = info.get("end_time")
+    if isinstance(st, dict) and "nanoseconds" in st:
+        try:
+            start = int(st["nanoseconds"])
+        except Exception:
+            pass
+    if isinstance(et, dict) and "nanoseconds" in et:
+        try:
+            end = int(et["nanoseconds"])
+        except Exception:
+            pass
+    # Alternative keys used in some metadata versions
+    if start is None and isinstance(info.get("starting_time"), int):
+        start = int(info["starting_time"])
+    if end is None and isinstance(info.get("ending_time"), int):
+        end = int(info["ending_time"])
+    return start, end
+
+
+def write_rosbag_info(metadata_path: Path, output_dir: Path, overwrite: bool, mcap_path: Optional[Path] = None) -> Path:
+    """
+    Save a rosbag_info.json under output_dir containing basic information from metadata.yaml.
+
+    Additionally, for each topic listed in metadata, attempt to read a corresponding
+    messages_info.json or video_info.json from output_dir/<sanitized_topic>/ and include
+    that JSON under the topic entry as "decoded_info".
+
+    If mcap_path is provided, include the mcap file name and its size (bytes and GB).
+    """
+    with metadata_path.open("r", encoding="utf-8") as f:
+        meta = yaml.safe_load(f) or {}
+
+    info = meta.get("rosbag2_bagfile_information", {}) or {}
+    topics = info.get("topics_with_message_count", []) or []
+
+    payload_topics: List[Dict[str, Any]] = []
+    for t in topics:
+        try:
+            tm = t.get("topic_metadata", {}) or {}
+            topic_entry: Dict[str, Any] = {
+                "name": tm.get("name"),
+                "type": tm.get("type"),
+                "serialization_format": tm.get("serialization_format"),
+                "message_count": t.get("message_count"),
+            }
+
+            # Try to augment with per-topic decoded info (messages_info.json or video_info.json)
+            topic_name = topic_entry.get("name")
+            if topic_name:
+                sanitized = sanitize_topic_name(topic_name)
+                topic_dir = output_dir / sanitized
+                # prefer messages_info.json for NDJSON topics, fallback to video_info.json
+                for info_fname in ("messages_info.json", "video_info.json"):
+                    candidate = topic_dir / info_fname
+                    if candidate.is_file():
+                        try:
+                            with candidate.open("r", encoding="utf-8") as fh:
+                                topic_entry["decoded_info"] = json.load(fh)
+                        except Exception:
+                            # ignore read/parse errors; leave decoded_info absent
+                            pass
+                        break
+
+            payload_topics.append(topic_entry)
+        except Exception:
+            continue
+
+    duration_seconds = _safe_get_duration_seconds(info)
+    start_ns, end_ns = _safe_get_start_end_ns(info)
+
+    total_messages = info.get("message_count")
+    bag_size = None
+    if isinstance(info.get("bag_size"), dict) and "bytes" in info["bag_size"]:
+        bag_size = info["bag_size"]["bytes"]
+    elif isinstance(info.get("bag_size"), (int, float)):
+        bag_size = info["bag_size"]
+
+    # mcap size info (if available)
+    mcap_size_bytes: Optional[int] = None
+    mcap_size_gb: Optional[float] = None
+    mcap_name: Optional[str] = None
+    if mcap_path is not None:
+        try:
+            if mcap_path.is_file():
+                mcap_size_bytes = int(mcap_path.stat().st_size)
+                mcap_size_gb = round(float(mcap_size_bytes) / 1e9, 6)
+                mcap_name = mcap_path.name
+        except Exception:
+            mcap_size_bytes = None
+            mcap_size_gb = None
+            mcap_name = None
+
+    rosbag_info = {
+        "decoded_at": datetime.now().isoformat(),
+        "source_metadata_path": str(metadata_path),
+        "mcap_file": mcap_name,
+        "mcap_size_bytes": mcap_size_bytes,
+        "mcap_size_gb": mcap_size_gb,
+        "duration_seconds": duration_seconds,
+        "start_time_ns": start_ns,
+        "end_time_ns": end_ns,
+        "total_messages": total_messages,
+        "bag_size_bytes": bag_size,
+        "compression_format": info.get("compression_format"),
+        "compression_mode": info.get("compression_mode"),
+        "topics": payload_topics,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_path = output_dir / "rosbag_info.json"
+    if out_path.exists():
+        if not overwrite:
+            raise FileExistsError(f"{out_path} already exists. Use --overwrite to replace it.")
+        out_path.unlink()
+    with out_path.open("w", encoding="utf-8") as f:
+        json.dump(rosbag_info, f, indent=2)
+    return out_path
+
+
 def main() -> int:
     args = parse_args()
 
@@ -600,6 +752,8 @@ def main() -> int:
 
     # Track which topics from metadata were actually found in the MCAP files
     seen_topics: Set[str] = set()
+    # Track rosbag_info writing per bag subfolder
+    wrote_info_for_bag: Set[str] = set()
 
     try:
         for mcap_path in iter_mcap_files(args.mcap_dir):
@@ -608,6 +762,16 @@ def main() -> int:
             bag_name = mcap_path.stem
             bag_dir = args.output_dir / bag_name
             bag_dir.mkdir(parents=True, exist_ok=True)
+
+            # NEW: write rosbag_info.json into the bag subfolder once (include mcap file info)
+            if bag_name not in wrote_info_for_bag:
+                try:
+                    info_json_path = write_rosbag_info(metadata_path, bag_dir, args.overwrite, mcap_path=mcap_path)
+                    print(f"[INFO] Wrote rosbag info -> {info_json_path}")
+                except Exception as exc:
+                    print(f"[WARN] Failed to write rosbag_info.json in {bag_dir}: {exc}", file=sys.stderr)
+                else:
+                    wrote_info_for_bag.add(bag_name)
 
             with mcap_path.open("rb") as stream:
                 reader = make_reader(stream)
