@@ -140,9 +140,11 @@ def sanitize_topic_name(topic: str) -> str:
 
 def iter_mcap_files(mcap_dir: Path) -> Iterable[Path]:
     files = sorted(mcap_dir.glob("*.mcap"))
-    if not files:
-        raise FileNotFoundError(f"No .mcap files found in {mcap_dir}")
-    return files
+    zstd_files = sorted(mcap_dir.glob("*.mcap.zstd"))
+    all_files = sorted(list(files) + list(zstd_files))
+    if not all_files:
+        raise FileNotFoundError(f"No .mcap or .mcap.zstd files found in {mcap_dir}")
+    return all_files
 
 
 def ensure_parent(path: Path, overwrite: bool) -> None:
@@ -817,7 +819,10 @@ def main() -> int:
         for mcap_path in iter_mcap_files(args.mcap_dir):
             print(f"[INFO] Decoding {mcap_path.name} ...")
             # Create a bag-specific output subfolder named by the rosbag file stem
+            # Remove .zstd extension if present for bag naming
             bag_name = mcap_path.stem
+            if bag_name.endswith(".mcap"):
+                bag_name = bag_name[:-5]  # Remove .mcap extension
             bag_dir = args.output_dir / bag_name
             bag_dir.mkdir(parents=True, exist_ok=True)
 
@@ -825,7 +830,41 @@ def main() -> int:
             bag_dirs[bag_name] = bag_dir
             bag_mcap_paths[bag_name] = mcap_path
 
-            with mcap_path.open("rb") as stream:
+            # Handle .mcap.zstd files by decompressing on-the-fly
+            is_zstd = mcap_path.suffix == ".zstd"
+
+            if is_zstd:
+                # Check if zstd is available
+                if zstd is None:
+                    print(f"[ERROR] File {mcap_path.name} requires zstandard package. Install via: pip install zstandard", file=sys.stderr)
+                    return 1
+
+                # Use streaming decompression to handle files without fixed content size
+                print(f"[INFO] Decompressing {mcap_path.name}...")
+                from io import BytesIO
+
+                try:
+                    with mcap_path.open("rb") as compressed_file:
+                        dctx = zstd.ZstdDecompressor()
+                        # Use stream_reader for streaming decompression
+                        decompressed_chunks = []
+                        with dctx.stream_reader(compressed_file) as reader:
+                            while True:
+                                chunk = reader.read(16384)  # Read in 16KB chunks
+                                if not chunk:
+                                    break
+                                decompressed_chunks.append(chunk)
+                        decompressed_data = b''.join(decompressed_chunks)
+                except Exception as exc:
+                    print(f"[ERROR] Failed to decompress {mcap_path.name}: {exc}", file=sys.stderr)
+                    return 1
+
+                # Create a BytesIO stream from decompressed data
+                stream = BytesIO(decompressed_data)
+            else:
+                stream = mcap_path.open("rb")
+
+            try:
                 reader = make_reader(stream)
                 for schema, channel, message in reader.iter_messages():
                     topic = channel.topic
@@ -908,6 +947,9 @@ def main() -> int:
                     if stats["end_time_ns"] is None or timestamp_ns > stats["end_time_ns"]:
                         stats["end_time_ns"] = timestamp_ns
                     total_messages += 1
+            finally:
+                if not is_zstd:
+                    stream.close()
     finally:
         for fh in ndjson_files.values():
             fh.close()
