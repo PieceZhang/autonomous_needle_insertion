@@ -117,7 +117,7 @@ fi
   echo
 
   # Group 6: USB video grabber
-  echo "USB_VIDEO_DEVICE=${USB_VIDEO_DEVICE:-/dev/video6}"
+  echo "USB_VIDEO_DEVICE=${USB_VIDEO_DEVICE:-/dev/video0}"
   echo "USB_VIDEO_WIDTH=${USB_VIDEO_WIDTH:-1920}"
   echo "USB_VIDEO_HEIGHT=${USB_VIDEO_HEIGHT:-1080}"
   echo "USB_VIDEO_FPS=${USB_VIDEO_FPS:-30.0}"
