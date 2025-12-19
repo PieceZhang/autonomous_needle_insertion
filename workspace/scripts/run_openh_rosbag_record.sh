@@ -11,7 +11,7 @@ ros2 bag record /vega_vt/image_raw /vega_vt/camera_info \
                 /camera/camera/depth/image_rect_raw/compressedDepth /camera/camera/depth/camera_info /camera/camera/depth/metadata \
                 /camera/camera/extrinsics/depth_to_color \
                 /ati_ft_broadcaster/wrench \
-                /scaled_joint_trajectory_controller/joint_trajectory \
+                /joint_states \
                 /tcp_pose_broadcaster/pose \
                 /ndi/us_probe_pose /ndi/needle_pose
 
