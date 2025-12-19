@@ -809,8 +809,9 @@ def main() -> int:
 
     # Track which topics from metadata were actually found in the MCAP files
     seen_topics: Set[str] = set()
-    # Track rosbag_info writing per bag subfolder
-    wrote_info_for_bag: Set[str] = set()
+    # Track bag directories and mcap paths for later rosbag_info writing
+    bag_dirs: Dict[str, Path] = {}
+    bag_mcap_paths: Dict[str, Path] = {}
 
     try:
         for mcap_path in iter_mcap_files(args.mcap_dir):
@@ -820,15 +821,9 @@ def main() -> int:
             bag_dir = args.output_dir / bag_name
             bag_dir.mkdir(parents=True, exist_ok=True)
 
-            # NEW: write rosbag_info.json into the bag subfolder once (include mcap file info)
-            if bag_name not in wrote_info_for_bag:
-                try:
-                    info_json_path = write_rosbag_info(metadata_path, bag_dir, args.overwrite, mcap_path=mcap_path)
-                    print(f"[INFO] Wrote rosbag info -> {info_json_path}")
-                except Exception as exc:
-                    print(f"[WARN] Failed to write rosbag_info.json in {bag_dir}: {exc}", file=sys.stderr)
-                else:
-                    wrote_info_for_bag.add(bag_name)
+            # Store for later rosbag_info writing
+            bag_dirs[bag_name] = bag_dir
+            bag_mcap_paths[bag_name] = mcap_path
 
             with mcap_path.open("rb") as stream:
                 reader = make_reader(stream)
@@ -968,6 +963,15 @@ def main() -> int:
         else:
             bag_name, topic = key
             print(f"[WARN] No frames decoded for {topic} in bag {bag_name}; MP4 not created.", file=sys.stderr)
+
+    # NOW write rosbag_info.json for each bag after all topic info files exist
+    for bag_name, bag_dir in bag_dirs.items():
+        try:
+            mcap_path = bag_mcap_paths.get(bag_name)
+            info_json_path = write_rosbag_info(metadata_path, bag_dir, args.overwrite, mcap_path=mcap_path)
+            print(f"[INFO] Wrote rosbag info -> {info_json_path}")
+        except Exception as exc:
+            print(f"[WARN] Failed to write rosbag_info.json in {bag_dir}: {exc}", file=sys.stderr)
 
     print(
         f"[INFO] Finished decoding. Processed {total_messages} message(s) "
