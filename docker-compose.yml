@@ -183,6 +183,30 @@ services:
       start_period: 3s
     restart: unless-stopped
 
+
+  rqt_task_ui:
+    <<: *ros_common
+    container_name: "${COMPOSE_PROJECT_NAME:-ros2}-rqt-task-ui"
+    profiles: ["default", "dev"]
+    command: >
+      bash -lc "
+        set -e;
+        cd ${WS_DIR:-/ani_ws};
+        if [ ! -f src/rqt_task_interface/setup.py ]; then
+          echo 'rqt_task_interface package not found in workspace/src. Please place the files and retry.'; exit 1;
+        fi;
+        if [ -f ${WS_DIR:-/ani_ws}/install/setup.bash ]; then
+          echo '[rqt_task_ui] install/setup.bash exists, skip colcon build.';
+        else
+          echo '[rqt_task_ui] install not found, building rqt_task_interface...';
+          colcon build --symlink-install --packages-select rqt_task_interface;
+        fi;
+        source install/setup.bash;
+        echo 'Starting RQT Task Interface (publishing /task_info @1Hz)...';
+        exec rqt --standalone rqt_task_interface
+      "
+    restart: unless-stopped
+
   dev:
     <<: *ros_common
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-dev"
