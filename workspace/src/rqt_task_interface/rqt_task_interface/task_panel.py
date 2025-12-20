@@ -55,7 +55,7 @@ class TaskPanel(Plugin):
         # Phantom Info
         self.phantom_combo = QtWidgets.QComboBox()
         self.phantom_combo.setEditable(True)
-        self.phantom_combo.addItems(['Abdominal Phantom', 'Lambar Phantom', 'Prok'])
+        self.phantom_combo.addItems(['Abdominal Phantom', 'Lambar Phantom', 'Pork'])
         self.phantom_combo.setCurrentIndex(-1)
         self.phantom_combo.lineEdit().setPlaceholderText('Select or type...')
         form.addRow('Phantom Info:', self.phantom_combo)
