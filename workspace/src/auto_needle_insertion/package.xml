@@ -3,7 +3,7 @@
             schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>auto_needle_insertion</name>
-  <version>0.1.0</version>
+  <version>0.2.0</version>
   <description>Robot arm and needle control for ultrasound-guided autonomous needle insertion</description>
   <maintainer email="qp.ding@link.cuhk.edu.hk">Quinn Ding</maintainer>
   <license>Apache-2.0</license>
