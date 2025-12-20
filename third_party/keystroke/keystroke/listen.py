@@ -13,14 +13,17 @@ from pynput import keyboard
 import rclpy
 from rclpy.parameter import Parameter
 import std_msgs.msg
+from rclpy.qos import QoSProfile
 
 
 class KeystrokeListen:
     def __init__(self, name=None):
+        qos = QoSProfile(depth=10)
         self.node = rclpy.create_node(name or type(self).__name__)
-        self.pub_glyph = self.node.create_publisher(std_msgs.msg.String, 'glyphkey_pressed')
+        self.node.declare_parameter('exit_on_esc', True)
+        self.pub_glyph = self.node.create_publisher(std_msgs.msg.String, 'keyboard_listener/glyphkey_pressed', qos)
         # todo: when ROS2 supports Enums, use them: https://github.com/ros2/rosidl/issues/260
-        self.pub_code = self.node.create_publisher(std_msgs.msg.UInt32, 'key_pressed')
+        self.pub_code = self.node.create_publisher(std_msgs.msg.UInt32, 'keyboard_listener/key_pressed', qos)
         if self.exit_on_esc:
             self.logger.info('To end this node, press the escape key')
 

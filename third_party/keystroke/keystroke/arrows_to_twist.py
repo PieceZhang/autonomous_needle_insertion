@@ -11,13 +11,15 @@ from pynput.keyboard import Key
 import rclpy
 from rclpy.constants import S_TO_NS
 from std_msgs.msg import UInt32
+from rclpy.qos import QoSProfile
 
 
 class ArrowsToTwist:
     def __init__(self, name=None):
+        qos = QoSProfile(depth=10)
         self.node = rclpy.create_node(name or type(self).__name__)
         self.sub_code = self.node.create_subscription(UInt32, 'key_pressed', self.on_code)
-        self.pub_twist = self.node.create_publisher(Twist, 'cmd_vel')
+        self.pub_twist = self.node.create_publisher(Twist, 'cmd_vel', qos)
         publish_period_sec = self.get_param('publish_period', float, 0.2)
         self.tmr_twist = self.node.create_timer(publish_period_sec, self.on_tmr)
         self.linear_scale = self.get_param('linear_scale', float, 0.1)
