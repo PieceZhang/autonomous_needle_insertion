@@ -11,8 +11,11 @@ import cv2
 import numpy as np
 import xml.etree.ElementTree as ET
 
+M_TO_MM = 1000.0  # conversion factor
+
 
 def pose_to_dict(msg: PoseStamped):
+    """Return the raw pose dict in meters (as received)."""
     return {
         "header": {
             "stamp": {"sec": int(msg.header.stamp.sec), "nanosec": int(msg.header.stamp.nanosec)},
@@ -32,26 +35,83 @@ def pose_to_dict(msg: PoseStamped):
     }
 
 
-def parse_matrix_string(matrix_str: str):
-    """将多行矩阵字符串解析为 4x4 浮点数组（list[list[float]]）。"""
-    # 去除换行和制表符后拆分
+def quaternion_to_matrix(qx, qy, qz, qw) -> np.ndarray:
+    """Convert a unit quaternion to a 3x3 rotation matrix; auto-normalize if not unit."""
+    n = qx*qx + qy*qy + qz*qz + qw*qw
+    if n < 1e-12:
+        return np.eye(3)
+    s = 2.0 / n
+    xx, yy, zz = qx*qx, qy*qy, qz*qz
+    xy, xz, yz = qx*qy, qx*qz, qy*qz
+    wx, wy, wz = qw*qx, qw*qy, qw*qz
+    R = np.array([
+        [1 - s*(yy + zz),     s*(xy - wz),       s*(xz + wy)],
+        [s*(xy + wz),         1 - s*(xx + zz),   s*(yz - wx)],
+        [s*(xz - wy),         s*(yz + wx),       1 - s*(xx + yy)],
+    ], dtype=float)
+    return R
+
+
+def pose_to_hmat(msg: PoseStamped) -> np.ndarray:
+    """Convert PoseStamped to a 4x4 homogeneous transform (meters in translation)."""
+    qx = msg.pose.orientation.x
+    qy = msg.pose.orientation.y
+    qz = msg.pose.orientation.z
+    qw = msg.pose.orientation.w
+    R = quaternion_to_matrix(qx, qy, qz, qw)
+    T = np.eye(4, dtype=float)
+    T[:3, :3] = R
+    T[0, 3] = msg.pose.position.x
+    T[1, 3] = msg.pose.position.y
+    T[2, 3] = msg.pose.position.z
+    return T
+
+
+def to_mm(T: np.ndarray) -> np.ndarray:
+    """Convert translation of a 4x4 transform from meters to millimeters."""
+    T_mm = T.copy()
+    T_mm[:3, 3] *= M_TO_MM
+    return T_mm
+
+
+def parse_matrix_string(matrix_str: str) -> np.ndarray:
+    """Parse a matrix string into a 4x4 numpy array."""
     tokens = matrix_str.replace("\n", " ").replace("\t", " ").split()
     vals = [float(t) for t in tokens]
     if len(vals) != 16:
         raise ValueError(f"Matrix expects 16 numbers, got {len(vals)}")
-    return [vals[i:i+4] for i in range(0, 16, 4)]
+    return np.array(vals, dtype=float).reshape(4, 4)
+
+
+def is_finite_pose(msg: PoseStamped) -> bool:
+    vals = [
+        msg.pose.position.x, msg.pose.position.y, msg.pose.position.z,
+        msg.pose.orientation.x, msg.pose.orientation.y, msg.pose.orientation.z, msg.pose.orientation.w
+    ]
+    return np.all(np.isfinite(vals))
+
+
+def is_finite_matrix(mat: np.ndarray) -> bool:
+    return mat.shape == (4, 4) and np.isfinite(mat).all()
 
 
 class USVisualizer(Node):
     def __init__(self):
         super().__init__("us_visualizer")
 
-        # 读取校准 XML
-        self.stylus_tip_to_stylus = None
-        self.image_to_probe = None
+        # Calibration transforms (all in millimeters)
+        self.T_stylus_from_tip = None   # StylusTip -> Stylus
+        self.T_probe_from_image = None  # Image -> Probe
+        self.T_image_from_probe = None  # Probe -> Image (inverse)
         self.load_calibration_xml()
 
-        # QoS: 图像用 best-effort，姿态用 reliable
+        # Dynamic transforms and availability flags (kept in millimeters)
+        self.T_tracker_probe = None     # Tracker -> Probe (mm)
+        self.T_tracker_stylus = None    # Tracker -> Stylus (mm)
+        self.probe_valid = False
+        self.needle_valid = False
+
+        # QoS profiles
         image_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
@@ -65,15 +125,13 @@ class USVisualizer(Node):
 
         self.bridge = CvBridge()
 
-        # 订阅压缩图像
+        # Subscriptions
         self.image_sub = self.create_subscription(
             CompressedImage,
             "/image_raw/compressed",
             self.on_image,
             qos_profile=image_qos,
         )
-
-        # 订阅探头与针的位姿
         self.probe_sub = self.create_subscription(
             PoseStamped,
             "/ndi/us_probe_pose",
@@ -87,38 +145,38 @@ class USVisualizer(Node):
             qos_profile=pose_qos,
         )
 
-        # 发布解码后的图像
+        # Publisher
         self.image_pub = self.create_publisher(
             Image,
             "/visualize/us_imaging",
             qos_profile=image_qos,
         )
 
-        self.last_probe_pose = None
-        self.last_needle_pose = None
+        self.last_probe_pose_dict = None  # stored as received (meters)
+        self.last_needle_pose_dict = None
 
-        # 每 5 秒打印一次当前姿态字典（debug 级别，可按需调整）
+        # Periodic debug
         self.create_timer(5.0, self.log_latest_poses)
 
         self.get_logger().info("us_visualizer node started")
 
     def load_calibration_xml(self):
-        """从 workspace/calibration 目录读取唯一的 PlusDeviceSet_fCal*.xml，并解析所需矩阵。"""
+        """Load the unique PlusDeviceSet_fCal*.xml and parse required transforms (in mm)."""
         ws_dir = os.environ.get("WS_DIR", "/ani_ws")
         calib_dir = os.path.join(ws_dir, "calibration")
         pattern = os.path.join(calib_dir, "PlusDeviceSet_fCal*.xml")
         files = glob.glob(pattern)
         if len(files) == 0:
-            msg = f"未找到校准文件 {pattern}"
+            msg = f"Calibration file not found: {pattern}"
             self.get_logger().error(msg)
             raise FileNotFoundError(msg)
         if len(files) > 1:
-            msg = f"找到多个校准文件 {files}，请确保只有一个以 PlusDeviceSet_fCal 开头的 XML"
+            msg = f"Multiple calibration files found: {files}. Ensure only one XML starting with PlusDeviceSet_fCal."
             self.get_logger().error(msg)
             raise RuntimeError(msg)
 
         xml_path = files[0]
-        self.get_logger().info(f"读取校准文件: {xml_path}")
+        self.get_logger().info(f"Reading calibration file: {xml_path}")
 
         tree = ET.parse(xml_path)
         root = tree.getroot()
@@ -127,18 +185,126 @@ class USVisualizer(Node):
             xpath = f".//Transform[@From='{frm}'][@To='{to}']"
             elem = root.find(xpath)
             if elem is None:
-                raise RuntimeError(f"在 {xml_path} 中未找到 Transform From='{frm}' To='{to}'")
+                raise RuntimeError(f"Transform From='{frm}' To='{to}' not found in {xml_path}")
             matrix_str = elem.get("Matrix")
             if matrix_str is None:
-                raise RuntimeError(f"在 {xml_path} 中 Transform From='{frm}' To='{to}' 无 Matrix 属性")
-            return parse_matrix_string(matrix_str)
+                raise RuntimeError(f"Transform From='{frm}' To='{to}' has no Matrix attribute in {xml_path}")
+            mat = parse_matrix_string(matrix_str)
+            if not is_finite_matrix(mat):
+                raise RuntimeError(f"Transform From='{frm}' To='{to}' contains NaN/Inf in {xml_path}")
+            return mat
 
-        self.stylus_tip_to_stylus = find_transform("StylusTip", "Stylus")
-        self.image_to_probe = find_transform("Image", "Probe")
+        # StylusTip -> Stylus  (mm)
+        self.T_stylus_from_tip = find_transform("StylusTip", "Stylus")
+        # Image -> Probe (mm)
+        self.T_probe_from_image = find_transform("Image", "Probe")
+        # Probe -> Image (inverse) (mm)
+        self.T_image_from_probe = np.linalg.inv(self.T_probe_from_image)
+        if not is_finite_matrix(self.T_image_from_probe):
+            raise RuntimeError("Probe -> Image inverse contains NaN/Inf")
 
-        self.get_logger().info("已加载 Transform 矩阵：")
-        self.get_logger().info(f"StylusTip -> Stylus:\n{self.stylus_tip_to_stylus}")
-        self.get_logger().info(f"Image -> Probe:\n{self.image_to_probe}")
+        self.get_logger().info("Loaded transform matrices (units: mm):")
+        self.get_logger().info(f"StylusTip -> Stylus:\n{self.T_stylus_from_tip}")
+        self.get_logger().info(f"Image -> Probe:\n{self.T_probe_from_image}")
+        self.get_logger().info(f"Probe -> Image (computed inverse):\n{self.T_image_from_probe}")
+
+    def on_probe_pose(self, msg: PoseStamped):
+        # Tracker -> Probe (incoming meters, convert to mm)
+        if not is_finite_pose(msg):
+            self.probe_valid = False
+            self.T_tracker_probe = None
+            self.get_logger().warn("Probe pose contains NaN/Inf, marking as Lost")
+            return
+        try:
+            T_m = pose_to_hmat(msg)        # meters
+            T_mm = to_mm(T_m)              # convert translation to mm
+            if not is_finite_matrix(T_mm):
+                raise ValueError("Probe pose matrix contains NaN/Inf after conversion to mm")
+            self.T_tracker_probe = T_mm
+            self.last_probe_pose_dict = pose_to_dict(msg)  # stored as received (meters)
+            self.probe_valid = True
+        except Exception as exc:
+            self.get_logger().error(f"Failed to convert probe pose: {exc}")
+            self.probe_valid = False
+            self.T_tracker_probe = None
+
+    def on_needle_pose(self, msg: PoseStamped):
+        # Tracker -> Stylus (incoming meters, convert to mm)
+        if not is_finite_pose(msg):
+            self.needle_valid = False
+            self.T_tracker_stylus = None
+            self.get_logger().warn("Needle pose contains NaN/Inf, marking as Lost")
+            return
+        try:
+            T_m = pose_to_hmat(msg)        # meters
+            T_mm = to_mm(T_m)              # convert translation to mm
+            if not is_finite_matrix(T_mm):
+                raise ValueError("Needle pose matrix contains NaN/Inf after conversion to mm")
+            self.T_tracker_stylus = T_mm
+            self.last_needle_pose_dict = pose_to_dict(msg)  # stored as received (meters)
+            self.needle_valid = True
+        except Exception as exc:
+            self.get_logger().error(f"Failed to convert needle pose: {exc}")
+            self.needle_valid = False
+            self.T_tracker_stylus = None
+
+    def compute_tip_in_image(self):
+        """
+        Compute needle tip (StylusTip) coordinates in the Image frame.
+        All transforms are in millimeters. Returns (x, y, z) in mm or None.
+        Transform chain:
+          p_tip_image = T_image_probe * T_probe_tracker * T_tracker_stylus * (T_stylus_from_tip * [0,0,0,1])
+        """
+        if not (self.probe_valid and self.needle_valid):
+            return None
+        if self.T_tracker_probe is None or self.T_tracker_stylus is None:
+            return None
+        try:
+            # Probe -> Tracker
+            T_probe_from_tracker = np.linalg.inv(self.T_tracker_probe)
+            if not is_finite_matrix(T_probe_from_tracker):
+                return None
+
+            # StylusTip at origin of Stylus frame
+            p_tip_in_stylus = self.T_stylus_from_tip @ np.array([0, 0, 0, 1.0])
+
+            # Stylus -> Tracker
+            p_tip_in_tracker = self.T_tracker_stylus @ p_tip_in_stylus
+
+            # Tracker -> Probe
+            p_tip_in_probe = T_probe_from_tracker @ p_tip_in_tracker
+
+            # Probe -> Image
+            p_tip_in_image = self.T_image_from_probe @ p_tip_in_probe
+
+            if not np.isfinite(p_tip_in_image).all():
+                return None
+
+            tip_xyz = p_tip_in_image[:3]
+            # Log the computed tip coordinates (mm)
+            self.get_logger().info(
+                f"Needle tip in Image frame (mm): x={tip_xyz[0]:.3f}, y={tip_xyz[1]:.3f}, z={tip_xyz[2]:.3f}"
+            )
+            return tip_xyz
+        except Exception as exc:
+            self.get_logger().error(f"Failed to compute tip in image: {exc}")
+            return None
+
+    def draw_availability(self, frame):
+        """Draw Tracked/Lost status for probe and needle in the top-left corner."""
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        scale = 0.7
+        thick = 2
+        green = (0, 200, 0)
+        red = (0, 0, 255)
+
+        probe_text = "Probe: Tracked" if self.probe_valid else "Probe: Lost"
+        probe_color = green if self.probe_valid else red
+        needle_text = "Needle: Tracked" if self.needle_valid else "Needle: Lost"
+        needle_color = green if self.needle_valid else red
+
+        cv2.putText(frame, probe_text, (10, 30), font, scale, probe_color, thick, cv2.LINE_AA)
+        cv2.putText(frame, needle_text, (10, 60), font, scale, needle_color, thick, cv2.LINE_AA)
 
     def on_image(self, msg: CompressedImage):
         try:
@@ -147,23 +313,40 @@ class USVisualizer(Node):
             if frame is None:
                 self.get_logger().warn("Failed to decode compressed image (cv2.imdecode returned None)")
                 return
+
+            # Draw availability status
+            self.draw_availability(frame)
+
+            # Compute tip position and overlay
+            tip_xyz = self.compute_tip_in_image()
+            if tip_xyz is not None:
+                x_img, y_img, z_img = tip_xyz  # in mm
+                # NOTE: This assumes Image frame x,y directly correspond to pixel coordinates.
+                # If spacing is needed, apply conversion before drawing.
+                u, v = int(round(x_img)), int(round(y_img))
+                h, w = frame.shape[:2]
+                if 0 <= u < w and 0 <= v < h:
+                    cv2.circle(frame, (u, v), radius=6, color=(0, 0, 255), thickness=2)
+                    cv2.putText(frame, "needle tip", (u + 5, v - 8),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
+                else:
+                    self.get_logger().debug(
+                        f"Needle tip projected outside image: (u={u}, v={v}), frame size (w={w}, h={h})"
+                    )
+            else:
+                self.get_logger().debug("Tip not computed (missing or invalid transforms)")
+
             img_msg = self.bridge.cv2_to_imgmsg(frame, encoding="bgr8")
-            img_msg.header = msg.header  # 继承时间戳与 frame_id
+            img_msg.header = msg.header
             self.image_pub.publish(img_msg)
         except Exception as exc:
             self.get_logger().error(f"Exception decoding/publishing image: {exc}")
 
-    def on_probe_pose(self, msg: PoseStamped):
-        self.last_probe_pose = pose_to_dict(msg)
-
-    def on_needle_pose(self, msg: PoseStamped):
-        self.last_needle_pose = pose_to_dict(msg)
-
     def log_latest_poses(self):
-        if self.last_probe_pose:
-            self.get_logger().debug(f"Probe pose dict: {self.last_probe_pose}")
-        if self.last_needle_pose:
-            self.get_logger().debug(f"Needle pose dict: {self.last_needle_pose}")
+        if self.last_probe_pose_dict:
+            self.get_logger().debug(f"Probe pose dict (meters): {self.last_probe_pose_dict}")
+        if self.last_needle_pose_dict:
+            self.get_logger().debug(f"Needle pose dict (meters): {self.last_needle_pose_dict}")
 
 
 def main():
