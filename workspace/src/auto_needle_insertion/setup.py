@@ -6,7 +6,7 @@ package_name = "auto_needle_insertion"
 
 setup(
     name=package_name,
-    version="0.1.0",
+    version="0.2.0",
     packages=find_packages(exclude=["test"]),
     data_files=[
         ("share/ament_index/resource_index/packages",
@@ -23,6 +23,7 @@ setup(
     license="Apache-2.0",
     entry_points={
         "console_scripts": [
+            "keyboard_control = auto_needle_insertion.keyboard_control:main",
             "ee_moveit_keyboard = auto_needle_insertion.ee_moveit_keyboard:main",
             "ee_moveit_square = auto_needle_insertion.ee_moveit_square:main",
             "ee_pose_logger = auto_needle_insertion.ee_pose_logger:main",
