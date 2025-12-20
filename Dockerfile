@@ -128,7 +128,10 @@ RUN apt-get update \
       ros-$ROS_DISTRO-rosbag2-storage-default-plugins \
       ros-$ROS_DISTRO-rosbag2-transport \
       # Packages for usb video grabber
-      ros-$ROS_DISTRO-v4l2-camera
+      ros-$ROS_DISTRO-v4l2-camera \
+      # === Added for US visualizer (OpenCV + cv_bridge) ===
+      python3-opencv \
+      ros-$ROS_DISTRO-cv-bridge
 # && rm -rf /var/lib/apt/lists/* \
 
 # --- Build drivers from local source into their workspaces ---

@@ -207,6 +207,32 @@ services:
       "
     restart: unless-stopped
 
+
+  us_visualizer:
+    <<: *ros_common
+    container_name: "${COMPOSE_PROJECT_NAME:-ros2}-us-visualizer"
+    profiles: ["default", "dev"]
+    depends_on:
+      usb_video_grabber:
+        condition: service_healthy
+      polaris_driver:
+        condition: service_healthy
+    command: >
+      bash -lc "
+        set -e;
+        if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi;
+        if [ -f ${WS_DIR:-/ani_ws}/install/setup.bash ]; then source ${WS_DIR:-/ani_ws}/install/setup.bash; fi;
+        python3 ${WS_DIR:-/ani_ws}/src/us_visualizer.py
+      "
+    healthcheck:
+      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q '/visualize/us_imaging'"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+
   dev:
     <<: *ros_common
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-dev"
