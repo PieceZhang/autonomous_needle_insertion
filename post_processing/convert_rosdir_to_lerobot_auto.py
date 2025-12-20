@@ -125,37 +125,12 @@ def read_video_frames_rgb(video_path: Path, max_frames=None):
 
 
 # -------------------------
-# Pose / quaternion helpers
+# Pose helpers
 # -------------------------
 def pose_to_vec7(pose_dict):
     p = pose_dict["position"]
     q = pose_dict["orientation"]
     return np.array([p["x"], p["y"], p["z"], q["x"], q["y"], q["z"], q["w"]], dtype=np.float32)
-
-
-def quat_conj(q):
-    return np.array([-q[0], -q[1], -q[2], q[3]], dtype=np.float32)
-
-
-def quat_mul(q1, q2):
-    x1, y1, z1, w1 = q1
-    x2, y2, z2, w2 = q2
-    x = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
-    y = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
-    z = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
-    w = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
-    return np.array([x, y, z, w], dtype=np.float32)
-
-
-def rel_pose_delta(pose7_prev, pose7_next):
-    t_prev = pose7_prev[:3]
-    q_prev = pose7_prev[3:]
-    t_next = pose7_next[:3]
-    q_next = pose7_next[3:]
-    dt = (t_next - t_prev).astype(np.float32)
-    dq = quat_mul(q_next, quat_conj(q_prev))
-    dq = dq / (np.linalg.norm(dq) + 1e-8)
-    return np.concatenate([dt, dq], axis=0).astype(np.float32)
 
 
 # -------------------------
@@ -167,21 +142,42 @@ def lab_features_schema_fixed_hw():
         "observation.images.room_rgb_camera": {"dtype": "video", "shape": (768, 1024, 3), "names": ["height", "width", "channels"]},
         "observation.images.wrist_camera_depth": {"dtype": "video", "shape": (480, 848, 3), "names": ["height", "width", "channels"]},
         "observation.images.wrist_camera_rgb": {"dtype": "video", "shape": (720, 1280, 3), "names": ["height", "width", "channels"]},
-        "observation.meta.force_torque": {"dtype": "float32", "shape": (6,), "names": ["fx", "fy", "fz", "tx", "ty", "tz"], "info": {"sensor": "wrist_ft", "units": "N + N m"}},
+        "observation.meta.force_torque": {
+            "dtype": "float32",
+            "shape": (6,),
+            "names": ["fx", "fy", "fz", "tx", "ty", "tz"],
+            "info": {"sensor": "wrist_ft", "units": "N + N m"},
+        },
         "observation.state": {
             "dtype": "float32",
             "shape": (27,),
             "names": [
                 "elbow_joint", "shoulder_lift_joint", "shoulder_pan_joint", "wrist_1_joint", "wrist_2_joint", "wrist_3_joint",
+                # 0~5 joints
                 "probe_ur_x", "probe_ur_y", "probe_ur_z", "probe_ur_ux", "probe_ur_uy", "probe_ur_uz", "probe_ur_w",
+                # 6~12 tcp pose
                 "probe_ndi_x", "probe_ndi_y", "probe_ndi_z", "probe_ndi_ux", "probe_ndi_uy", "probe_ndi_uz", "probe_ndi_w",
+                # 13~19 probe ndi
                 "needle_ndi_x", "needle_ndi_y", "needle_ndi_z", "needle_ndi_ux", "needle_ndi_uy", "needle_ndi_uz", "needle_ndi_w",
+                # 20~26 needle ndi
             ],
         },
-        "action": {"dtype": "float32", "shape": (14,), "names": ["probe_delta_x","probe_delta_y","probe_delta_z","probe_delta_ux","probe_delta_uy","probe_delta_uz","probe_delta_w",
-                                                                "needle_delta_x","needle_delta_y","needle_delta_z","needle_delta_ux","needle_delta_uy","needle_delta_uz","needle_delta_w"]},
+        "action": {
+            "dtype": "float32",
+            "shape": (14,),
+            "names": [
+                "probe_delta_x", "probe_delta_y", "probe_delta_z",
+                "probe_delta_ux", "probe_delta_uy", "probe_delta_uz", "probe_delta_w",
+                "needle_delta_x", "needle_delta_y", "needle_delta_z",
+                "needle_delta_ux", "needle_delta_uy", "needle_delta_uz", "needle_delta_w",
+            ],
+        },
         "observation.meta.probe_type": {"dtype": "string", "shape": (1,), "names": ["company_model_endwith'linear'_or_'convex'"]},
-        "observation.meta.probe_acquisition_param": {"dtype": "float32", "shape": (6,), "names": ["center_frequency_mhz", "num_elements", "imaging_depth_cm", "linear_fov_mm", "convex_radius_mm", "convex_fov_deg"]},
+        "observation.meta.probe_acquisition_param": {
+            "dtype": "float32",
+            "shape": (6,),
+            "names": ["center_frequency_mhz", "num_elements", "imaging_depth_cm", "linear_fov_mm", "convex_radius_mm", "convex_fov_deg"],
+        },
         "observation.meta.roomcam_cali_mtx_tracker_to_color": {"dtype": "float32", "shape": (7,), "names": ["tx_mm", "ty_mm", "tz_mm", "qx", "qy", "qz", "qw"]},
         "observation.meta.wristcam_cali_mtx": {"dtype": "float32", "shape": (7,), "names": ["tx_m", "ty_m", "tz_m", "qx", "qy", "qz", "qw"]},
         "observation.meta.wristcam_cali_mtx_depth_to_color": {"dtype": "float32", "shape": (7,), "names": ["tx_m", "ty_m", "tz_m", "qx", "qy", "qz", "qw"]},
@@ -281,13 +277,19 @@ def convert_one_episode(
     t_needle, needle_payloads = load_ndjson_times_and_payloads(episode_dir / "ndi__needle_pose" / "messages.ndjson")
     t_wrench, wrench_payloads = load_ndjson_times_and_payloads(episode_dir / "ati_ft_broadcaster__wrench" / "messages.ndjson")
 
-    # precompute pose seq
+    # precompute pose seqs (aligned to master timeline)
+    # - tcp_pose_seq   -> goes into state as probe_ur_* and is used for probe_delta_* in action
+    # - probe_pose_seq -> goes into state as probe_ndi_* (NDI probe marker)
+    # - needle_pose_seq-> goes into state as needle_ndi_* and is used for needle_delta_* in action
+    tcp_pose_seq = np.zeros((T, 7), dtype=np.float32)
     probe_pose_seq = np.zeros((T, 7), dtype=np.float32)
     needle_pose_seq = np.zeros((T, 7), dtype=np.float32)
     for i in range(T):
         t_ns = int(frame_times_ns[i])
+        tcp_msg = nearest_payload(t_tcp, tcp_payloads, t_ns)
         probe_msg = nearest_payload(t_probe, probe_payloads, t_ns)
         needle_msg = nearest_payload(t_needle, needle_payloads, t_ns)
+        tcp_pose_seq[i] = pose_to_vec7(tcp_msg["pose"])
         probe_pose_seq[i] = pose_to_vec7(probe_msg["pose"])
         needle_pose_seq[i] = pose_to_vec7(needle_msg["pose"])
 
@@ -297,31 +299,40 @@ def convert_one_episode(
 
         wmsg = nearest_payload(t_wrench, wrench_payloads, t_ns)
         w = wmsg["wrench"]
-        ft = np.array([w["force"]["x"], w["force"]["y"], w["force"]["z"],
-                       w["torque"]["x"], w["torque"]["y"], w["torque"]["z"]], dtype=np.float32)
+        ft = np.array(
+            [w["force"]["x"], w["force"]["y"], w["force"]["z"],
+             w["torque"]["x"], w["torque"]["y"], w["torque"]["z"]],
+            dtype=np.float32,
+        )
 
         jmsg = nearest_payload(t_joint, joint_payloads, t_ns)
         qpos = np.asarray(jmsg["position"], dtype=np.float32)
         if qpos.shape[0] != 6:
             raise ValueError(f"{episode_dir.name}: expected 6 joints, got {qpos.shape[0]}")
 
-        tcp_msg = nearest_payload(t_tcp, tcp_payloads, t_ns)
-        tcp_pose7 = pose_to_vec7(tcp_msg["pose"])
-
-        probe_pose7 = probe_pose_seq[i]
-        needle_pose7 = needle_pose_seq[i]
+        # pose vectors (already aligned)
+        tcp_pose7 = tcp_pose_seq[i]          # probe_ur_* in state
+        probe_pose7 = probe_pose_seq[i]      # probe_ndi_* in state
+        needle_pose7 = needle_pose_seq[i]    # needle_ndi_* in state
 
         state = np.concatenate([qpos, tcp_pose7, probe_pose7, needle_pose7], axis=0).astype(np.float32)
         if state.shape != (27,):
             raise ValueError(f"{episode_dir.name}: state shape mismatch {state.shape}")
 
+        # -------------------------------------------------
+        # ACTION (NEW): computed as simple difference of *state* components
+        # Mapping requested:
+        #   probe_delta_*   = next(probe_ur_*)   - prev(probe_ur_*)    -> tcp_pose7 delta
+        #   needle_delta_*  = next(needle_ndi_*)- prev(needle_ndi_*)  -> needle_pose7 delta
+        # NOTE: raw component-wise delta, including quaternion components.
+        # -------------------------------------------------
         if i < T - 1:
-            a_probe = rel_pose_delta(probe_pose_seq[i], probe_pose_seq[i + 1])
-            a_needle = rel_pose_delta(needle_pose_seq[i], needle_pose_seq[i + 1])
+            probe_delta = (tcp_pose_seq[i + 1] - tcp_pose_seq[i]).astype(np.float32)
+            needle_delta = (needle_pose_seq[i + 1] - needle_pose_seq[i]).astype(np.float32)
         else:
-            a_probe = np.zeros((7,), dtype=np.float32)
-            a_needle = np.zeros((7,), dtype=np.float32)
-        action = np.concatenate([a_probe, a_needle], axis=0).astype(np.float32)
+            probe_delta = np.zeros((7,), dtype=np.float32)
+            needle_delta = np.zeros((7,), dtype=np.float32)
+        action = np.concatenate([probe_delta, needle_delta], axis=0).astype(np.float32)
 
         img_us = us_frames[i]
         img_room = room_frames[i]
@@ -343,17 +354,6 @@ def convert_one_episode(
             "action": action,
         }
         frame.update(static_meta)
-
-        # if "task_index" in expected_keys:
-        #     frame["task_index"] = int(task_index)
-        # if "episode_index" in expected_keys:
-        #     frame["episode_index"] = int(episode_index)
-        # if "frame_index" in expected_keys:
-        #     frame["frame_index"] = int(i)
-        # if "index" in expected_keys:
-        #     frame["index"] = int(global_index_start + i)
-        # if "timestamp" in expected_keys:
-        #     frame["timestamp"] = float(i / room_fps)
 
         # IMPORTANT: always keep task for your LeRobot version
         frame["task"] = str(task_name)
