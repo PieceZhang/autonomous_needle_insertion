@@ -38,6 +38,9 @@ from typing import (
     TYPE_CHECKING,
 )
 
+# Add datetime import for creation timestamp
+from datetime import datetime, timezone
+
 import yaml
 from mcap.reader import make_reader
 from mcap_ros2.decoder import DecoderFactory
@@ -65,8 +68,8 @@ VIDEO_TOPICS: Set[str] = {
     "/vega_vt/image_raw",
     "/image_raw/compressed",
     "/camera/camera/color/image_raw/compressed",
-    "/camera/camera/depth/image_rect_raw",
-    # "/camera/camera/depth/image_rect_raw/compressedDepth",
+    # "/camera/camera/depth/image_rect_raw",
+    "/camera/camera/depth/image_rect_raw/compressedDepth",
 }
 
 KNOWN_ENCODINGS = {
@@ -137,9 +140,11 @@ def sanitize_topic_name(topic: str) -> str:
 
 def iter_mcap_files(mcap_dir: Path) -> Iterable[Path]:
     files = sorted(mcap_dir.glob("*.mcap"))
-    if not files:
-        raise FileNotFoundError(f"No .mcap files found in {mcap_dir}")
-    return files
+    zstd_files = sorted(mcap_dir.glob("*.mcap.zstd"))
+    all_files = sorted(list(files) + list(zstd_files))
+    if not all_files:
+        raise FileNotFoundError(f"No .mcap or .mcap.zstd files found in {mcap_dir}")
+    return all_files
 
 
 def ensure_parent(path: Path, overwrite: bool) -> None:
@@ -312,6 +317,10 @@ def _compressed_image_to_bgr(msg: Any) -> "tnp.ndarray":
         raise ValueError("CompressedImage data is empty.")
     fmt_lower = fmt.lower()
 
+    # Handle compressedDepth format
+    if "compresseddepth" in fmt_lower:
+        return _decode_compressed_depth(data)
+
     # Direct decode (JPEG/PNG/etc.)
     if "zstd" not in fmt_lower:
         frame = _decode_cv_image(buffer)
@@ -346,6 +355,59 @@ def _compressed_image_to_bgr(msg: Any) -> "tnp.ndarray":
             f"format='{fmt}'. Include tokens such as 'encoding=16UC1; width=640; height=480'."
         )
     return _raw_bytes_to_bgr(decompressed, width, height, encoding, bigendian)
+
+
+def _decode_compressed_depth(data: bytes) -> "tnp.ndarray":
+    """
+    Decode compressedDepth format (PNG-encoded 16-bit depth data with header).
+
+    The compressedDepth format stores depth data as PNG with a special header.
+    Format: [header][PNG data]
+    Header contains depth quantization parameters.
+    """
+    if cv2 is None or np is None:
+        require_video_dependencies()
+
+    # CompressedDepth format has a header before PNG data
+    if len(data) < 12:
+        raise RuntimeError("CompressedDepth data too short")
+
+    # Try to find PNG magic bytes
+    png_start = data.find(b"\x89PNG")
+
+    if png_start == -1:
+        raise RuntimeError("PNG header not found in compressedDepth data")
+
+    # Decode PNG data
+    png_data = np.frombuffer(data[png_start:], dtype=np.uint8)
+    img = cv2.imdecode(png_data, cv2.IMREAD_UNCHANGED)
+
+    if img is None:
+        raise RuntimeError("cv2.imdecode failed for compressedDepth frame")
+
+    # The PNG contains 16-bit depth values
+    if img.dtype == np.uint16:
+        depth_image = img
+    else:
+        # If it came as uint8, we need to convert
+        depth_image = img.astype(np.uint16)
+
+    # Normalize to 0-255 range for visualization
+    min_val = np.min(depth_image)
+    max_val = np.max(depth_image)
+
+    if max_val > min_val:
+        normalized = ((depth_image - min_val) / (max_val - min_val) * 255).astype(np.uint8)
+    else:
+        normalized = np.zeros_like(depth_image, dtype=np.uint8)
+
+    # # Apply colormap for better visualization
+    # colored = cv2.applyColorMap(normalized, cv2.COLORMAP_JET)
+    # return colored
+
+    # Convert grayscale to BGR (3-channel) for video compatibility
+    grayscale_bgr = cv2.cvtColor(normalized, cv2.COLOR_GRAY2BGR)
+    return grayscale_bgr
 
 
 def _ensure_bgr(image: "tnp.ndarray") -> "tnp.ndarray":
@@ -540,6 +602,155 @@ class VideoTopicWriter:
         return self.video_path, self.info_path
 
 
+def _safe_get_duration_seconds(info: Dict[str, Any]) -> float:
+    """
+    Try to compute bag duration in seconds from various metadata.yaml schemas.
+    """
+    # rosbag2 v4+ stores duration as dict: {"nanoseconds": <int>}
+    dur = info.get("duration")
+    if isinstance(dur, dict) and "nanoseconds" in dur:
+        try:
+            return max(float(dur["nanoseconds"]) / 1e9, 0.0)
+        except Exception:
+            pass
+    # Some versions store start/end times (nanoseconds since epoch)
+    start_ns = info.get("start_time", {}).get("nanoseconds") if isinstance(info.get("start_time"), dict) else info.get("starting_time", None)
+    end_ns = info.get("end_time", {}).get("nanoseconds") if isinstance(info.get("end_time"), dict) else info.get("ending_time", None)
+    try:
+        if isinstance(start_ns, (int, float)) and isinstance(end_ns, (int, float)):
+            return max((float(end_ns) - float(start_ns)) / 1e9, 0.0)
+    except Exception:
+        pass
+    # Fallback: 0.0 if unknown
+    return 0.0
+
+
+def _safe_get_start_end_ns(info: Dict[str, Any]) -> Tuple[Optional[int], Optional[int]]:
+    """
+    Extract start/end timestamps in nanoseconds if available.
+    """
+    start = None
+    end = None
+    st = info.get("start_time")
+    et = info.get("end_time")
+    if isinstance(st, dict) and "nanoseconds" in st:
+        try:
+            start = int(st["nanoseconds"])
+        except Exception:
+            pass
+    if isinstance(et, dict) and "nanoseconds" in et:
+        try:
+            end = int(et["nanoseconds"])
+        except Exception:
+            pass
+    # Alternative keys used in some metadata versions
+    if start is None and isinstance(info.get("starting_time"), int):
+        start = int(info["starting_time"])
+    if end is None and isinstance(info.get("ending_time"), int):
+        end = int(info["ending_time"])
+    return start, end
+
+
+def write_rosbag_info(metadata_path: Path, output_dir: Path, overwrite: bool, mcap_path: Optional[Path] = None) -> Path:
+    """
+    Save a rosbag_info.json under output_dir containing basic information from metadata.yaml.
+
+    Additionally, for each topic listed in metadata, attempt to read a corresponding
+    messages_info.json or video_info.json from output_dir/<sanitized_topic>/ and include
+    that JSON under the topic entry as "decoded_info".
+
+    If mcap_path is provided, include the mcap file name and its size (bytes and GB).
+    """
+    with metadata_path.open("r", encoding="utf-8") as f:
+        meta = yaml.safe_load(f) or {}
+
+    info = meta.get("rosbag2_bagfile_information", {}) or {}
+    topics = info.get("topics_with_message_count", []) or []
+
+    payload_topics: List[Dict[str, Any]] = []
+    for t in topics:
+        try:
+            tm = t.get("topic_metadata", {}) or {}
+            topic_entry: Dict[str, Any] = {
+                "name": tm.get("name"),
+                "type": tm.get("type"),
+                "serialization_format": tm.get("serialization_format"),
+                "message_count": t.get("message_count"),
+            }
+
+            # Try to augment with per-topic decoded info (messages_info.json or video_info.json)
+            topic_name = topic_entry.get("name")
+            if topic_name:
+                sanitized = sanitize_topic_name(topic_name)
+                topic_dir = output_dir / sanitized
+                # prefer messages_info.json for NDJSON topics, fallback to video_info.json
+                for info_fname in ("messages_info.json", "video_info.json"):
+                    candidate = topic_dir / info_fname
+                    if candidate.is_file():
+                        try:
+                            with candidate.open("r", encoding="utf-8") as fh:
+                                topic_entry["decoded_info"] = json.load(fh)
+                        except Exception:
+                            # ignore read/parse errors; leave decoded_info absent
+                            pass
+                        break
+
+            payload_topics.append(topic_entry)
+        except Exception:
+            continue
+
+    duration_seconds = _safe_get_duration_seconds(info)
+    start_ns, end_ns = _safe_get_start_end_ns(info)
+
+    total_messages = info.get("message_count")
+    bag_size = None
+    if isinstance(info.get("bag_size"), dict) and "bytes" in info["bag_size"]:
+        bag_size = info["bag_size"]["bytes"]
+    elif isinstance(info.get("bag_size"), (int, float)):
+        bag_size = info["bag_size"]
+
+    # mcap size info (if available)
+    mcap_size_bytes: Optional[int] = None
+    mcap_size_gb: Optional[float] = None
+    mcap_name: Optional[str] = None
+    if mcap_path is not None:
+        try:
+            if mcap_path.is_file():
+                mcap_size_bytes = int(mcap_path.stat().st_size)
+                mcap_size_gb = round(float(mcap_size_bytes) / 1e9, 6)
+                mcap_name = mcap_path.name
+        except Exception:
+            mcap_size_bytes = None
+            mcap_size_gb = None
+            mcap_name = None
+
+    rosbag_info = {
+        "decoded_at": datetime.now().isoformat(),
+        "source_metadata_path": str(metadata_path),
+        "mcap_file": mcap_name,
+        "mcap_size_bytes": mcap_size_bytes,
+        "mcap_size_gb": mcap_size_gb,
+        "duration_seconds": duration_seconds,
+        "start_time_ns": start_ns,
+        "end_time_ns": end_ns,
+        "total_messages": total_messages,
+        "bag_size_bytes": bag_size,
+        "compression_format": info.get("compression_format"),
+        "compression_mode": info.get("compression_mode"),
+        "topics": payload_topics,
+    }
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_path = output_dir / "rosbag_info.json"
+    if out_path.exists():
+        if not overwrite:
+            raise FileExistsError(f"{out_path} already exists. Use --overwrite to replace it.")
+        out_path.unlink()
+    with out_path.open("w", encoding="utf-8") as f:
+        json.dump(rosbag_info, f, indent=2)
+    return out_path
+
+
 def main() -> int:
     args = parse_args()
 
@@ -600,16 +811,60 @@ def main() -> int:
 
     # Track which topics from metadata were actually found in the MCAP files
     seen_topics: Set[str] = set()
+    # Track bag directories and mcap paths for later rosbag_info writing
+    bag_dirs: Dict[str, Path] = {}
+    bag_mcap_paths: Dict[str, Path] = {}
 
     try:
         for mcap_path in iter_mcap_files(args.mcap_dir):
             print(f"[INFO] Decoding {mcap_path.name} ...")
             # Create a bag-specific output subfolder named by the rosbag file stem
+            # Remove .zstd extension if present for bag naming
             bag_name = mcap_path.stem
+            if bag_name.endswith(".mcap"):
+                bag_name = bag_name[:-5]  # Remove .mcap extension
             bag_dir = args.output_dir / bag_name
             bag_dir.mkdir(parents=True, exist_ok=True)
 
-            with mcap_path.open("rb") as stream:
+            # Store for later rosbag_info writing
+            bag_dirs[bag_name] = bag_dir
+            bag_mcap_paths[bag_name] = mcap_path
+
+            # Handle .mcap.zstd files by decompressing on-the-fly
+            is_zstd = mcap_path.suffix == ".zstd"
+
+            if is_zstd:
+                # Check if zstd is available
+                if zstd is None:
+                    print(f"[ERROR] File {mcap_path.name} requires zstandard package. Install via: pip install zstandard", file=sys.stderr)
+                    return 1
+
+                # Use streaming decompression to handle files without fixed content size
+                print(f"[INFO] Decompressing {mcap_path.name}...")
+                from io import BytesIO
+
+                try:
+                    with mcap_path.open("rb") as compressed_file:
+                        dctx = zstd.ZstdDecompressor()
+                        # Use stream_reader for streaming decompression
+                        decompressed_chunks = []
+                        with dctx.stream_reader(compressed_file) as reader:
+                            while True:
+                                chunk = reader.read(16384)  # Read in 16KB chunks
+                                if not chunk:
+                                    break
+                                decompressed_chunks.append(chunk)
+                        decompressed_data = b''.join(decompressed_chunks)
+                except Exception as exc:
+                    print(f"[ERROR] Failed to decompress {mcap_path.name}: {exc}", file=sys.stderr)
+                    return 1
+
+                # Create a BytesIO stream from decompressed data
+                stream = BytesIO(decompressed_data)
+            else:
+                stream = mcap_path.open("rb")
+
+            try:
                 reader = make_reader(stream)
                 for schema, channel, message in reader.iter_messages():
                     topic = channel.topic
@@ -692,6 +947,9 @@ def main() -> int:
                     if stats["end_time_ns"] is None or timestamp_ns > stats["end_time_ns"]:
                         stats["end_time_ns"] = timestamp_ns
                     total_messages += 1
+            finally:
+                if not is_zstd:
+                    stream.close()
     finally:
         for fh in ndjson_files.values():
             fh.close()
@@ -747,6 +1005,15 @@ def main() -> int:
         else:
             bag_name, topic = key
             print(f"[WARN] No frames decoded for {topic} in bag {bag_name}; MP4 not created.", file=sys.stderr)
+
+    # NOW write rosbag_info.json for each bag after all topic info files exist
+    for bag_name, bag_dir in bag_dirs.items():
+        try:
+            mcap_path = bag_mcap_paths.get(bag_name)
+            info_json_path = write_rosbag_info(metadata_path, bag_dir, args.overwrite, mcap_path=mcap_path)
+            print(f"[INFO] Wrote rosbag info -> {info_json_path}")
+        except Exception as exc:
+            print(f"[WARN] Failed to write rosbag_info.json in {bag_dir}: {exc}", file=sys.stderr)
 
     print(
         f"[INFO] Finished decoding. Processed {total_messages} message(s) "
