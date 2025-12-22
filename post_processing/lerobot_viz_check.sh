@@ -1,4 +1,4 @@
-python viz_check.py \
+python lerobot_viz_check.py \
   --root /Users/leo17/Desktop/surgical_robotics/dataset/Rosbag_lerobot/lerobot_out_run001 \
   --start 0 \
   --length 600 \
