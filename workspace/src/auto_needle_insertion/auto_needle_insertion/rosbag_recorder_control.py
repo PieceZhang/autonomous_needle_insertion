@@ -24,20 +24,31 @@ from rclpy.executors import SingleThreadedExecutor
 from std_msgs.msg import String, UInt32
 
 # ----------------- 日志配置 -----------------
-def configure_run_logging(log_dir: str = "/tmp") -> str:
-    Path(log_dir).mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    logfile = str(Path(log_dir) / f"rosbag_recorder_control_{ts}.log")
+def configure_run_logging(log_dir: str = "/ani_ws/log") -> str:
+    # 若不可写则回退到 /tmp
+    try:
+        Path(log_dir).mkdir(parents=True, exist_ok=True)
+        testfile = Path(log_dir) / ".wtest"
+        with open(testfile, "w") as f:
+            f.write("ok")
+        testfile.unlink(missing_ok=True)
+        chosen_dir = log_dir
+    except Exception:
+        chosen_dir = "/tmp"
+        Path(chosen_dir).mkdir(parents=True, exist_ok=True)
+
+    logfile = str(Path(chosen_dir) / "rosbag_recorder_control.log")
+    # 追加模式，不新建新文件名
     logging.basicConfig(
         level=logging.INFO,
         filename=logfile,
-        filemode="w",
+        filemode="a",
         format="%(asctime)s.%(msecs)03d %(levelname)s %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     return logfile
 
-logfile = configure_run_logging(log_dir="../log")
+logfile = configure_run_logging(log_dir="/ani_ws/log")
 logger = logging.getLogger("rosbag_recorder_control")
 logger.info("Logging to %s", logfile)
 
@@ -132,12 +143,12 @@ class RosbagController:
             return
 
         try:
-            # 使用新的进程组，便于后续发送 Ctrl+C (SIGINT) 终止
+            # 启动新进程组，便于后续发送 Ctrl+C (SIGINT)
             self._proc = subprocess.Popen(
                 [SCRIPT_PATH],
                 stdout=sys.stdout,
                 stderr=sys.stderr,
-                preexec_fn=os.setsid,  # 启动新进程组
+                preexec_fn=os.setsid,
             )
             msg = f"开始录制，启动脚本: {SCRIPT_PATH} (pid={self._proc.pid})"
             logger.info(msg)
@@ -259,4 +270,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

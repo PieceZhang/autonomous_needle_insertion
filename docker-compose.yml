@@ -213,14 +213,14 @@ services:
         set -e;
         if [ -f ${WS_DIR:-/ani_ws}/install/setup.bash ]; then source ${WS_DIR:-/ani_ws}/install/setup.bash; fi;
         echo '启动 rosbag 录制键盘控制节点 ...';
-        python3 /ani_ws/rosbag_recorder_control.py
+        python3 /ani_ws/src/auto_needle_insertion/auto_needle_insertion/rosbag_recorder_control.py
       "
     healthcheck:
       test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 node list | grep -q rosbag_recorder_key_sub"]
       interval: 5s
       timeout: 3s
       retries: 5
-      start_period: 15s
+      start_period: 5s
     restart: unless-stopped
 
   dev:
