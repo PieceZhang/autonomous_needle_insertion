@@ -14,6 +14,7 @@ ros2 bag record /vega_vt/image_raw /vega_vt/camera_info \
                 /joint_states \
                 /tcp_pose_broadcaster/pose \
                 /ndi/us_probe_pose /ndi/needle_pose \
+                /task_info \
                 --compression-mode file \
                 --compression-format zstd
 

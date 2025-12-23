@@ -1,0 +1,13 @@
+<library path="rqt_task_interface">
+  <class name="TaskPanel"
+         type="rqt_task_interface.task_panel.TaskPanel"
+         base_class_type="rqt_gui_py::Plugin">
+    <qtgui>
+      <group>
+        <label>Task Panel</label>
+        <statustip>Task / Operator info publisher</statustip>
+        <icon type="theme">applications-system</icon>
+      </group>
+    </qtgui>
+  </class>
+</library>
