@@ -91,6 +91,7 @@ RUN apt-get update \
       cmake \
       python3-rosdep \
       python3-pyqtgraph \
+      python3-pynput \
 #      iproute2 iputils-ping net-tools netcat-openbsd dnsutils traceroute tcpdump \
       # Controller and planning packages for UR
       ros-$ROS_DISTRO-ros2controlcli \
@@ -137,15 +138,18 @@ RUN apt-get update \
 # --- Build drivers from local source into their workspaces ---
 ARG NDI_WS=/opt/ndi_ws
 ARG ATI_WS=/opt/ati_ws
+ARG KB_WS=/opt/kb_ws
 
 # Prepare workspace and copy local subtree (ensure .dockerignore does not exclude it)
-RUN mkdir -p ${NDI_WS}/src ${ATI_WS}/src
+RUN mkdir -p ${NDI_WS}/src ${ATI_WS}/src ${KB_WS}/src
 # NDI Polaris drivers
 COPY ndi_ros2_driver ${NDI_WS}/src/ndi_ros2_driver
 COPY third_party/gscam2 ${NDI_WS}/src/gscam2
 COPY third_party/ros2_shared ${NDI_WS}/src/ros2_shared
 # ATI Net F/T driver
 COPY third_party/ros2_net_ft_driver ${ATI_WS}/src/ros2_net_ft_driver
+# Keyboard driver
+COPY third_party/keystroke ${KB_WS}/src/keystroke
 
 RUN set -eo pipefail \
  && rosdep init || true \
@@ -156,7 +160,10 @@ RUN set -eo pipefail \
  && colcon build --merge-install --base-paths ${NDI_WS}/src --install-base ${NDI_WS}/install \
  # Install and build ATI workspace
  && rosdep install --from-paths ${ATI_WS}/src -i -y --rosdistro $ROS_DISTRO \
- && colcon build --merge-install --base-paths ${ATI_WS}/src --install-base ${ATI_WS}/install
+ && colcon build --merge-install --base-paths ${ATI_WS}/src --install-base ${ATI_WS}/install \
+ # Install and build keyboard workspace
+ && rosdep install --from-paths ${KB_WS}/src -i -y --rosdistro $ROS_DISTRO \
+ && colcon build --merge-install --base-paths ${KB_WS}/src --install-base ${KB_WS}/install
 
 # --- ROS-aware Python & Pip wrappers for IDEs (PyCharm) ---
 RUN set -Eeuo pipefail; \

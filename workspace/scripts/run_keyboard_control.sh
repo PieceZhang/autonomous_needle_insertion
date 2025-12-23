@@ -20,4 +20,4 @@ echo "Keep this terminal focused to send keystrokes to the node."
 echo
 
 # Run the launch command in the foreground so it can capture keystrokes
-ros2 launch auto_needle_insertion move_robot.launch.py mode:=ee_moveit_keyboard
+ros2 launch auto_needle_insertion dataset.launch.py

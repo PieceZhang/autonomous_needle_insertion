@@ -183,7 +183,6 @@ services:
       start_period: 3s
     restart: unless-stopped
 
-
   rqt_task_ui:
     <<: *ros_common
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-rqt-task-ui"
@@ -206,7 +205,6 @@ services:
         exec rqt --standalone rqt_task_interface
       "
     restart: unless-stopped
-
 
   us_visualizer:
     <<: *ros_common
@@ -232,6 +230,45 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  keyboard_driver:
+    <<: *ros_common
+    container_name: "${COMPOSE_PROJECT_NAME:-ros2}-keyboard-driver"
+    profiles: ["default", "dev"]
+    command: >
+      bash -lc "
+        if [ -f /opt/kb_ws/install/setup.bash ]; then source /opt/kb_ws/install/setup.bash; fi;
+        echo 'Starting keyboard driver';
+        ros2 launch keystroke listen.launch.py
+      "
+    healthcheck:
+      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q '/glyphkey_pressed'"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  rosbag_recorder:
+    <<: *ros_common
+    container_name: "${COMPOSE_PROJECT_NAME:-ros2}-rosbag-recorder"
+    profiles: ["default", "dev"]
+    depends_on:
+      keyboard_driver:
+        condition: service_healthy
+    command: >
+      bash -lc "
+        set -e;
+        if [ -f ${WS_DIR:-/ani_ws}/install/setup.bash ]; then source ${WS_DIR:-/ani_ws}/install/setup.bash; fi;
+        echo '启动 rosbag 录制键盘控制节点 ...';
+        python3 /ani_ws/src/auto_needle_insertion/auto_needle_insertion/rosbag_recorder_control.py
+      "
+    healthcheck:
+      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 node list | grep -q rosbag_recorder_key_sub"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped
 
   dev:
     <<: *ros_common
@@ -249,6 +286,10 @@ services:
       ati_ft_driver:
         condition: service_healthy
       usb_video_grabber:
+        condition: service_healthy
+      keyboard_driver:
+        condition: service_healthy
+      rosbag_recorder:
         condition: service_healthy
     command: >
       bash -lc "

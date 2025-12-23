@@ -106,6 +106,8 @@ def convert_data_to_lerobot(data_dir: Path, repo_id: str, *, push_to_hub: bool =
                           "needle_ndi_x", "needle_ndi_y", "needle_ndi_z",
                           "needle_ndi_ux", "needle_ndi_uy", "needle_ndi_uz", "needle_ndi_w",
                           # 20~26: Needle task-space (NDI Polaris marker) state: /ndi/needle_pose
+                          # "needle_tip_x1", "needle_tip_y1", "needle_tip_x2", "needle_tip_y2",  # 27~30: needle tip bbox in US image coords TODO
+                          # "needle_insert_length",  # 31: needle insertion length in mm  TODO
                          ],
             },
             "action": {
