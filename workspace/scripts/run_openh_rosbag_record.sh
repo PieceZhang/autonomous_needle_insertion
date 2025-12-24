@@ -15,9 +15,10 @@ ros2 bag record /vega_vt/image_raw /vega_vt/camera_info \
                 /tcp_pose_broadcaster/pose \
                 /ndi/us_probe_pose /ndi/needle_pose \
                 /task_info \
-                --compression-mode file \
-                --compression-format zstd
+                /keyboard_listener/glyphkey_pressed /keyboard_listener/key_pressed
+#                --compression-mode file \
+#                --compression-format zstd
 
-# TODO add topics: keyboard, procedural_phase,...
-# TODO must of the size comes from /vega_vt/image_raw
+
+# most of the size comes from /vega_vt/image_raw
 
