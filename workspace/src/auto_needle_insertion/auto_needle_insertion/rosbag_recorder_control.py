@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-基于键盘话题的 rosbag 录制控制：
-- V：开始录制（调用 /ani_ws/scripts/run_openh_rosbag_record.sh）
-- B/N/M：等待 200ms 后停止录制（分别代表 Success / Failure / Recovery）
-- Q：退出
+Subscribe to keyboard listener topic and control rosbag recording.
+- v: Start recording（调用 /ani_ws/scripts/run_openh_rosbag_record.sh）
+- b/n/m: Wait for 200ms then stop recording（status code: Success / Failure / Recovery）
+- q: Quit
 """
 
 import os
@@ -126,18 +126,18 @@ class RosbagController:
 
     def start_recording(self) -> None:
         if self._proc and self._proc.poll() is None:
-            msg = "录制已在进行中，忽略新的开始命令。"
+            msg = "Recording in progress, ignored new start command."
             logger.warning(msg)
             print(msg, flush=True)
             return
 
         if not os.path.isfile(SCRIPT_PATH):
-            msg = f"录制脚本不存在: {SCRIPT_PATH}"
+            msg = f"The record script does not exist: {SCRIPT_PATH}"
             logger.error(msg)
             print(msg, flush=True)
             return
         if not os.access(SCRIPT_PATH, os.X_OK):
-            msg = f"录制脚本不可执行，请 chmod +x {SCRIPT_PATH}"
+            msg = f"The record script is not executable, run: chmod +x {SCRIPT_PATH}"
             logger.error(msg)
             print(msg, flush=True)
             return
@@ -150,17 +150,17 @@ class RosbagController:
                 stderr=sys.stderr,
                 preexec_fn=os.setsid,
             )
-            msg = f"开始录制，启动脚本: {SCRIPT_PATH} (pid={self._proc.pid})"
+            msg = f"Start recording, running script: {SCRIPT_PATH} (pid={self._proc.pid})"
             logger.info(msg)
             print(msg, flush=True)
         except Exception as e:
-            msg = f"启动录制失败: {e}"
+            msg = f"Start recording failed: {e}"
             logger.error(msg)
             print(msg, flush=True)
 
     def stop_recording(self, reason: str) -> None:
         if not self._proc or self._proc.poll() is not None:
-            msg = f"未在录制，忽略停止命令（原因: {reason}）。"
+            msg = f"Recording not in progress, ignored start command (reason: {reason})."
             logger.info(msg)
             print(msg, flush=True)
             return
@@ -173,7 +173,7 @@ class RosbagController:
         except Exception:
             pgid = None
 
-        msg = f"停止录制（原因: {reason}），发送 SIGINT..."
+        msg = f"Stop recording (reason: {reason}), sending SIGINT..."
         logger.info(msg)
         print(msg, flush=True)
 
@@ -183,15 +183,15 @@ class RosbagController:
             else:
                 self._proc.send_signal(signal.SIGINT)
         except Exception as e:
-            logger.warning(f"发送 SIGINT 失败: {e}")
+            logger.warning(f"Sending SIGINT failed: {e}")
 
         try:
             ret = self._proc.wait(timeout=5.0)
-            msg = f"录制脚本已退出，退出码: {ret}"
+            msg = f"The record script has exited, code: {ret}"
             logger.info(msg)
             print(msg, flush=True)
         except subprocess.TimeoutExpired:
-            msg = "录制脚本未及时退出，发送 SIGTERM..."
+            msg = "Timeout encountered when trying to stop recording, send SIGTERM..."
             logger.warning(msg)
             print(msg, flush=True)
             try:
@@ -200,11 +200,11 @@ class RosbagController:
                 else:
                     self._proc.terminate()
                 ret = self._proc.wait(timeout=3.0)
-                msg2 = f"录制脚本已退出，退出码: {ret}"
+                msg2 = f"The record script has exited, code: {ret}"
                 logger.info(msg2)
                 print(msg2, flush=True)
             except subprocess.TimeoutExpired:
-                msg3 = "录制脚本仍未退出，发送 SIGKILL..."
+                msg3 = "Timeout encountered when trying to stop recording, send SIGKILL..."
                 logger.error(msg3)
                 print(msg3, flush=True)
                 try:
@@ -213,7 +213,7 @@ class RosbagController:
                     else:
                         self._proc.kill()
                 except Exception as e:
-                    logger.error(f"发送 SIGKILL 失败: {e}")
+                    logger.error(f"Send SIGKILL failed: {e}")
         finally:
             self._proc = None
 
@@ -231,7 +231,7 @@ def main():
     controller = RosbagController()
 
     try:
-        print("Rosbag 录制控制节点已启动：按 V 开始录制；按 B/N/M 停止录制；按 Q 退出。", flush=True)
+        print("rosbag recording control node has started: Press v to start recording, b/n/m to stop recording, q to quit recording", flush=True)
         while rclpy.ok():
             exec_.spin_once(timeout_sec=0.0)
             key = key_in.get_key()
@@ -242,7 +242,7 @@ def main():
             key_norm = key.lower() if len(key) == 1 else key
 
             if key_norm == "q":
-                msg = "收到 Q，退出节点。"
+                msg = "Receiving q, stopping node."
                 logger.info(msg)
                 print(msg, flush=True)
                 break
