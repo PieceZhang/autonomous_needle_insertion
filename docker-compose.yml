@@ -262,14 +262,14 @@ services:
         condition: service_healthy
       polaris_camera_driver:
         condition: service_healthy
-#      realsense_driver:
-#        condition: service_healthy
+      realsense_driver:
+        condition: service_healthy
       ati_ft_driver:
         condition: service_healthy
       usb_video_grabber:
         condition: service_healthy
-#      keyboard_driver:
-#        condition: service_healthy
+      keyboard_driver:
+        condition: service_healthy
     command: >
       bash -lc "
         set -e;
