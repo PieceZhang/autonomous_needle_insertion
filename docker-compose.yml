@@ -3,7 +3,6 @@ x-ros-base-env: &ros_base_env
   RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
   DISPLAY: ${DISPLAY}
   QT_X11_NO_MITSHM: 1
-  WS_DIR: /ani_ws
   ROS_HOME: /ani_ws/.ros
   ROS_LOG_DIR: /ani_ws/.ros/log
 
@@ -41,7 +40,7 @@ services:
     profiles: ["default", "ur_test", "dev"]
     command: >
       bash -lc "
-        if [ -f ${WS_DIR}/install/setup.bash ]; then source ${WS_DIR}/install/setup.bash; fi;
+        if [ -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then source ${RUNTIME_WS_DIR}/install/setup.bash; fi;
         echo 'Starting UR driver with IP ' ${UR_ROBOT_IP};
         ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur5e robot_ip:=${UR_ROBOT_IP} launch_rviz:=false
       "
@@ -65,7 +64,7 @@ services:
     profiles: ["default"]
     command: >
       bash -lc "
-        if [ -f ${WS_DIR}/install/setup.bash ]; then source ${WS_DIR}/install/setup.bash; fi;
+        if [ -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then source ${RUNTIME_WS_DIR}/install/setup.bash; fi;
         echo 'Starting UR driver with IP ' ${UR_ROBOT_IP};
         ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur5e robot_ip:=0.0.0.0 use_mock_hardware:=true initial_joint_controller:=joint_trajectory_controller launch_rviz:=false
       "
@@ -108,7 +107,7 @@ services:
         set -e;
         if [ -f /opt/ndi_ws/install/setup.bash ]; then source /opt/ndi_ws/install/setup.bash; fi;
         echo 'Starting gscam2 for Polaris Vega VT camera ...';
-        ros2 run gscam2 gscam_main --ros-args -p frame_id:=vega_vt_camera -p camera_name:=vega_vt_visible -p image_encoding:=rgb8 -p use_gst_timestamps:=false -p sync_sink:=false -p use_sensor_data_qos:=true -p reopen_on_eof:=true -p camera_info_url:='file:///${WS_DIR}/calibration/polaris_camera_cali_dummy.yaml' -r image_raw:=vega_vt/image_raw -r camera_info:=vega_vt/camera_info
+        ros2 run gscam2 gscam_main --ros-args -p frame_id:=vega_vt_camera -p camera_name:=vega_vt_visible -p image_encoding:=rgb8 -p use_gst_timestamps:=false -p sync_sink:=false -p use_sensor_data_qos:=true -p reopen_on_eof:=true -p camera_info_url:='file:///${RUNTIME_WS_DIR}/calibration/polaris_camera_cali_dummy.yaml' -r image_raw:=vega_vt/image_raw -r camera_info:=vega_vt/camera_info
       "
     healthcheck:
       test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q '/vega_vt/image_raw'"]
@@ -176,7 +175,7 @@ services:
         if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi;
         echo 'Host device' ${USB_VIDEO_DEVICE} 'is mapped to /dev/usb_grabber in container';
         echo 'Running v4l2_camera_node on /dev/usb_grabber...';
-        ros2 run v4l2_camera v4l2_camera_node --ros-args -p video_device:=/dev/usb_grabber -p image_size:=[$USB_VIDEO_WIDTH,$USB_VIDEO_HEIGHT] -p framerate:=$USB_VIDEO_FPS -p camera_info_url:='file:///${WS_DIR}/calibration/usb_grabber_cali_dummy.yaml' -r image_raw:=/usb_grabber/image_raw
+        ros2 run v4l2_camera v4l2_camera_node --ros-args -p video_device:=/dev/usb_grabber -p image_size:=[$USB_VIDEO_WIDTH,$USB_VIDEO_HEIGHT] -p framerate:=$USB_VIDEO_FPS -p camera_info_url:='file:///${RUNTIME_WS_DIR}/calibration/usb_grabber_cali_dummy.yaml' -r image_raw:=/usb_grabber/image_raw
       "
     healthcheck:
       test:
@@ -194,11 +193,11 @@ services:
     command: >
       bash -lc "
         set -e;
-        cd ${WS_DIR};
+        cd ${RUNTIME_WS_DIR};
         if [ ! -f src/rqt_task_interface/setup.py ]; then
           echo 'rqt_task_interface package not found in workspace/src. Please place the files and retry.'; exit 1;
         fi;
-        if [ -f ${WS_DIR}/install/setup.bash ]; then
+        if [ -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then
           echo '[rqt_task_ui] install/setup.bash exists, skip colcon build.';
         else
           echo '[rqt_task_ui] install not found, building rqt_task_interface...';
@@ -223,8 +222,8 @@ services:
       bash -lc "
         set -e;
         if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi;
-        if [ -f ${WS_DIR}/install/setup.bash ]; then source ${WS_DIR}/install/setup.bash; fi;
-        python3 ${WS_DIR}/src/us_visualizer.py
+        if [ -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then source ${RUNTIME_WS_DIR}/install/setup.bash; fi;
+        python3 ${RUNTIME_WS_DIR}/src/us_visualizer.py
       "
     healthcheck:
       test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q '/visualize/us_imaging'"]
@@ -274,11 +273,11 @@ services:
     command: >
       bash -lc "
         set -e;
-        if [ ! -f ${WS_DIR}/install/setup.bash ]; then
-          cd ${WS_DIR};
+        if [ ! -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then
+          cd ${RUNTIME_WS_DIR};
           colcon build --symlink-install --packages-select ${PACKAGE_NAME:-/auto_needle_insertion};
         fi;
-        source ${WS_DIR}/install/setup.bash;
+        source ${RUNTIME_WS_DIR}/install/setup.bash;
         echo 'Development container with all drivers';
         exec sleep infinity
       "

@@ -134,6 +134,7 @@ fi
   echo "DOCKER_GID=${docker_gid}"
   echo "HOST_WS_DIR=${HOST_WS_DIR:-${PWD}/workspace}"
   echo "HOST_ROSBAG_DIR=${HOST_ROSBAG_DIR:-/mnt/dataset/rosbag_recording}"
+  echo "RUNTIME_WS_DIR=${RUNTIME_WS_DIR:-/ani_ws}"
   echo "PACKAGE_NAME=${PACKAGE_NAME:-auto_needle_insertion}"
 
   echo
