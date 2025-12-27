@@ -349,7 +349,19 @@ sudo usermod -aG docker <username>
 > 
 > Add a bash script to automate user creation and Docker group assignment.
 
-### 5) Hardware acceleration for sensor image rendering
+### 5) Grant users in docker group with write permission
+The recorded ros2 bags can be stored in a hard drive.
+Let's say the drive is mounted as /mnt/dataset.
+In that mount point:
+```bash
+# Create a directory to house the bags
+sudo mkdir -p rosbag_recording
+# Set permissions so that all users in the docker group can write to it
+sudo chgrp docker /mnt/dataset/rosbag_recording
+sudo chmod 2775 /mnt/dataset/rosbag_recording
+```
+
+### 6) Hardware acceleration for sensor image rendering
 Rendering RTSP videos in `rqt_image_raw` may encounter freezing problems.
 Using hardware accelerated GL may help with performance.
 The current settings are compatible with X11 only,meaning the users should log in with Xorg.
