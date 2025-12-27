@@ -6,7 +6,7 @@
 #   ./gen-dotenv.sh --from-dir-owner ./workspace   # use owner of a directory
 #
 # Generated variables (overridable via environment at run time):
-#   Group 1: UID, GID, DOCKER_GID, WS_DIR, ROSBAG_DIR, PACKAGE_NAME
+#   Group 1: UID, GID, DOCKER_GID, HOST_WS_DIR, HOST_ROSBAG_DIR, PACKAGE_NAME
 #   Group 2: UR_ROBOT_IP, USE_MOCK_HARDWARE
 #   Group 3: POLARIS_IP
 #   Group 4: GSCAM_LATENCY, GSCAM_PROTOCOL, GSCAM_VIDEO_WIDTH, GSCAM_VIDEO_HEIGHT
@@ -14,7 +14,7 @@
 #   Group 6: USB_VIDEO_DEVICE, USB_VIDEO_WIDTH, USB_VIDEO_HEIGHT, USB_VIDEO_FPS
 #
 # Example overrides:
-#   WS_DIR=/custom_ws UR_ROBOT_IP=10.0.0.5 ATI_SENSOR_IP=10.0.0.10 ./gen-dotenv.sh
+#   HOST_WS_DIR=/custom_ws UR_ROBOT_IP=10.0.0.5 ATI_SENSOR_IP=10.0.0.10 ./gen-dotenv.sh
 
 set -euo pipefail
 
@@ -132,8 +132,8 @@ fi
   echo "UID=${uid}"
   echo "GID=${gid}"
   echo "DOCKER_GID=${docker_gid}"
-  echo "WS_DIR=${WS_DIR:-/ani_ws}"
-  echo "ROSBAG_DIR=${ROSBAG_DIR:-/ani_ws/rosbag_recording}"
+  echo "HOST_WS_DIR=${HOST_WS_DIR:-${PWD}/workspace}"
+  echo "HOST_ROSBAG_DIR=${HOST_ROSBAG_DIR:-/mnt/dataset/rosbag_recording}"
   echo "PACKAGE_NAME=${PACKAGE_NAME:-auto_needle_insertion}"
 
   echo

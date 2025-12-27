@@ -3,8 +3,9 @@ x-ros-base-env: &ros_base_env
   RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
   DISPLAY: ${DISPLAY}
   QT_X11_NO_MITSHM: 1
-  ROS_HOME: ${WS_DIR:-/ani_ws}/.ros
-  ROS_LOG_DIR: ${WS_DIR:-/ani_ws}/.ros/log
+  WS_DIR: /ani_ws
+  ROS_HOME: /ani_ws/.ros
+  ROS_LOG_DIR: /ani_ws/.ros/log
 
 x-ros-common: &ros_common
   user: "${UID:-1000}:${GID:-1000}"
@@ -16,7 +17,7 @@ x-ros-common: &ros_common
   image: aniros:jazzy-dev
   network_mode: "host"
   ipc: "host"
-  working_dir: ${WS_DIR:-/ani_ws}
+  working_dir: /ani_ws
   stdin_open: true
   tty: true
   entrypoint: ["/ros_entrypoint.sh"]
@@ -26,8 +27,8 @@ x-ros-common: &ros_common
     - "c 81:* rmw"
     - "c 189:* rmw"
   volumes:
-    - ./workspace:${WS_DIR:-/ani_ws}:rw
-    - /mnt/dataset/rosbag_recording:${ROSBAG_DIR:-/ani_ws/rosbag_recording}:rw
+    - ${HOST_WS_DIR:-${PWD}/workspace}:/ani_ws:rw
+    - ${HOST_ROSBAG_DIR:-${PWD}/workspace/rosbag_recording}:/ani_ws/rosbag_recording:rw
     - /tmp/.X11-unix:/tmp/.X11-unix:rw
     - /etc/passwd:/etc/passwd:ro
     - /etc/group:/etc/group:ro
