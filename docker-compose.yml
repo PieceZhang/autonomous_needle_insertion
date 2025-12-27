@@ -8,6 +8,8 @@ x-ros-base-env: &ros_base_env
 
 x-ros-common: &ros_common
   user: "${UID:-1000}:${GID:-1000}"
+  group_add:
+    - "${DOCKER_GID}"
   build:
     context: .
     dockerfile: Dockerfile
@@ -25,6 +27,7 @@ x-ros-common: &ros_common
     - "c 189:* rmw"
   volumes:
     - ./workspace:${WS_DIR:-/ani_ws}:rw
+    - /mnt/dataset/rosbag_recording:${ROSBAG_DIR:-/ani_ws/rosbag_recording}:rw
     - /tmp/.X11-unix:/tmp/.X11-unix:rw
     - /etc/passwd:/etc/passwd:ro
     - /etc/group:/etc/group:ro
@@ -259,14 +262,14 @@ services:
         condition: service_healthy
       polaris_camera_driver:
         condition: service_healthy
-      realsense_driver:
-        condition: service_healthy
+#      realsense_driver:
+#        condition: service_healthy
       ati_ft_driver:
         condition: service_healthy
       usb_video_grabber:
         condition: service_healthy
-      keyboard_driver:
-        condition: service_healthy
+#      keyboard_driver:
+#        condition: service_healthy
     command: >
       bash -lc "
         set -e;

@@ -4,9 +4,9 @@
 # Usage:
 #   ./gen-dotenv.sh                 # use current user's ids
 #   ./gen-dotenv.sh --from-dir-owner ./workspace   # use owner of a directory
-
+#
 # Generated variables (overridable via environment at run time):
-#   Group 1: UID, GID, WS_DIR, PACKAGE_NAME
+#   Group 1: UID, GID, DOCKER_GID, WS_DIR, ROSBAG_DIR, PACKAGE_NAME
 #   Group 2: UR_ROBOT_IP, USE_MOCK_HARDWARE
 #   Group 3: POLARIS_IP
 #   Group 4: GSCAM_LATENCY, GSCAM_PROTOCOL, GSCAM_VIDEO_WIDTH, GSCAM_VIDEO_HEIGHT
@@ -35,6 +35,29 @@ detect_usb_grabber() {
     return 1
   fi
   printf '%s' "$hagibis_dev"
+}
+
+detect_docker_gid() {
+  # Allow override: DOCKER_GID=984 ./gen-dotenv.sh
+  if [[ -n "${DOCKER_GID:-}" ]]; then
+    printf '%s' "${DOCKER_GID}"
+    return 0
+  fi
+
+  local gid=""
+  if command -v getent >/dev/null 2>&1; then
+    # Format: group:password:GID:user(s)
+    gid="$(getent group docker 2>/dev/null | cut -d: -f3 || true)"
+  elif [[ -r /etc/group ]]; then
+    gid="$(awk -F: '$1=="docker"{print $3}' /etc/group || true)"
+  fi
+
+  # Non-fatal: some hosts (e.g., macOS) may not have a docker group
+  if [[ -z "$gid" ]]; then
+    echo "Warning: could not determine docker group GID (group 'docker' not found). DOCKER_GID will be empty." >&2
+  fi
+
+  printf '%s' "$gid"
 }
 
 # Resolve project root (directory containing this script).
@@ -73,6 +96,8 @@ else
   gid="$(id -g)"
 fi
 
+docker_gid="$(detect_docker_gid)"
+
 # If .env exists, confirm overwrite; otherwise, proceed to create a new one.
 if [[ -e "${ENV_FILE}" ]]; then
   echo "Warning: ${ENV_FILE} already exists." >&2
@@ -106,7 +131,9 @@ fi
   # Group 1: IDs and workspace/package
   echo "UID=${uid}"
   echo "GID=${gid}"
+  echo "DOCKER_GID=${docker_gid}"
   echo "WS_DIR=${WS_DIR:-/ani_ws}"
+  echo "ROSBAG_DIR=${ROSBAG_DIR:-/ani_ws/rosbag_recording}"
   echo "PACKAGE_NAME=${PACKAGE_NAME:-auto_needle_insertion}"
 
   echo
@@ -149,7 +176,7 @@ fi
 } > "${ENV_FILE}"
 
 echo "Wrote ${ENV_FILE} with:"
-echo "  [Group 1] IDs, workspace directory, and package name"
+echo "  [Group 1] IDs (UID/GID/DOCKER_GID), directories, and package name"
 echo "  [Group 2] UR robot configuration"
 echo "  [Group 3] Polaris tracker"
 echo "  [Group 4] GSCAM configuration"
