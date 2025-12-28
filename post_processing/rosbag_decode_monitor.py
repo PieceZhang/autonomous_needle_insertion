@@ -79,6 +79,8 @@ VIDEO_TOPICS: Set[str] = {
     "/image_raw/compressed",
     "/camera/camera/color/image_raw/compressed",
     "/camera/camera/depth/image_rect_raw/compressedDepth",
+    "/visualize/us_imaging/compressed",
+    "/visualize/us_imaging_sync/compressed"
 }
 
 KNOWN_ENCODINGS = {
