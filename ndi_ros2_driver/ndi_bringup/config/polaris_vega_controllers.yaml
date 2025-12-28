@@ -13,7 +13,7 @@ ndi/controller_manager:
     us_probe_pose_broadcaster:
       type: pose_broadcaster/PoseBroadcaster
 
-    stylus_probe_pose_broadcaster:
+    stylus_pose_broadcaster:
       type: pose_broadcaster/PoseBroadcaster
     # END: add broadcaster for each tracker here
   
