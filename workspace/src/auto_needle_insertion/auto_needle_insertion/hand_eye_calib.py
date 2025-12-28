@@ -114,7 +114,7 @@ CONTROLLER_NAMES = [
 PREFERRED_TIP_LINKS = ["tool0", "ee_link"]
 
 # PoseStamped topic from ndi_ros2_driver pose_broadcaster for the tracker
-US_TRACKER_TOPIC = "/ndi/us_tracker_pose"
+US_TRACKER_TOPIC = "/ndi/us_probe_pose"
 
 # ---------------------- Logging ----------------------
 logging.basicConfig(level=logging.INFO)
