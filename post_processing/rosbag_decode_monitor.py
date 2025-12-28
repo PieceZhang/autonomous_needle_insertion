@@ -2,33 +2,35 @@
 """
 Decode ROS 2 topics (listed in metadata.yaml) from MCAP files without needing a ROS installation.
 
-Changes in this version:
-  * Replace --mcap-dir with --input-dir: a root directory containing multiple rosbag folders.
-    Each rosbag folder must contain metadata.yaml and *.mcap / *.mcap.zstd files.
-  * Scan all rosbag folders under input-dir; if a corresponding output folder under output-dir
-    does NOT exist (or --overwrite is given), decode that rosbag.
-  * Add --monitoring-int (seconds): if <=0, scan once and exit; if >0, repeatedly scan at
-    the given interval and decode newly appearing rosbags.
-  * Output folder name now appends '_{TASK_LABEL}_{TASK_OUTCOME}', where TASK_LABEL is read from
-    task_info.task_label, and TASK_OUTCOME is inferred from task_info_collection_states (contains
-    'success', 'failure', or 'recovery'; otherwise 'unknown').
+Behavior:
+  * Only logs/prints when actually decoding a rosbag.
+  * No messages/logs during scanning, sleeping, or when skipping (e.g., output exists).
+  * Logs are appended to <output_dir>/decode.log, flushed per message during decode.
 
-Enhancements (from prior version):
-  * Non-video topics are written to NDJSON.
-  * Video topics (/vega_vt/image_raw, /image_raw/compressed,
+Features:
+  * --input-dir: root containing multiple rosbag folders (each with metadata.yaml and *.mcap / *.mcap.zstd).
+  * Scans all rosbag folders; decodes if corresponding output folder under output-dir does NOT exist,
+    or overwrite is requested.
+  * --monitoring-int (seconds): <=0 scans once and exits; >0 loops at interval to decode newly appearing rosbags.
+  * Output folder name: <bag_name>_{TASK_LABEL}_{TASK_OUTCOME}
+    - TASK_LABEL from task_info.task_label (or label)
+    - TASK_OUTCOME inferred from task_info_collection_states (success/failure/recovery, else unknown)
+  * Non-video topics -> NDJSON (+ messages_info.json)
+  * Video topics (/vega_vt/image_raw/compressed, /image_raw/compressed,
     /camera/camera/color/image_raw/compressed,
-    /camera/camera/depth/image_rect_raw/compressedDepth)
-    are converted into MP4 files plus per-topic info JSON files.
-  * Video decoding handles both sensor_msgs/msg/Image and sensor_msgs/msg/CompressedImage,
-    including Zstd-compressed payloads whose raw width/height/encoding are embedded in the
-    CompressedImage.format string.
+    /camera/camera/depth/image_rect_raw/compressedDepth,
+    /visualize/us_imaging/compressed, /visualize/us_imaging_sync/compressed)
+    -> MP4 (+ video_info.json)
+  * Handles sensor_msgs/msg/Image and sensor_msgs/msg/CompressedImage, including Zstd payloads
+    with width/height/encoding in CompressedImage.format.
 
-Output layout (per rosbag, under <output_dir>/<bag_name>_{TASK_LABEL}_{TASK_OUTCOME}/):
-    <bag_out>/<sanitized_topic>/messages.ndjson
-    <bag_out>/<sanitized_topic>/messages_info.json
-    <bag_out>/<sanitized_topic>/video.mp4
-    <bag_out>/<sanitized_topic>/video_info.json
-    <bag_out>/rosbag_info.json
+Outputs per bag: <output_dir>/<bag_name>_{TASK_LABEL}_{TASK_OUTCOME}/
+  - <topic>/messages.ndjson
+  - <topic>/messages_info.json
+  - <topic>/video.mp4
+  - <topic>/video_info.json
+  - rosbag_info.json
+Global log: <output_dir>/decode.log (append-only)
 """
 
 from __future__ import annotations
@@ -39,7 +41,9 @@ import json
 import sys
 import time
 import re
+import atexit
 from array import array
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import (
     Any,
@@ -53,23 +57,21 @@ from typing import (
     TYPE_CHECKING,
 )
 
-from datetime import datetime, timezone
-
 import yaml
 from mcap.reader import make_reader
 from mcap_ros2.decoder import DecoderFactory
 
-try:  # Optional unless video topics are decoded
+try:
     import numpy as np  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover
     np = None  # type: ignore[assignment]
 
-try:  # Optional unless video topics are decoded
+try:
     import cv2  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover
     cv2 = None  # type: ignore[assignment]
 
-try:  # Optional, only when Zstd-compressed CompressedImage payloads are present
+try:
     import zstandard as zstd  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover
     zstd = None  # type: ignore[assignment]
@@ -84,7 +86,7 @@ VIDEO_TOPICS: Set[str] = {
     "/camera/camera/color/image_raw/compressed",
     "/camera/camera/depth/image_rect_raw/compressedDepth",
     "/visualize/us_imaging/compressed",
-    "/visualize/us_imaging_sync/compressed"
+    "/visualize/us_imaging_sync/compressed",
 }
 
 KNOWN_ENCODINGS = {
@@ -104,6 +106,39 @@ JPEG_SIGNATURE = b"\xff\xd8\xff"
 MAGIC_SIGNATURES = (PNG_SIGNATURE, JPEG_SIGNATURE)
 
 
+class BagLogger:
+    """Simple logger writing to stdout/stderr and appending to a log file (flushed every call)."""
+
+    def __init__(self, log_path: Path):
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.log_file = log_path.open("a", encoding="utf-8")
+        atexit.register(self.close)
+
+    def _write(self, level: str, msg: str, to_stderr: bool = False) -> None:
+        line = f"[{level}] {msg}"
+        if to_stderr:
+            print(line, file=sys.stderr)
+        else:
+            print(line)
+        self.log_file.write(line + "\n")
+        self.log_file.flush()
+
+    def info(self, msg: str) -> None:
+        self._write("INFO", msg, to_stderr=False)
+
+    def warn(self, msg: str) -> None:
+        self._write("WARN", msg, to_stderr=True)
+
+    def error(self, msg: str) -> None:
+        self._write("ERROR", msg, to_stderr=True)
+
+    def close(self) -> None:
+        try:
+            self.log_file.close()
+        except Exception:
+            pass
+
+
 class _PseudoImage:
     __slots__ = ("height", "width", "encoding", "step", "data", "is_bigendian")
 
@@ -118,33 +153,15 @@ class _PseudoImage:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Decode ROS 2 MCAP topics without a ROS environment.")
-    parser.add_argument(
-        "--input-dir",
-        required=True,
-        type=Path,
-        help="Root directory containing multiple rosbag folders (each with metadata.yaml and *.mcap/*.mcap.zstd).",
-    )
-    parser.add_argument(
-        "--output-dir",
-        required=True,
-        type=Path,
-        help="Output root directory. A subfolder per rosbag will be created.",
-    )
-    parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Allow overwriting existing outputs (if the rosbag output folder already exists).",
-    )
-    parser.add_argument(
-        "--topics",
-        nargs="*",
-        help="Optional subset of topics to decode (default: all listed in metadata).",
-    )
+    parser.add_argument("--input-dir", required=True, type=Path, help="Root dir containing rosbag folders.")
+    parser.add_argument("--output-dir", required=True, type=Path, help="Output root dir; one subfolder per bag.")
+    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing outputs if present.")
+    parser.add_argument("--topics", nargs="*", help="Optional subset of topics to decode.")
     parser.add_argument(
         "--monitoring-int",
         type=float,
         default=0.0,
-        help="Scan interval in seconds. <=0 scans once and exits; >0 loops with the given interval, decoding new rosbags.",
+        help="Scan interval in seconds. <=0 scans once and exits; >0 loops to decode new bags.",
     )
     return parser.parse_args()
 
@@ -152,20 +169,16 @@ def parse_args() -> argparse.Namespace:
 def load_topic_specs(metadata_path: Path) -> Dict[str, str]:
     with metadata_path.open("r", encoding="utf-8") as f:
         meta = yaml.safe_load(f)
-
     info = meta.get("rosbag2_bagfile_information")
     if not info:
         raise KeyError(f"rosbag2_bagfile_information missing in {metadata_path}")
-
     topics_section = info.get("topics_with_message_count", [])
     topic_to_type: Dict[str, str] = {}
     for entry in topics_section:
         topic_md = entry["topic_metadata"]
         topic_to_type[topic_md["name"]] = topic_md["type"]
-
     if not topic_to_type:
         raise ValueError(f"No topics listed in {metadata_path}")
-
     return topic_to_type
 
 
@@ -177,9 +190,6 @@ def sanitize_topic_name(topic: str) -> str:
 
 
 def sanitize_label(value: str) -> str:
-    """
-    Sanitize task label for filesystem safety.
-    """
     v = value.strip()
     if not v:
         return "unknown"
@@ -222,7 +232,6 @@ def _extract_task_outcome_from_msg(msg: Any) -> Optional[str]:
         text = json.dumps(obj, ensure_ascii=False).lower()
     except Exception:
         text = str(msg).lower()
-    # Priority order: success > failure > recovery
     if "success" in text:
         return "success"
     if "failure" in text:
@@ -233,17 +242,9 @@ def _extract_task_outcome_from_msg(msg: Any) -> Optional[str]:
 
 
 def extract_task_label_and_outcome(bag_dir: Path, topic_specs: Dict[str, str]) -> Tuple[str, str]:
-    """
-    从 bag 内容中提取 TASK_LABEL 与 TASK_OUTCOME。
-    TASK_LABEL: 来自包含 "task_info" 子串的主题中的 task_label/label 字段。
-    TASK_OUTCOME: 从包含 "task_info_collection_states"（或同样含 "task_info" 子串）的主题消息内容中
-                  查找 success / failure / recovery 关键词。
-    若未找到，返回 "unknown"。
-    """
     task_label = "unknown"
     task_outcome = "unknown"
 
-    # 选取候选主题
     candidate_label_topics = [t for t in topic_specs if "task_info" in t]
     candidate_outcome_topics = [t for t in topic_specs if "task_info_collection_states" in t or "task_info" in t]
 
@@ -388,9 +389,6 @@ def require_zstd_dependency() -> None:
 
 
 def image_msg_to_bgr(msg: Any, msg_type: Optional[str] = None) -> "tnp.ndarray":
-    """
-    Convert either sensor_msgs/msg/Image or sensor_msgs/msg/CompressedImage to a BGR uint8 frame.
-    """
     if np is None:
         raise RuntimeError("numpy is required to convert images.")
 
@@ -465,9 +463,6 @@ def _raw_image_to_bgr(msg: Any) -> "tnp.ndarray":
 
 
 def _decode_cv_image(buffer: "tnp.ndarray") -> Optional["tnp.ndarray"]:
-    """
-    Try to decode an image buffer with OpenCV; if it fails, trim to known PNG/JPEG signatures and retry.
-    """
     if cv2 is None:
         require_video_dependencies()
 
@@ -534,9 +529,6 @@ def _compressed_image_to_bgr(msg: Any) -> "tnp.ndarray":
 
 
 def _decode_compressed_depth(data: bytes) -> "tnp.ndarray":
-    """
-    Decode compressedDepth format (PNG-encoded 16-bit depth data with header).
-    """
     if cv2 is None or np is None:
         require_video_dependencies()
 
@@ -671,7 +663,6 @@ class VideoTopicWriter:
         if np is None or cv2 is None:
             require_video_dependencies()
         self.topic = topic
-        # output_dir here is the per-bag output directory
         self.output_dir = output_dir / sanitize_topic_name(topic)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.video_path = self.output_dir / "video.mp4"
@@ -703,10 +694,9 @@ class VideoTopicWriter:
                 f"Frame size mismatch for {self.topic}: expected {self.width}x{self.height}, got {w}x{h}"
             )
 
-        self.frame_count += 1
+        self.frame_count += 1        # count messages
         self.frame_timestamps.append(int(timestamp_ns))
         self.bag_files.add(bag_file)
-
         self.buffer_frames.append(frame)
 
     def _compute_measured_fps(self) -> float:
@@ -799,10 +789,6 @@ def _safe_get_start_end_ns(info: Dict[str, Any]) -> Tuple[Optional[int], Optiona
 
 
 def write_rosbag_info(metadata_path: Path, output_dir: Path, overwrite: bool, mcap_path: Optional[Path] = None) -> Path:
-    """
-    Save rosbag_info.json under output_dir containing basic information from metadata.yaml.
-    Also attempts to include per-topic decoded info (messages_info.json or video_info.json).
-    """
     with metadata_path.open("r", encoding="utf-8") as f:
         meta = yaml.safe_load(f) or {}
 
@@ -890,9 +876,6 @@ def write_rosbag_info(metadata_path: Path, output_dir: Path, overwrite: bool, mc
 
 
 def find_rosbag_folders(root: Path) -> List[Path]:
-    """
-    Return all child directories under root that contain a metadata.yaml, treated as rosbag folders.
-    """
     bags: List[Path] = []
     if not root.is_dir():
         return bags
@@ -902,52 +885,45 @@ def find_rosbag_folders(root: Path) -> List[Path]:
     return bags
 
 
-def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace) -> bool:
+def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace, logger: BagLogger) -> bool:
     """
-    Decode a single rosbag folder. Returns True if decoding occurred, False if skipped or failed.
+    Returns True if decode was attempted and progressed (logs produced); False if skipped/invalid with no logs.
     """
     bag_name = bag_dir.name
     metadata_path = bag_dir / "metadata.yaml"
     if not metadata_path.is_file():
-        print(f"[WARN] Skip {bag_name}: metadata.yaml not found.")
         return False
 
     try:
         topic_specs = load_topic_specs(metadata_path)
-    except Exception as exc:
-        print(f"[ERROR] Failed to read {metadata_path}: {exc}", file=sys.stderr)
+    except Exception:
         return False
 
     if args.topics:
         missing = [t for t in args.topics if t not in topic_specs]
         if missing:
-            print(f"[ERROR] {bag_name} metadata does not contain requested topics: {missing}", file=sys.stderr)
             return False
         topic_specs = {t: topic_specs[t] for t in args.topics}
 
     if not topic_specs:
-        print(f"[ERROR] {bag_name} has no selected topics; aborting this bag.", file=sys.stderr)
         return False
 
-    # 提取 TASK_LABEL 与 TASK_OUTCOME，用于输出目录命名
     task_label, task_outcome = extract_task_label_and_outcome(bag_dir, topic_specs)
     bag_output_name = f"{bag_name}_{task_label}_{task_outcome}"
     out_bag_dir = output_root / bag_output_name
 
     if out_bag_dir.exists() and not args.overwrite:
-        print(f"[INFO] Skip {bag_output_name}: output already exists (use --overwrite to re-decode).")
         return False
-
-    expected_topics: Set[str] = set(topic_specs.keys())
 
     selected_video_topics = set(topic_specs) & VIDEO_TOPICS
     if selected_video_topics:
         try:
             require_video_dependencies()
-        except RuntimeError as exc:
-            print(f"[ERROR] {bag_name} missing video dependencies: {exc}", file=sys.stderr)
+        except RuntimeError:
+            # Dependency missing; cannot decode this bag; stay silent.
             return False
 
+    expected_topics: Set[str] = set(topic_specs.keys())
     decoder_factory = DecoderFactory()
     decoder_cache: Dict[Tuple[int, str], Callable[[bytes], Any]] = {}
 
@@ -968,18 +944,17 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace) -
     ndjson_stats: Dict[str, Dict[str, Any]] = {}
     video_writers: Dict[str, VideoTopicWriter] = {}
     total_messages = 0
-
     seen_topics: Set[str] = set()
 
     try:
         for mcap_path in iter_mcap_files(bag_dir):
-            print(f"[INFO] Decoding {bag_name} -> {mcap_path.name} (out: {bag_output_name}) ...")
+            logger.info(f"Decoding {bag_name} -> {mcap_path.name} (out: {bag_output_name}) ...")
             is_zstd = mcap_path.suffix == ".zstd"
 
             if is_zstd:
                 if zstd is None:
-                    print(f"[ERROR] File {mcap_path.name} requires zstandard. Install via: pip install zstandard", file=sys.stderr)
-                    return False
+                    logger.error(f"File {mcap_path.name} requires zstandard. Install via: pip install zstandard")
+                    return True
                 from io import BytesIO
                 try:
                     with mcap_path.open("rb") as compressed_file:
@@ -993,8 +968,8 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace) -
                                 decompressed_chunks.append(chunk)
                         decompressed_data = b"".join(decompressed_chunks)
                 except Exception as exc:
-                    print(f"[ERROR] Failed to decompress {mcap_path.name}: {exc}", file=sys.stderr)
-                    return False
+                    logger.error(f"Failed to decompress {mcap_path.name}: {exc}")
+                    return True
                 stream = BytesIO(decompressed_data)
             else:
                 stream = mcap_path.open("rb")
@@ -1012,7 +987,7 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace) -
                         decoder = get_decoder(schema, channel)
                         decoded_msg = decoder(message.data)
                     except Exception as exc:  # pragma: no cover
-                        print(f"[WARN] Failed to decode {topic} in {mcap_path.name}: {exc}", file=sys.stderr)
+                        logger.warn(f"Failed to decode {topic} in {mcap_path.name}: {exc}")
                         continue
 
                     if topic in selected_video_topics:
@@ -1022,7 +997,7 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace) -
                         try:
                             frame = image_msg_to_bgr(decoded_msg, topic_specs.get(topic))
                         except Exception as exc:  # pragma: no cover
-                            print(f"[WARN] Skipping frame for {topic} in {mcap_path.name}: {exc}", file=sys.stderr)
+                            logger.warn(f"Skipping frame for {topic} in {mcap_path.name}: {exc}")
                             continue
                         timestamp_ns = message.publish_time or message.log_time or 0
                         video_writer.add_frame(frame, timestamp_ns, mcap_path.name)
@@ -1082,10 +1057,7 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace) -
 
     missing_topics = sorted(list(expected_topics - seen_topics))
     if missing_topics:
-        print(
-            f"[WARN] Topics listed in metadata but not found in any MCAP: {missing_topics}",
-            file=sys.stderr,
-        )
+        logger.warn(f"Topics listed in metadata but not found in any MCAP: {missing_topics}")
 
     info_outputs: Dict[str, Path] = {}
     for topic, stats in ndjson_stats.items():
@@ -1120,35 +1092,35 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace) -
         try:
             result = writer.finalize()
         except Exception as exc:  # pragma: no cover
-            print(f"[ERROR] Failed to finalize video for {topic} in bag {bag_name}: {exc}", file=sys.stderr)
-            return False
+            logger.error(f"Failed to finalize video for {topic} in bag {bag_name}: {exc}")
+            return True
         if result:
             video_outputs[topic] = result
         else:
-            print(f"[WARN] No frames decoded for {topic}; MP4 not created.", file=sys.stderr)
+            logger.warn(f"No frames decoded for {topic}; MP4 not created.")
 
     try:
         info_json_path = write_rosbag_info(metadata_path, out_bag_dir, args.overwrite, mcap_path=None)
-        print(f"[INFO] Wrote rosbag info -> {info_json_path}")
+        logger.info(f"Wrote rosbag info -> {info_json_path}")
     except Exception as exc:
-        print(f"[WARN] Failed to write rosbag_info.json: {exc}", file=sys.stderr)
+        logger.warn(f"Failed to write rosbag_info.json: {exc}")
 
-    print(
-        f"[INFO] Finished decoding {bag_output_name}. Processed {total_messages} message(s), "
+    logger.info(
+        f"Finished decoding {bag_output_name}. Processed {total_messages} message(s), "
         f"{len(ndjson_paths)} NDJSON topic(s), {len(video_outputs)} video topic(s)."
     )
     if ndjson_paths:
-        print("[INFO] NDJSON outputs:")
+        logger.info("NDJSON outputs:")
         for topic, path in ndjson_paths.items():
-            print(f"       {topic} -> {path}")
+            logger.info(f"   {topic} -> {path}")
             info_path = info_outputs.get(topic)
             if info_path:
-                print(f"          info -> {info_path}")
+                logger.info(f"      info -> {info_path}")
     if video_outputs:
-        print("[INFO] Video outputs:")
+        logger.info("Video outputs:")
         for topic, (video_path, info_path) in video_outputs.items():
-            print(f"       {topic} -> {video_path}")
-            print(f"          info -> {info_path}")
+            logger.info(f"   {topic} -> {video_path}")
+            logger.info(f"      info -> {info_path}")
 
     return True
 
@@ -1157,13 +1129,12 @@ def main() -> int:
     args = parse_args()
 
     if not args.input_dir.is_dir():
-        print(f"[ERROR] Input directory not found: {args.input_dir}", file=sys.stderr)
         return 1
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    logger = BagLogger(args.output_dir / "decode.log")
 
     interval = float(args.monitoring_int)
-    first_loop = True
 
     try:
         while True:
@@ -1171,32 +1142,22 @@ def main() -> int:
 
             if not bag_dirs:
                 if interval <= 0:
-                    print(f"[ERROR] No rosbag folders (with metadata.yaml) found under {args.input_dir}.", file=sys.stderr)
                     return 1
                 else:
-                    print(f"[INFO] No rosbag found. Sleeping {interval} s before retry ...")
                     time.sleep(interval)
                     continue
 
             decoded_any = False
             for bag_dir in bag_dirs:
-                ok = decode_one_bag(bag_dir, args.output_dir, args)
+                ok = decode_one_bag(bag_dir, args.output_dir, args, logger)
                 decoded_any = decoded_any or ok
 
             if interval <= 0:
                 return 0
             else:
-                if decoded_any:
-                    print(f"[INFO] Scan done. Sleeping {interval} s before next scan ...")
-                else:
-                    if first_loop:
-                        print(f"[INFO] No rosbag decoded this round. Sleeping {interval} s before monitoring ...")
-                    else:
-                        print(f"[INFO] No new rosbag to decode. Sleeping {interval} s ...")
-                first_loop = False
+                # silent sleep between scans
                 time.sleep(interval)
     except KeyboardInterrupt:
-        print("\n[INFO] Interrupted, exiting.")
         return 0
 
 
