@@ -770,42 +770,19 @@ def main() -> None:
         y_axis = rotation_matrix[:, 1] / np.linalg.norm(rotation_matrix[:, 1])
         origin = transform_matrix[:3, 3]
 
-        # Generate square waypoints
-        local_waypoints = generate_square_waypoints(SQUARE_EDGE_LENGTH)
-
-        # Create pose messages for each waypoint
-        waypoint_poses = [
-            create_pose_stamped(
-                origin, x_axis, y_axis, dx, dy,
-                current_pose.orientation, planning_frame
+        # Read and report tracker poses for probe and needle
+        def _fmt_pose(name: str, pose: Tuple[float, float, float, float, float, float, float]) -> str:
+            px, py, pz, qx, qy, qz, qw = pose
+            return (
+                f"{name}: pos=({px:+.4f}, {py:+.4f}, {pz:+.4f}) m, "
+                f"quat(xyzw)=({qx:+.5f}, {qy:+.5f}, {qz:+.5f}, {qw:+.5f})"
             )
-            for dx, dy in local_waypoints
-        ]
 
-        # Execute square trajectory
-        for i, waypoint_pose in enumerate(waypoint_poses):
-            arm.set_start_state_to_current_state()
-            arm.set_goal_state(pose_stamped_msg=waypoint_pose, pose_link=tip_link)
-
-            # Setup conservative planning parameters
-            plan_params = PlanRequestParameters(robot, "")
-            plan_params.max_velocity_scaling_factor = MAX_VELOCITY_SCALING
-            plan_params.max_acceleration_scaling_factor = MAX_ACCELERATION_SCALING
-
-            # Plan trajectory
-            plan_result = arm.plan(single_plan_parameters=plan_params)
-            if not plan_result:
-                logger.error(f"Planning to waypoint {i} failed; aborting")
-                break
-
-            # Execute with fallback
-            if not execute_trajectory_with_fallback(robot, plan_result.trajectory):
-                logger.error(f"Execution to waypoint {i} failed; aborting")
-                break
-
-            logger.info(f"Reached waypoint {i + 1}/{len(waypoint_poses)}")
-
-        logger.info("Square trajectory completed successfully")
+        # Report instrument poses
+        needle_pose = get_instrument_pose(instrument="needle", timeout_sec=2.0)
+        probe_pose = get_instrument_pose(instrument="us_probe", timeout_sec=2.0)
+        logger.info(_fmt_pose("Needle (tracker)", needle_pose))
+        logger.info(_fmt_pose("Probe  (tracker)", probe_pose))
 
     except Exception as e:
         logger.error(f"Square trajectory execution failed: {e}")
