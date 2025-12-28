@@ -6,6 +6,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import CompressedImage, Image
 from geometry_msgs.msg import PoseStamped
+from std_msgs.msg import Float32MultiArray
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
@@ -145,12 +146,27 @@ class USVisualizer(Node):
             qos_profile=pose_qos,
         )
 
-        # Publisher
+        # Publisher (image)
         self.image_pub = self.create_publisher(
             Image,
             "/visualize/us_imaging",
             qos_profile=image_qos,
         )
+
+        # Publishers: arrays [x, y, z] in mm (Image frame)
+        self.tip_pub = self.create_publisher(
+            Float32MultiArray,
+            "decoded_coor_image/needle_tip",
+            qos_profile=pose_qos,
+        )
+        self.origin_pub = self.create_publisher(
+            Float32MultiArray,
+            "decoded_coor_image/needle_origin",
+            qos_profile=pose_qos,
+        )
+
+        # Timer: 20 Hz publishing of decoded coordinates
+        self.create_timer(0.05, self.publish_decoded_coordinates)
 
         self.last_probe_pose_dict = None  # stored as received (meters)
         self.last_needle_pose_dict = None
@@ -352,6 +368,15 @@ class USVisualizer(Node):
             cv2.line(frame, (sx, sy), (ex, ey), color, thickness, cv2.LINE_AA)
             start += dash_length + gap_length
 
+    @staticmethod
+    def draw_text_with_outline(frame, text, org, font=cv2.FONT_HERSHEY_SIMPLEX,
+                               scale=0.55, color=(255, 255, 255), thickness=1):
+        """在图像上绘制带描边的文字，提升可读性。"""
+        # outline
+        cv2.putText(frame, text, org, font, scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
+        # text
+        cv2.putText(frame, text, org, font, scale, color, thickness, cv2.LINE_AA)
+
     def on_image(self, msg: CompressedImage):
         try:
             np_arr = np.frombuffer(msg.data, dtype=np.uint8)
@@ -389,6 +414,12 @@ class USVisualizer(Node):
                                           color=color_axis, thickness=2, dash_length=10, gap_length=6)
                 else:
                     self.get_logger().debug("Stylus or tip projection not finite; skip axis drawing")
+
+                # 在图像上显示坐标（mm）
+                tip_text = f"Tip (mm): x={tip_xyz[0]:.1f}, y={tip_xyz[1]:.1f}, z={tip_xyz[2]:.1f}"
+                sty_text = f"Origin (mm): x={stylus_xyz[0]:.1f}, y={stylus_xyz[1]:.1f}, z={stylus_xyz[2]:.1f}"
+                self.draw_text_with_outline(frame, tip_text, (10, 95))
+                self.draw_text_with_outline(frame, sty_text, (10, 120))
             else:
                 self.get_logger().debug("Stylus/tip not computed (missing or invalid transforms)")
 
@@ -397,6 +428,38 @@ class USVisualizer(Node):
             self.image_pub.publish(img_msg)
         except Exception as exc:
             self.get_logger().error(f"Exception decoding/publishing image: {exc}")
+
+    def publish_decoded_coordinates(self):
+        """
+        以 20 Hz 发布两个话题：
+        - decoded_coor_image/needle_tip: Float32MultiArray, data=[x,y,z] (mm)
+        - decoded_coor_image/needle_origin: Float32MultiArray, data=[x,y,z] (mm)
+        坐标系：Image
+        需求：即使 needle 丢失，也持续发布，值用 NaN 填充。
+        """
+        nan = float("nan")
+        stylus_xyz = None
+        tip_xyz = None
+
+        res = self.compute_stylus_and_tip_in_image()
+        if res is not None:
+            stylus_xyz, tip_xyz = res
+
+        msg_tip = Float32MultiArray()
+        msg_ori = Float32MultiArray()
+
+        if tip_xyz is not None:
+            msg_tip.data = [float(tip_xyz[0]), float(tip_xyz[1]), float(tip_xyz[2])]
+        else:
+            msg_tip.data = [nan, nan, nan]
+
+        if stylus_xyz is not None:
+            msg_ori.data = [float(stylus_xyz[0]), float(stylus_xyz[1]), float(stylus_xyz[2])]
+        else:
+            msg_ori.data = [nan, nan, nan]
+
+        self.tip_pub.publish(msg_tip)
+        self.origin_pub.publish(msg_ori)
 
     def log_latest_poses(self):
         if self.last_probe_pose_dict:

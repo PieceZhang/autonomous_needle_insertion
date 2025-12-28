@@ -2,8 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 Subscribe to keyboard listener topic and control rosbag recording.
-- v: Start recording（调用 /ani_ws/scripts/run_openh_rosbag_record.sh）
-- b/n/m: Wait for 200ms then stop recording（status code: Success / Failure / Recovery）
+- v: Start recording（调用 /ani_ws/scripts/run_openh_rosbag_record.sh），并将 task_info_collection_states 置为 started
+- b/n/m: Wait for 200ms then stop recording（status code: Success / Failure / Recovery），并将 task_info_collection_states 分别置为 stopped_success / stopped_failure / stopped_recovery
 - q: Quit
 """
 
@@ -160,22 +160,19 @@ class RosbagController:
 
     def stop_recording(self, reason: str) -> None:
         if not self._proc or self._proc.poll() is not None:
-            msg = f"Recording not in progress, ignored start command (reason: {reason})."
+            msg = f"Recording not in progress, ignored stop command (reason: {reason})."
             logger.info(msg)
             print(msg, flush=True)
             return
 
-        # 按需求等待 200 ms 再停止
-        time.sleep(STOP_WAIT_SEC)
+        msg = f"Stop recording (reason: {reason}), sending SIGINT..."
+        logger.info(msg)
+        print(msg, flush=True)
 
         try:
             pgid = os.getpgid(self._proc.pid)
         except Exception:
             pgid = None
-
-        msg = f"Stop recording (reason: {reason}), sending SIGINT..."
-        logger.info(msg)
-        print(msg, flush=True)
 
         try:
             if pgid is not None:
@@ -218,6 +215,37 @@ class RosbagController:
             self._proc = None
 
 
+# ----------------- 状态发布（10 Hz） -----------------
+class TaskInfoPublisher(Node):
+    """
+    以 10 Hz 发布 task_info_collection_states（std_msgs/String）
+    """
+    def __init__(self, topic_name: str = "task_info_collection_states") -> None:
+        super().__init__("task_info_publisher")
+        self._pub = self.create_publisher(String, topic_name, 10)
+        self._state = "idle"
+        self._timer = self.create_timer(0.1, self._on_timer)  # 10 Hz
+
+    def set_state(self, state: str) -> None:
+        self._state = state
+
+    def _on_timer(self) -> None:
+        msg = String()
+        msg.data = self._state
+        self._pub.publish(msg)
+
+
+# ----------------- 辅助：带 spin 的等待 -----------------
+def sleep_with_spin(exec_: SingleThreadedExecutor, duration: float, step: float = 0.01) -> None:
+    """
+    在等待 duration 秒期间，持续 spin_once，确保计时器/回调不被阻塞。
+    """
+    end = time.monotonic() + duration
+    while time.monotonic() < end:
+        exec_.spin_once(timeout_sec=0.0)
+        time.sleep(step)
+
+
 # ----------------- 主循环 -----------------
 def main():
     rclpy.init()
@@ -225,13 +253,19 @@ def main():
         glyph_topic="/keyboard_listener/glyphkey_pressed",
         keycode_topic="/keyboard_listener/key_pressed",
     )
+    task_pub = TaskInfoPublisher(topic_name="task_info_collection_states")
     exec_ = SingleThreadedExecutor()
     exec_.add_node(key_in)
+    exec_.add_node(task_pub)
 
     controller = RosbagController()
 
     try:
-        print("rosbag recording control node has started: Press v to start recording, b/n/m to stop recording, q to quit recording", flush=True)
+        print(
+            "rosbag recording control node has started: "
+            "Press v to start recording, b/n/m to stop recording, q to quit recording",
+            flush=True,
+        )
         while rclpy.ok():
             exec_.spin_once(timeout_sec=0.0)
             key = key_in.get_key()
@@ -248,12 +282,21 @@ def main():
                 break
 
             if key_norm == "v":
+                task_pub.set_state("started")
                 controller.start_recording()
                 continue
 
             if key_norm in ("b", "n", "m"):
-                reason_map = {"b": "Success", "n": "Failure", "m": "Recovery"}
-                controller.stop_recording(reason_map[key_norm])
+                reason_map = {
+                    "b": ("Success", "stopped_success"),
+                    "n": ("Failure", "stopped_failure"),
+                    "m": ("Recovery", "stopped_recovery"),
+                }
+                reason, state = reason_map[key_norm]
+                task_pub.set_state(state)
+                # 在停止前等待 STOP_WAIT_SEC，同时保持 spin，确保状态能被及时发布
+                sleep_with_spin(exec_, STOP_WAIT_SEC)
+                controller.stop_recording(reason)
                 continue
 
             # 其他按键忽略
@@ -263,7 +306,15 @@ def main():
         except Exception:
             pass
         try:
+            exec_.remove_node(task_pub)
+        except Exception:
+            pass
+        try:
             key_in.destroy_node()
+        except Exception:
+            pass
+        try:
+            task_pub.destroy_node()
         except Exception:
             pass
         rclpy.shutdown()
