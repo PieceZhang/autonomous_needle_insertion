@@ -12,6 +12,9 @@ ndi/controller_manager:
 
     us_probe_pose_broadcaster:
       type: pose_broadcaster/PoseBroadcaster
+
+    stylus_pose_broadcaster:
+      type: pose_broadcaster/PoseBroadcaster
     # END: add broadcaster for each tracker here
   
 # BEGIN: configure broadcaster for each tracker here
@@ -26,5 +29,10 @@ ndi/needle_pose_broadcaster:
 ndi/us_probe_pose_broadcaster:
   ros__parameters:
     pose_name: "us_probe"
+    frame_id: "polaris_vega_base"
+
+ndi/stylus_pose_broadcaster:
+  ros__parameters:
+    pose_name: "stylus"
     frame_id: "polaris_vega_base"
 # END: configure broadcaster for each tracker here
