@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import glob
+import json
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
@@ -101,14 +102,16 @@ class USVisualizer(Node):
         super().__init__("us_visualizer")
 
         # Calibration transforms (all in millimeters)
-        self.T_stylus_from_tip = None   # StylusTip -> Stylus
-        self.T_probe_from_image = None  # Image -> Probe
-        self.T_image_from_probe = None  # Probe -> Image (inverse)
-        self.load_calibration_xml()
+        # self.T_needle_body_from_tip  # 不再使用
+        self.tip_offset_mm = None         # NeedleBody -> NeedleTip 的平移向量 (mm)
+        self.T_probe_from_image = None    # Image -> Probe
+        self.T_image_from_probe = None    # Probe -> Image (inverse)
+        self.load_calibration_xml()       # 仍从 XML 读取 Image<->Probe
+        self.load_tip_offset_json()       # 从 JSON 读取针尖平移
 
         # Dynamic transforms and availability flags (kept in millimeters)
-        self.T_tracker_probe = None     # Tracker -> Probe (mm)
-        self.T_tracker_stylus = None    # Tracker -> Stylus (mm)
+        self.T_tracker_probe = None          # Tracker -> Probe (mm)
+        self.T_tracker_needle_body = None    # Tracker -> NeedleBody (mm)
         self.probe_valid = False
         self.needle_valid = False
 
@@ -139,6 +142,7 @@ class USVisualizer(Node):
             self.on_probe_pose,
             qos_profile=pose_qos,
         )
+        # 该话题现已明确提供 NeedleBody 的位姿
         self.needle_sub = self.create_subscription(
             PoseStamped,
             "/ndi/needle_pose",
@@ -148,7 +152,7 @@ class USVisualizer(Node):
 
         # Publisher (image)
         self.image_pub = self.create_publisher(
-            CompressedImage,
+            Image,
             "/visualize/us_imaging",
             qos_profile=image_qos,
         )
@@ -210,9 +214,7 @@ class USVisualizer(Node):
                 raise RuntimeError(f"Transform From='{frm}' To='{to}' contains NaN/Inf in {xml_path}")
             return mat
 
-        # StylusTip -> Stylus  (mm)
-        self.T_stylus_from_tip = find_transform("StylusTip", "Stylus")
-        # Image -> Probe (mm)
+        # 仅保留 Image -> Probe
         self.T_probe_from_image = find_transform("Image", "Probe")
         # Probe -> Image (inverse) (mm)
         self.T_image_from_probe = np.linalg.inv(self.T_probe_from_image)
@@ -220,9 +222,29 @@ class USVisualizer(Node):
             raise RuntimeError("Probe -> Image inverse contains NaN/Inf")
 
         self.get_logger().info("Loaded transform matrices (units: mm):")
-        self.get_logger().info(f"StylusTip -> Stylus:\n{self.T_stylus_from_tip}")
         self.get_logger().info(f"Image -> Probe:\n{self.T_probe_from_image}")
         self.get_logger().info(f"Probe -> Image (computed inverse):\n{self.T_image_from_probe}")
+
+    def load_tip_offset_json(self):
+        """
+        从 calibration/needle_1_tip_offset.json 读取 tip_offset_mm (长度 3，单位 mm)，
+        作为 NeedleBody -> NeedleTip 的平移向量（旋转为单位阵）。
+        """
+        ws_dir = os.environ.get("WS_DIR", "/ani_ws")
+        json_path = os.path.join(ws_dir, "calibration", "needle_1_tip_offset.json")
+        if not os.path.isfile(json_path):
+            msg = f"Tip offset JSON not found: {json_path}"
+            self.get_logger().error(msg)
+            raise FileNotFoundError(msg)
+        with open(json_path, "r") as f:
+            data = json.load(f)
+        if "tip_offset_mm" not in data:
+            raise RuntimeError(f"'tip_offset_mm' not found in {json_path}")
+        offset = np.array(data["tip_offset_mm"], dtype=float).reshape(-1)
+        if offset.shape[0] != 3 or not np.isfinite(offset).all():
+            raise RuntimeError(f"Invalid tip_offset_mm in {json_path}: {offset}")
+        self.tip_offset_mm = offset
+        self.get_logger().info(f"Loaded tip_offset_mm (NeedleBody -> NeedleTip, mm): {self.tip_offset_mm}")
 
     def on_probe_pose(self, msg: PoseStamped):
         # Tracker -> Probe (incoming meters, convert to mm)
@@ -245,10 +267,10 @@ class USVisualizer(Node):
             self.T_tracker_probe = None
 
     def on_needle_pose(self, msg: PoseStamped):
-        # Tracker -> Stylus (incoming meters, convert to mm)
+        # Tracker -> NeedleBody (incoming meters, convert to mm)
         if not is_finite_pose(msg):
             self.needle_valid = False
-            self.T_tracker_stylus = None
+            self.T_tracker_needle_body = None
             self.get_logger().warn("Needle pose contains NaN/Inf, marking as Lost")
             return
         try:
@@ -256,25 +278,28 @@ class USVisualizer(Node):
             T_mm = to_mm(T_m)              # convert translation to mm
             if not is_finite_matrix(T_mm):
                 raise ValueError("Needle pose matrix contains NaN/Inf after conversion to mm")
-            self.T_tracker_stylus = T_mm
+            self.T_tracker_needle_body = T_mm
             self.last_needle_pose_dict = pose_to_dict(msg)  # stored as received (meters)
             self.needle_valid = True
         except Exception as exc:
             self.get_logger().error(f"Failed to convert needle pose: {exc}")
             self.needle_valid = False
-            self.T_tracker_stylus = None
+            self.T_tracker_needle_body = None
 
-    def compute_stylus_and_tip_in_image(self):
+    def compute_needle_body_and_tip_in_image(self):
         """
-        计算 Stylus（针的 marker 原点）和 Needle Tip 在 Image 坐标系下的坐标（单位：mm）。
-        返回 (stylus_xyz, tip_xyz)；若无效则返回 None。
+        计算 NeedleBody（marker 原点）和 NeedleTip 在 Image 坐标系下的坐标（单位：mm）。
+        使用从 JSON 读取的 tip_offset_mm 作为 NeedleBody -> NeedleTip 的平移。
         变换链：
-          stylus_in_image = T_image_probe * T_probe_tracker * T_tracker_stylus * [0,0,0,1]
-          tip_in_image    = T_image_probe * T_probe_tracker * T_tracker_stylus * (T_stylus_from_tip * [0,0,0,1])
+          needle_body_in_image = T_image_probe * T_probe_tracker * T_tracker_needle_body * [0,0,0,1]
+          tip_in_image         = T_image_probe * T_probe_tracker * T_tracker_needle_body * ([tip_offset_mm,1])
         """
         if not (self.probe_valid and self.needle_valid):
             return None
-        if self.T_tracker_probe is None or self.T_tracker_stylus is None:
+        if self.T_tracker_probe is None or self.T_tracker_needle_body is None:
+            return None
+        if self.tip_offset_mm is None:
+            self.get_logger().error("tip_offset_mm not loaded")
             return None
         try:
             # Probe -> Tracker
@@ -282,28 +307,31 @@ class USVisualizer(Node):
             if not is_finite_matrix(T_probe_from_tracker):
                 return None
 
-            # Stylus origin (marker) in Stylus frame
-            p_stylus_in_stylus = np.array([0, 0, 0, 1.0])
-            # StylusTip in Stylus frame
-            p_tip_in_stylus = self.T_stylus_from_tip @ np.array([0, 0, 0, 1.0])
+            # NeedleBody origin in NeedleBody frame
+            p_body_in_body = np.array([0, 0, 0, 1.0])
+            # NeedleTip in NeedleBody frame (translation only)
+            p_tip_in_body = np.array([self.tip_offset_mm[0],
+                                      self.tip_offset_mm[1],
+                                      self.tip_offset_mm[2],
+                                      1.0])
 
-            # Stylus origin -> Tracker
-            p_stylus_in_tracker = self.T_tracker_stylus @ p_stylus_in_stylus
-            # Stylus tip -> Tracker
-            p_tip_in_tracker = self.T_tracker_stylus @ p_tip_in_stylus
+            # NeedleBody origin -> Tracker
+            p_body_in_tracker = self.T_tracker_needle_body @ p_body_in_body
+            # Needle tip -> Tracker
+            p_tip_in_tracker = self.T_tracker_needle_body @ p_tip_in_body
 
             # Tracker -> Probe
-            p_stylus_in_probe = T_probe_from_tracker @ p_stylus_in_tracker
+            p_body_in_probe = T_probe_from_tracker @ p_body_in_tracker
             p_tip_in_probe = T_probe_from_tracker @ p_tip_in_tracker
 
             # Probe -> Image
-            p_stylus_in_image = self.T_image_from_probe @ p_stylus_in_probe
+            p_body_in_image = self.T_image_from_probe @ p_body_in_probe
             p_tip_in_image = self.T_image_from_probe @ p_tip_in_probe
 
-            if not (np.isfinite(p_stylus_in_image).all() and np.isfinite(p_tip_in_image).all()):
+            if not (np.isfinite(p_body_in_image).all() and np.isfinite(p_tip_in_image).all()):
                 return None
 
-            stylus_xyz = p_stylus_in_image[:3]
+            needle_body_xyz = p_body_in_image[:3]
             tip_xyz = p_tip_in_image[:3]
 
             # Log tip coordinates (mm)
@@ -311,16 +339,16 @@ class USVisualizer(Node):
                 f"Needle tip in Image frame (mm): x={tip_xyz[0]:.3f}, y={tip_xyz[1]:.3f}, z={tip_xyz[2]:.3f}"
             )
 
-            return stylus_xyz, tip_xyz
+            return needle_body_xyz, tip_xyz
         except Exception as exc:
-            self.get_logger().error(f"Failed to compute stylus/tip in image: {exc}")
+            self.get_logger().error(f"Failed to compute needle body/tip in image: {exc}")
             return None
 
     def compute_tip_in_image(self):
         """
         保持原接口：仅返回 needle tip 在 Image 坐标系的坐标（mm）。
         """
-        res = self.compute_stylus_and_tip_in_image()
+        res = self.compute_needle_body_and_tip_in_image()
         if res is None:
             return None
         _, tip_xyz = res
@@ -388,13 +416,13 @@ class USVisualizer(Node):
             # Draw availability status
             self.draw_availability(frame)
 
-            # Compute stylus origin & tip position, then overlay
-            res = self.compute_stylus_and_tip_in_image()
+            # Compute needle body & tip position, then overlay
+            res = self.compute_needle_body_and_tip_in_image()
             if res is not None:
-                stylus_xyz, tip_xyz = res  # both in mm
+                needle_body_xyz, tip_xyz = res  # both in mm
                 # NOTE: 假设 Image frame 的 x,y 直接对应图像像素坐标（若需 spacing，请先转换）
                 u_tip, v_tip = int(round(tip_xyz[0])), int(round(tip_xyz[1]))
-                u_sty, v_sty = int(round(stylus_xyz[0])), int(round(stylus_xyz[1]))
+                u_body, v_body = int(round(needle_body_xyz[0])), int(round(needle_body_xyz[1]))
                 h, w = frame.shape[:2]
 
                 # 画针尖
@@ -407,21 +435,21 @@ class USVisualizer(Node):
                         f"Needle tip projected outside image: (u={u_tip}, v={v_tip}), frame size (w={w}, h={h})"
                     )
 
-                # 画针轴虚线（stylus marker -> needle tip）
+                # 画针轴虚线（needle body marker -> needle tip）
                 color_axis = (0, 128, 255)  # 橙色系
-                if (np.isfinite([u_sty, v_sty, u_tip, v_tip]).all()):
-                    self.draw_dashed_line(frame, (u_sty, v_sty), (u_tip, v_tip),
+                if (np.isfinite([u_body, v_body, u_tip, v_tip]).all()):
+                    self.draw_dashed_line(frame, (u_body, v_body), (u_tip, v_tip),
                                           color=color_axis, thickness=2, dash_length=10, gap_length=6)
                 else:
-                    self.get_logger().debug("Stylus or tip projection not finite; skip axis drawing")
+                    self.get_logger().debug("Needle body or tip projection not finite; skip axis drawing")
 
                 # 在图像上显示坐标（mm）
                 tip_text = f"Tip (mm): x={tip_xyz[0]:.1f}, y={tip_xyz[1]:.1f}, z={tip_xyz[2]:.1f}"
-                sty_text = f"Origin (mm): x={stylus_xyz[0]:.1f}, y={stylus_xyz[1]:.1f}, z={stylus_xyz[2]:.1f}"
+                body_text = f"Origin (mm): x={needle_body_xyz[0]:.1f}, y={needle_body_xyz[1]:.1f}, z={needle_body_xyz[2]:.1f}"
                 self.draw_text_with_outline(frame, tip_text, (10, 95))
-                self.draw_text_with_outline(frame, sty_text, (10, 120))
+                self.draw_text_with_outline(frame, body_text, (10, 120))
             else:
-                self.get_logger().debug("Stylus/tip not computed (missing or invalid transforms)")
+                self.get_logger().debug("NeedleBody/Tip not computed (missing or invalid transforms)")
 
             img_msg = self.bridge.cv2_to_imgmsg(frame, encoding="bgr8")
             img_msg.header = msg.header
@@ -438,12 +466,12 @@ class USVisualizer(Node):
         需求：即使 needle 丢失，也持续发布，值用 NaN 填充。
         """
         nan = float("nan")
-        stylus_xyz = None
+        needle_body_xyz = None
         tip_xyz = None
 
-        res = self.compute_stylus_and_tip_in_image()
+        res = self.compute_needle_body_and_tip_in_image()
         if res is not None:
-            stylus_xyz, tip_xyz = res
+            needle_body_xyz, tip_xyz = res
 
         msg_tip = Float32MultiArray()
         msg_ori = Float32MultiArray()
@@ -453,8 +481,8 @@ class USVisualizer(Node):
         else:
             msg_tip.data = [nan, nan, nan]
 
-        if stylus_xyz is not None:
-            msg_ori.data = [float(stylus_xyz[0]), float(stylus_xyz[1]), float(stylus_xyz[2])]
+        if needle_body_xyz is not None:
+            msg_ori.data = [float(needle_body_xyz[0]), float(needle_body_xyz[1]), float(needle_body_xyz[2])]
         else:
             msg_ori.data = [nan, nan, nan]
 
