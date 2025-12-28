@@ -9,6 +9,9 @@ Changes in this version:
     does NOT exist (or --overwrite is given), decode that rosbag.
   * Add --monitoring-int (seconds): if <=0, scan once and exit; if >0, repeatedly scan at
     the given interval and decode newly appearing rosbags.
+  * Output folder name now appends '_{TASK_LABEL}_{TASK_OUTCOME}', where TASK_LABEL is read from
+    task_info.task_label, and TASK_OUTCOME is inferred from task_info_collection_states (contains
+    'success', 'failure', or 'recovery'; otherwise 'unknown').
 
 Enhancements (from prior version):
   * Non-video topics are written to NDJSON.
@@ -20,7 +23,7 @@ Enhancements (from prior version):
     including Zstd-compressed payloads whose raw width/height/encoding are embedded in the
     CompressedImage.format string.
 
-Output layout (per rosbag, under <output_dir>/<bag_name>/):
+Output layout (per rosbag, under <output_dir>/<bag_name>_{TASK_LABEL}_{TASK_OUTCOME}/):
     <bag_out>/<sanitized_topic>/messages.ndjson
     <bag_out>/<sanitized_topic>/messages_info.json
     <bag_out>/<sanitized_topic>/video.mp4
@@ -35,6 +38,7 @@ import base64
 import json
 import sys
 import time
+import re
 from array import array
 from pathlib import Path
 from typing import (
@@ -170,6 +174,151 @@ def sanitize_topic_name(topic: str) -> str:
     if not stripped:
         stripped = "root"
     return stripped.replace("/", "__")
+
+
+def sanitize_label(value: str) -> str:
+    """
+    Sanitize task label for filesystem safety.
+    """
+    v = value.strip()
+    if not v:
+        return "unknown"
+    v = re.sub(r"\s+", "_", v)
+    v = re.sub(r"[^A-Za-z0-9_\-]", "-", v)
+    return v
+
+
+def sanitize_outcome(value: str) -> str:
+    v = value.strip().lower()
+    if v in {"success", "failure", "recovery"}:
+        return v
+    return "unknown"
+
+
+def _extract_task_label_from_msg(msg: Any) -> Optional[str]:
+    if msg is None:
+        return None
+    for attr in ("task_label", "label"):
+        if hasattr(msg, attr):
+            val = getattr(msg, attr)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+    try:
+        obj = to_jsonable(msg)
+        if isinstance(obj, dict):
+            for key in ("task_label", "label"):
+                val = obj.get(key)
+                if isinstance(val, str) and val.strip():
+                    return val.strip()
+    except Exception:
+        pass
+    return None
+
+
+def _extract_task_outcome_from_msg(msg: Any) -> Optional[str]:
+    text = ""
+    try:
+        obj = to_jsonable(msg)
+        text = json.dumps(obj, ensure_ascii=False).lower()
+    except Exception:
+        text = str(msg).lower()
+    # Priority order: success > failure > recovery
+    if "success" in text:
+        return "success"
+    if "failure" in text:
+        return "failure"
+    if "recovery" in text:
+        return "recovery"
+    return None
+
+
+def extract_task_label_and_outcome(bag_dir: Path, topic_specs: Dict[str, str]) -> Tuple[str, str]:
+    """
+    从 bag 内容中提取 TASK_LABEL 与 TASK_OUTCOME。
+    TASK_LABEL: 来自包含 "task_info" 子串的主题中的 task_label/label 字段。
+    TASK_OUTCOME: 从包含 "task_info_collection_states"（或同样含 "task_info" 子串）的主题消息内容中
+                  查找 success / failure / recovery 关键词。
+    若未找到，返回 "unknown"。
+    """
+    task_label = "unknown"
+    task_outcome = "unknown"
+
+    # 选取候选主题
+    candidate_label_topics = [t for t in topic_specs if "task_info" in t]
+    candidate_outcome_topics = [t for t in topic_specs if "task_info_collection_states" in t or "task_info" in t]
+
+    if not candidate_label_topics and not candidate_outcome_topics:
+        return task_label, task_outcome
+
+    decoder_factory = DecoderFactory()
+    decoder_cache: Dict[Tuple[int, str], Callable[[bytes], Any]] = {}
+
+    def get_decoder(schema, channel) -> Callable[[bytes], Any]:
+        key = (schema.id, channel.message_encoding)
+        dec = decoder_cache.get(key)
+        if dec is None:
+            dec = decoder_factory.decoder_for(
+                message_encoding=channel.message_encoding,
+                schema=schema,
+            )
+            decoder_cache[key] = dec
+        return dec
+
+    found_label = False
+    found_outcome = False
+
+    for mcap_path in iter_mcap_files(bag_dir):
+        is_zstd = mcap_path.suffix == ".zstd"
+        if is_zstd:
+            if zstd is None:
+                continue
+            from io import BytesIO
+            try:
+                with mcap_path.open("rb") as compressed_file:
+                    dctx = zstd.ZstdDecompressor()
+                    decompressed = dctx.decompress(compressed_file.read())
+                stream = BytesIO(decompressed)
+            except Exception:
+                continue
+        else:
+            stream = mcap_path.open("rb")
+
+        try:
+            reader = make_reader(stream)
+            for schema, channel, message in reader.iter_messages():
+                topic = channel.topic
+
+                if (not found_label) and topic in candidate_label_topics:
+                    try:
+                        dec = get_decoder(schema, channel)
+                        msg = dec(message.data)
+                        lbl = _extract_task_label_from_msg(msg)
+                        if lbl:
+                            task_label = sanitize_label(lbl)
+                            found_label = True
+                    except Exception:
+                        pass
+
+                if (not found_outcome) and topic in candidate_outcome_topics:
+                    try:
+                        dec = get_decoder(schema, channel)
+                        msg = dec(message.data)
+                        outcome = _extract_task_outcome_from_msg(msg)
+                        if outcome:
+                            task_outcome = sanitize_outcome(outcome)
+                            found_outcome = True
+                    except Exception:
+                        pass
+
+                if found_label and found_outcome:
+                    break
+            if found_label and found_outcome:
+                break
+        finally:
+            if not is_zstd:
+                stream.close()
+
+    return task_label, task_outcome
 
 
 def iter_mcap_files(bag_dir: Path) -> Iterable[Path]:
@@ -726,6 +875,7 @@ def write_rosbag_info(metadata_path: Path, output_dir: Path, overwrite: bool, mc
         "compression_format": info.get("compression_format"),
         "compression_mode": info.get("compression_mode"),
         "topics": payload_topics,
+        "output_dir": str(output_dir),
     }
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -757,12 +907,6 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace) -
     Decode a single rosbag folder. Returns True if decoding occurred, False if skipped or failed.
     """
     bag_name = bag_dir.name
-    out_bag_dir = output_root / bag_name
-
-    if out_bag_dir.exists() and not args.overwrite:
-        print(f"[INFO] Skip {bag_name}: output already exists (use --overwrite to re-decode).")
-        return False
-
     metadata_path = bag_dir / "metadata.yaml"
     if not metadata_path.is_file():
         print(f"[WARN] Skip {bag_name}: metadata.yaml not found.")
@@ -783,6 +927,15 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace) -
 
     if not topic_specs:
         print(f"[ERROR] {bag_name} has no selected topics; aborting this bag.", file=sys.stderr)
+        return False
+
+    # 提取 TASK_LABEL 与 TASK_OUTCOME，用于输出目录命名
+    task_label, task_outcome = extract_task_label_and_outcome(bag_dir, topic_specs)
+    bag_output_name = f"{bag_name}_{task_label}_{task_outcome}"
+    out_bag_dir = output_root / bag_output_name
+
+    if out_bag_dir.exists() and not args.overwrite:
+        print(f"[INFO] Skip {bag_output_name}: output already exists (use --overwrite to re-decode).")
         return False
 
     expected_topics: Set[str] = set(topic_specs.keys())
@@ -820,7 +973,7 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace) -
 
     try:
         for mcap_path in iter_mcap_files(bag_dir):
-            print(f"[INFO] Decoding {bag_name} -> {mcap_path.name} ...")
+            print(f"[INFO] Decoding {bag_name} -> {mcap_path.name} (out: {bag_output_name}) ...")
             is_zstd = mcap_path.suffix == ".zstd"
 
             if is_zstd:
@@ -947,6 +1100,7 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace) -
         frequency_hz = frame_count / duration_seconds if duration_seconds > 0 else 0.0
         payload = {
             "bag": bag_name,
+            "output_bag_dir_name": bag_output_name,
             "topic": topic,
             "type": stats["type"],
             "messages_path": str(ndjson_paths[topic]),
@@ -980,7 +1134,7 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace) -
         print(f"[WARN] Failed to write rosbag_info.json: {exc}", file=sys.stderr)
 
     print(
-        f"[INFO] Finished decoding {bag_name}. Processed {total_messages} message(s), "
+        f"[INFO] Finished decoding {bag_output_name}. Processed {total_messages} message(s), "
         f"{len(ndjson_paths)} NDJSON topic(s), {len(video_outputs)} video topic(s)."
     )
     if ndjson_paths:
@@ -1026,11 +1180,6 @@ def main() -> int:
 
             decoded_any = False
             for bag_dir in bag_dirs:
-                bag_name = bag_dir.name
-                out_bag_dir = args.output_dir / bag_name
-                if out_bag_dir.exists() and not args.overwrite:
-                    # Already exists and not overwriting: skip
-                    continue
                 ok = decode_one_bag(bag_dir, args.output_dir, args)
                 decoded_any = decoded_any or ok
 
