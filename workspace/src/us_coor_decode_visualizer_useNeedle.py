@@ -148,7 +148,7 @@ class USVisualizer(Node):
 
         # Publisher (image)
         self.image_pub = self.create_publisher(
-            Image,
+            CompressedImage,
             "/visualize/us_imaging",
             qos_profile=image_qos,
         )

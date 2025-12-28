@@ -204,7 +204,7 @@ services:
       "
     restart: unless-stopped
 
-  us_visualizer:
+  us_coor_decode_visualizer:
     <<: *ros_common
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-us-visualizer"
     profiles: ["default", "dev"]
@@ -218,7 +218,7 @@ services:
         set -e;
         if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi;
         if [ -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then source ${RUNTIME_WS_DIR}/install/setup.bash; fi;
-        python3 ${RUNTIME_WS_DIR}/src/us_visualizer.py
+        python3 ${RUNTIME_WS_DIR}/src/us_coor_decode_visualizer_useNeedle.py
       "
     healthcheck:
       test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q '/visualize/us_imaging'"]
@@ -264,6 +264,8 @@ services:
       usb_video_grabber:
         condition: service_healthy
       keyboard_driver:
+        condition: service_healthy
+      us_coor_decode_visualizer:
         condition: service_healthy
     command: >
       bash -lc "
