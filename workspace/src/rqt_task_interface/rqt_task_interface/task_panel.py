@@ -12,6 +12,7 @@ from python_qt_binding import QtWidgets, QtCore
 class TaskPanel(Plugin):
     """
     RQT 插件：提供表单输入，并以 1 Hz 频率将 JSON 负载发布到 /task_info。
+    同时订阅 task_info_collection_states，更新界面状态显示。
     """
 
     def __init__(self, context):
@@ -24,6 +25,12 @@ class TaskPanel(Plugin):
 
         self.node: Node = rclpy.create_node('rqt_task_interface')
         self.pub = self.node.create_publisher(String, '/task_info', 10)
+        self.sub_state = self.node.create_subscription(
+            String,
+            'task_info_collection_states',
+            self.on_collection_state,
+            10
+        )
 
         # Build UI
         self.widget = QtWidgets.QWidget()
@@ -32,8 +39,7 @@ class TaskPanel(Plugin):
 
         # Task Label
         self.task_combo = QtWidgets.QComboBox()
-        self.task_combo.setEditable(True
-        )
+        self.task_combo.setEditable(True)
         self.task_combo.addItems(['Task 1', 'Task 2', 'Task 3', 'Task 4'])
         self.task_combo.setCurrentIndex(-1)
         self.task_combo.lineEdit().setPlaceholderText('Select or type...')
@@ -87,11 +93,25 @@ class TaskPanel(Plugin):
         self.needle_setup_combo.lineEdit().setPlaceholderText('Select or type...')
         form.addRow('Needle Setup:', self.needle_setup_combo)
 
+        # Needle Gauge
+        self.needle_gauge_combo = QtWidgets.QComboBox()
+        self.needle_gauge_combo.setEditable(True)
+        needle_gauge_options = ['14G', '16G', '18G', '20G', '22G']
+        self.needle_gauge_combo.addItems(needle_gauge_options)
+        self.needle_gauge_combo.setCurrentText('18G')
+        self.needle_gauge_combo.lineEdit().setPlaceholderText('Select or type...')
+        form.addRow('Needle Gauge:', self.needle_gauge_combo)
+
         # Comments
         self.comments_edit = QtWidgets.QTextEdit()
         self.comments_edit.setPlaceholderText('Enter comments')
         self.comments_edit.setFixedHeight(80)
         form.addRow('Comments:', self.comments_edit)
+
+        # Rosbag 状态显示
+        self.status_label = QtWidgets.QLabel('Rosbag Recording Stopped')
+        self.status_label.setWordWrap(True)
+        form.addRow('Rosbag Status:', self.status_label)
 
         self.widget.setLayout(form)
         if context.serial_number() > 1:
@@ -107,6 +127,34 @@ class TaskPanel(Plugin):
         self.timer.timeout.connect(self.publish_state)
         self.timer.start()
 
+        # 定期 spin rclpy 以处理订阅回调
+        self.spin_timer = QtCore.QTimer(self.widget)
+        self.spin_timer.setInterval(50)  # 20 Hz 足够响应
+        self.spin_timer.timeout.connect(self.spin_once)
+        self.spin_timer.start()
+
+    def on_collection_state(self, msg: String):
+        state = msg.data.strip().lower()
+        if state == 'started':
+            text = 'Rosbag Recording Started'
+        elif state == 'stopped_success':
+            text = 'Rosbag Recording Stopped with Status: Success'
+        elif state == 'stopped_failure':
+            text = 'Rosbag Recording Stopped with Status: Failure'
+        elif state == 'stopped_recovery':
+            text = 'Rosbag Recording Stopped with Status: Recovery'
+        else:
+            # 未知状态保持原文，或可选择保持不变
+            text = f'Rosbag Recording State: {msg.data.strip()}'
+        self.status_label.setText(text)
+
+    def spin_once(self):
+        try:
+            rclpy.spin_once(self.node, timeout_sec=0.0)
+        except Exception:
+            # 安全忽略单次 spin 中的异常，避免阻塞 UI
+            pass
+
     def publish_state(self):
         data = {
             'task_label': self.task_combo.currentText().strip(),
@@ -116,6 +164,7 @@ class TaskPanel(Plugin):
             'probe_type': self.probe_type_combo.currentText().strip(),
             'probe_setup': self.probe_setup_combo.currentText().strip(),
             'needle_setup': self.needle_setup_combo.currentText().strip(),
+            'needle_gauge': self.needle_gauge_combo.currentText().strip(),
             'comments': self.comments_edit.toPlainText().strip(),
             'timestamp_iso': datetime.utcnow().isoformat() + 'Z',
         }
@@ -125,9 +174,20 @@ class TaskPanel(Plugin):
 
     def shutdown_plugin(self):
         self.timer.stop()
+        self.spin_timer.stop()
         if self.node is not None:
-            self.node.destroy_publisher(self.pub)
-            self.node.destroy_node()
+            try:
+                self.node.destroy_subscription(self.sub_state)
+            except Exception:
+                pass
+            try:
+                self.node.destroy_publisher(self.pub)
+            except Exception:
+                pass
+            try:
+                self.node.destroy_node()
+            except Exception:
+                pass
         if rclpy.ok():
             rclpy.shutdown()
 
@@ -139,6 +199,7 @@ class TaskPanel(Plugin):
         instance_settings.set_value('probe_type', self.probe_type_combo.currentText())
         instance_settings.set_value('probe_setup', self.probe_setup_combo.currentText())
         instance_settings.set_value('needle_setup', self.needle_setup_combo.currentText())
+        instance_settings.set_value('needle_gauge', self.needle_gauge_combo.currentText())
         instance_settings.set_value('comments', self.comments_edit.toPlainText())
 
     def restore_settings(self, plugin_settings, instance_settings):
@@ -149,4 +210,5 @@ class TaskPanel(Plugin):
         self.probe_type_combo.setCurrentText(instance_settings.value('probe_type', 'Wisonic_Clover60_C5-1_convex'))
         self.probe_setup_combo.setCurrentText(instance_settings.value('probe_setup', 'Robotic'))
         self.needle_setup_combo.setCurrentText(instance_settings.value('needle_setup', 'Free-hand'))
+        self.needle_gauge_combo.setCurrentText(instance_settings.value('needle_gauge', '18G'))
         self.comments_edit.setPlainText(instance_settings.value('comments', ''))

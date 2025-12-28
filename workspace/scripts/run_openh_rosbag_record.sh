@@ -23,7 +23,7 @@ ros2 bag record --output "$OUT_DIR/$BAG_NAME" --topics \
                 /joint_states \
                 /tcp_pose_broadcaster/pose \
                 /ndi/us_probe_pose /ndi/needle_pose \
-                /task_info \
+                /task_info /task_info_collection_states \
                 /keyboard_listener/glyphkey_pressed /keyboard_listener/key_pressed
 #                --compression-mode file \
 #                --compression-format zstd
