@@ -279,6 +279,8 @@ services:
         condition: service_healthy
       polaris_camera_driver:
         condition: service_healthy
+      polaris_image_compressed:
+        condition: service_healthy
       realsense_driver:
         condition: service_healthy
       ati_ft_driver:
