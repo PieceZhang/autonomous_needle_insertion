@@ -160,22 +160,19 @@ class RosbagController:
 
     def stop_recording(self, reason: str) -> None:
         if not self._proc or self._proc.poll() is not None:
-            msg = f"Recording not in progress, ignored start command (reason: {reason})."
+            msg = f"Recording not in progress, ignored stop command (reason: {reason})."
             logger.info(msg)
             print(msg, flush=True)
             return
 
-        # 按需求等待 200 ms 再停止
-        time.sleep(STOP_WAIT_SEC)
+        msg = f"Stop recording (reason: {reason}), sending SIGINT..."
+        logger.info(msg)
+        print(msg, flush=True)
 
         try:
             pgid = os.getpgid(self._proc.pid)
         except Exception:
             pgid = None
-
-        msg = f"Stop recording (reason: {reason}), sending SIGINT..."
-        logger.info(msg)
-        print(msg, flush=True)
 
         try:
             if pgid is not None:
@@ -238,6 +235,17 @@ class TaskInfoPublisher(Node):
         self._pub.publish(msg)
 
 
+# ----------------- 辅助：带 spin 的等待 -----------------
+def sleep_with_spin(exec_: SingleThreadedExecutor, duration: float, step: float = 0.01) -> None:
+    """
+    在等待 duration 秒期间，持续 spin_once，确保计时器/回调不被阻塞。
+    """
+    end = time.monotonic() + duration
+    while time.monotonic() < end:
+        exec_.spin_once(timeout_sec=0.0)
+        time.sleep(step)
+
+
 # ----------------- 主循环 -----------------
 def main():
     rclpy.init()
@@ -286,6 +294,8 @@ def main():
                 }
                 reason, state = reason_map[key_norm]
                 task_pub.set_state(state)
+                # 在停止前等待 STOP_WAIT_SEC，同时保持 spin，确保状态能被及时发布
+                sleep_with_spin(exec_, STOP_WAIT_SEC)
                 controller.stop_recording(reason)
                 continue
 
