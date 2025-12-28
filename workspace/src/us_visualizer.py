@@ -178,7 +178,7 @@ class USVisualizer(Node):
 
     def load_calibration_xml(self):
         """Load the unique PlusDeviceSet_fCal*.xml and parse required transforms (in mm)."""
-        ws_dir = os.environ.get("WS_DIR", "/ani_ws")
+        ws_dir = os.environ.get("RUNTIME_WS_DIR", "/ani_ws")
         calib_dir = os.path.join(ws_dir, "calibration")
         pattern = os.path.join(calib_dir, "PlusDeviceSet_fCal*.xml")
         files = glob.glob(pattern)
