@@ -780,8 +780,11 @@ def main() -> None:
 
         # Report instrument poses
         needle_pose = get_instrument_pose(instrument="needle", timeout_sec=2.0)
+        tip_offset = load_needle_tip_offset_mm("./calibration/needle_1_tip_offset.json")
+        needle_tip_pose = compute_needle_tip_position_in_tracker(needle_pose, tip_offset)
         probe_pose = get_instrument_pose(instrument="us_probe", timeout_sec=2.0)
         logger.info(_fmt_pose("Needle (tracker)", needle_pose))
+        logger.info(f"Needle tip (tracker): {needle_tip_pose}")
         logger.info(_fmt_pose("Probe  (tracker)", probe_pose))
 
     except Exception as e:
