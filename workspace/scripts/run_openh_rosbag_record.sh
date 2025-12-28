@@ -22,10 +22,11 @@ ros2 bag record --output "$OUT_DIR/$BAG_NAME" --topics \
                 /ati_ft_broadcaster/wrench \
                 /joint_states \
                 /tcp_pose_broadcaster/pose \
-                /ndi/us_probe_pose /ndi/needle_pose \
+                /ndi/us_probe_pose /ndi/needle_pose /ndi/stylus_pose \
                 /decoded_coor_image/needle_tip /decoded_coor_image/needle_origin \
                 /task_info /task_info_collection_states \
-                /keyboard_listener/glyphkey_pressed /keyboard_listener/key_pressed
+                /keyboard_listener/glyphkey_pressed /keyboard_listener/key_pressed \
+                /visualize/us_imaging/compressed /visualize/us_imaging_sync/compressed
 #                --compression-mode file \
 #                --compression-format zstd
 
