@@ -26,6 +26,10 @@
             name="us_probe"
             srom="$(find ndi_description)/sroms/ANI-C51.rom"
         />
+        <xacro:ndi_tracker
+            name="stylus"
+            srom="$(find ndi_description)/sroms/8700340.rom"
+        />
         <!-- END: add trackers here -->
 
     </ros2_control>

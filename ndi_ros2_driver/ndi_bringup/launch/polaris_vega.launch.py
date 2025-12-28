@@ -47,6 +47,7 @@ def generate_launch_description():
     pose_broadcasters = [
         "needle_pose_broadcaster",
         "us_probe_pose_broadcaster",
+        "stylus_pose_broadcaster",
     ]
 
     # we can remap the default topic names to something more user friendly 
@@ -55,6 +56,7 @@ def generate_launch_description():
     topic_remappings = [
         ('needle_pose_broadcaster/pose', 'needle_pose'),
         ('us_probe_pose_broadcaster/pose', 'us_probe_pose'),
+        ('stylus_pose_broadcaster/pose', 'stylus_pose'),
     ]
 
     ip = LaunchConfiguration('ip')
