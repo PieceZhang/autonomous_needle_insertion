@@ -150,10 +150,10 @@ class USVisualizer(Node):
             qos_profile=pose_qos,
         )
 
-        # Publisher (image)
+        # Publisher (compressed image)
         self.image_pub = self.create_publisher(
-            Image,
-            "/visualize/us_imaging",
+            CompressedImage,
+            "/visualize/us_imaging/compressed",
             qos_profile=image_qos,
         )
 
@@ -451,7 +451,8 @@ class USVisualizer(Node):
             else:
                 self.get_logger().debug("NeedleBody/Tip not computed (missing or invalid transforms)")
 
-            img_msg = self.bridge.cv2_to_imgmsg(frame, encoding="bgr8")
+            # Publish compressed image
+            img_msg = self.bridge.cv2_to_compressed_imgmsg(frame, dst_format="jpeg")
             img_msg.header = msg.header
             self.image_pub.publish(img_msg)
         except Exception as exc:

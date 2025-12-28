@@ -25,7 +25,8 @@ ros2 bag record --output "$OUT_DIR/$BAG_NAME" --topics \
                 /ndi/us_probe_pose /ndi/needle_pose /ndi/stylus_pose \
                 /decoded_coor_image/needle_tip /decoded_coor_image/needle_origin \
                 /task_info /task_info_collection_states \
-                /keyboard_listener/glyphkey_pressed /keyboard_listener/key_pressed
+                /keyboard_listener/glyphkey_pressed /keyboard_listener/key_pressed \
+                /visualize/us_imaging/compressed
 #                --compression-mode file \
 #                --compression-format zstd
 
