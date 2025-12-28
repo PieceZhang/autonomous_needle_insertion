@@ -2,6 +2,7 @@
 import os
 import glob
 import json
+from collections import deque
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
@@ -102,18 +103,23 @@ class USVisualizer(Node):
         super().__init__("us_visualizer")
 
         # Calibration transforms (all in millimeters)
-        # self.T_needle_body_from_tip  # 不再使用
-        self.tip_offset_mm = None         # NeedleBody -> NeedleTip 的平移向量 (mm)
+        self.tip_offset_mm = None         # NeedleBody -> NeedleTip translation (mm)
         self.T_probe_from_image = None    # Image -> Probe
         self.T_image_from_probe = None    # Probe -> Image (inverse)
-        self.load_calibration_xml()       # 仍从 XML 读取 Image<->Probe
-        self.load_tip_offset_json()       # 从 JSON 读取针尖平移
+        self.image_lag_sec = 0.0          # LocalTimeOffsetSec (image lags tracker by this many seconds)
+        self.load_calibration_xml()       # still loads Image<->Probe and LocalTimeOffsetSec
+        self.load_tip_offset_json()       # load needle tip offset from JSON
 
-        # Dynamic transforms and availability flags (kept in millimeters)
+        # Dynamic transforms (latest) and availability flags (kept in millimeters)
         self.T_tracker_probe = None          # Tracker -> Probe (mm)
         self.T_tracker_needle_body = None    # Tracker -> NeedleBody (mm)
         self.probe_valid = False
         self.needle_valid = False
+
+        # Pose history buffers for time synchronization
+        self.pose_buffer_size = 500  # ~25s at 20 Hz; adjust as needed
+        self.probe_buf = deque(maxlen=self.pose_buffer_size)    # list of (t_sec, T_mm)
+        self.needle_buf = deque(maxlen=self.pose_buffer_size)   # list of (t_sec, T_mm)
 
         # QoS profiles
         image_qos = QoSProfile(
@@ -142,7 +148,6 @@ class USVisualizer(Node):
             self.on_probe_pose,
             qos_profile=pose_qos,
         )
-        # 该话题现已明确提供 NeedleBody 的位姿
         self.needle_sub = self.create_subscription(
             PoseStamped,
             "/ndi/needle_pose",
@@ -150,10 +155,16 @@ class USVisualizer(Node):
             qos_profile=pose_qos,
         )
 
-        # Publisher (compressed image)
+        # Publishers (compressed images)
         self.image_pub = self.create_publisher(
             CompressedImage,
             "/visualize/us_imaging/compressed",
+            qos_profile=image_qos,
+        )
+        # New synchronized overlay publisher
+        self.image_pub_sync = self.create_publisher(
+            CompressedImage,
+            "/visualize/us_imaging_sync/compressed",
             qos_profile=image_qos,
         )
 
@@ -169,7 +180,7 @@ class USVisualizer(Node):
             qos_profile=pose_qos,
         )
 
-        # Timer: 20 Hz publishing of decoded coordinates
+        # Timer: 20 Hz publishing of decoded coordinates (unsynchronized; unchanged)
         self.create_timer(0.05, self.publish_decoded_coordinates)
 
         self.last_probe_pose_dict = None  # stored as received (meters)
@@ -180,8 +191,13 @@ class USVisualizer(Node):
 
         self.get_logger().info("us_visualizer node started")
 
+    @staticmethod
+    def _stamp_to_sec(stamp) -> float:
+        """Convert ROS2 builtin_interfaces/Time to float seconds."""
+        return float(stamp.sec) + 1e-9 * float(stamp.nanosec)
+
     def load_calibration_xml(self):
-        """Load the unique PlusDeviceSet_fCal*.xml and parse required transforms (in mm)."""
+        """Load the unique PlusDeviceSet_fCal*.xml and parse required transforms (in mm) and LocalTimeOffsetSec."""
         ws_dir = os.environ.get("WS_DIR", "/ani_ws")
         calib_dir = os.path.join(ws_dir, "calibration")
         pattern = os.path.join(calib_dir, "PlusDeviceSet_fCal*.xml")
@@ -214,21 +230,34 @@ class USVisualizer(Node):
                 raise RuntimeError(f"Transform From='{frm}' To='{to}' contains NaN/Inf in {xml_path}")
             return mat
 
-        # 仅保留 Image -> Probe
+        # Image -> Probe
         self.T_probe_from_image = find_transform("Image", "Probe")
         # Probe -> Image (inverse) (mm)
         self.T_image_from_probe = np.linalg.inv(self.T_probe_from_image)
         if not is_finite_matrix(self.T_image_from_probe):
             raise RuntimeError("Probe -> Image inverse contains NaN/Inf")
 
+        # Parse LocalTimeOffsetSec (image lag relative to tracker)
+        self.image_lag_sec = 0.0
+        tracker_device = root.find(".//Device[@Type='PolarisTracker']") or root.find(".//Device[@Id='TrackerDevice']")
+        if tracker_device is not None and tracker_device.get("LocalTimeOffsetSec") is not None:
+            try:
+                self.image_lag_sec = float(tracker_device.get("LocalTimeOffsetSec"))
+            except ValueError:
+                self.get_logger().warn(f"Invalid LocalTimeOffsetSec value; defaulting to 0.0")
+                self.image_lag_sec = 0.0
+        else:
+            self.get_logger().warn("LocalTimeOffsetSec not found; defaulting to 0.0")
+
         self.get_logger().info("Loaded transform matrices (units: mm):")
         self.get_logger().info(f"Image -> Probe:\n{self.T_probe_from_image}")
         self.get_logger().info(f"Probe -> Image (computed inverse):\n{self.T_image_from_probe}")
+        self.get_logger().info(f"LocalTimeOffsetSec (image lag vs tracker): {self.image_lag_sec:.6f} s")
 
     def load_tip_offset_json(self):
         """
-        从 calibration/needle_1_tip_offset.json 读取 tip_offset_mm (长度 3，单位 mm)，
-        作为 NeedleBody -> NeedleTip 的平移向量（旋转为单位阵）。
+        Load tip_offset_mm (length 3, mm) from calibration/needle_1_tip_offset.json,
+        representing NeedleBody -> NeedleTip translation (rotation = identity).
         """
         ws_dir = os.environ.get("WS_DIR", "/ani_ws")
         json_path = os.path.join(ws_dir, "calibration", "needle_1_tip_offset.json")
@@ -261,6 +290,9 @@ class USVisualizer(Node):
             self.T_tracker_probe = T_mm
             self.last_probe_pose_dict = pose_to_dict(msg)  # stored as received (meters)
             self.probe_valid = True
+            # Buffer with timestamp (for synchronization)
+            t_sec = self._stamp_to_sec(msg.header.stamp)
+            self.probe_buf.append((t_sec, T_mm))
         except Exception as exc:
             self.get_logger().error(f"Failed to convert probe pose: {exc}")
             self.probe_valid = False
@@ -281,29 +313,25 @@ class USVisualizer(Node):
             self.T_tracker_needle_body = T_mm
             self.last_needle_pose_dict = pose_to_dict(msg)  # stored as received (meters)
             self.needle_valid = True
+            # Buffer with timestamp (for synchronization)
+            t_sec = self._stamp_to_sec(msg.header.stamp)
+            self.needle_buf.append((t_sec, T_mm))
         except Exception as exc:
             self.get_logger().error(f"Failed to convert needle pose: {exc}")
             self.needle_valid = False
             self.T_tracker_needle_body = None
 
-    def compute_needle_body_and_tip_in_image(self):
+    def compute_needle_body_and_tip_in_image_from_transforms(self, T_tracker_probe, T_tracker_needle_body, log_tip=True):
         """
-        计算 NeedleBody（marker 原点）和 NeedleTip 在 Image 坐标系下的坐标（单位：mm）。
-        使用从 JSON 读取的 tip_offset_mm 作为 NeedleBody -> NeedleTip 的平移。
-        变换链：
-          needle_body_in_image = T_image_probe * T_probe_tracker * T_tracker_needle_body * [0,0,0,1]
-          tip_in_image         = T_image_probe * T_probe_tracker * T_tracker_needle_body * ([tip_offset_mm,1])
+        Core computation using provided transforms (Tracker->Probe, Tracker->NeedleBody) in mm.
+        Returns (needle_body_xyz, tip_xyz) in Image frame, mm.
         """
-        if not (self.probe_valid and self.needle_valid):
-            return None
-        if self.T_tracker_probe is None or self.T_tracker_needle_body is None:
-            return None
         if self.tip_offset_mm is None:
             self.get_logger().error("tip_offset_mm not loaded")
             return None
         try:
             # Probe -> Tracker
-            T_probe_from_tracker = np.linalg.inv(self.T_tracker_probe)
+            T_probe_from_tracker = np.linalg.inv(T_tracker_probe)
             if not is_finite_matrix(T_probe_from_tracker):
                 return None
 
@@ -316,9 +344,9 @@ class USVisualizer(Node):
                                       1.0])
 
             # NeedleBody origin -> Tracker
-            p_body_in_tracker = self.T_tracker_needle_body @ p_body_in_body
+            p_body_in_tracker = T_tracker_needle_body @ p_body_in_body
             # Needle tip -> Tracker
-            p_tip_in_tracker = self.T_tracker_needle_body @ p_tip_in_body
+            p_tip_in_tracker = T_tracker_needle_body @ p_tip_in_body
 
             # Tracker -> Probe
             p_body_in_probe = T_probe_from_tracker @ p_body_in_tracker
@@ -334,25 +362,73 @@ class USVisualizer(Node):
             needle_body_xyz = p_body_in_image[:3]
             tip_xyz = p_tip_in_image[:3]
 
-            # Log tip coordinates (mm)
-            self.get_logger().info(
-                f"Needle tip in Image frame (mm): x={tip_xyz[0]:.3f}, y={tip_xyz[1]:.3f}, z={tip_xyz[2]:.3f}"
-            )
+            if log_tip:
+                # Log tip coordinates (mm)
+                self.get_logger().info(
+                    f"Needle tip in Image frame (mm): x={tip_xyz[0]:.3f}, y={tip_xyz[1]:.3f}, z={tip_xyz[2]:.3f}"
+                )
 
             return needle_body_xyz, tip_xyz
         except Exception as exc:
             self.get_logger().error(f"Failed to compute needle body/tip in image: {exc}")
             return None
 
+    def compute_needle_body_and_tip_in_image(self):
+        """
+        Compute NeedleBody (marker origin) and NeedleTip in Image frame (mm) using latest transforms.
+        """
+        if not (self.probe_valid and self.needle_valid):
+            return None
+        if self.T_tracker_probe is None or self.T_tracker_needle_body is None:
+            return None
+        return self.compute_needle_body_and_tip_in_image_from_transforms(
+            self.T_tracker_probe, self.T_tracker_needle_body, log_tip=True
+        )
+
     def compute_tip_in_image(self):
         """
-        保持原接口：仅返回 needle tip 在 Image 坐标系的坐标（mm）。
+        Keep original interface: return needle tip in Image frame (mm).
         """
         res = self.compute_needle_body_and_tip_in_image()
         if res is None:
             return None
         _, tip_xyz = res
         return tip_xyz
+
+    def _find_closest_transform(self, buffer_deque, target_time, max_dt=0.5):
+        """
+        Find the transform in buffer whose timestamp is closest to target_time.
+        Returns the transform (4x4) or None if not found or too far.
+        """
+        if len(buffer_deque) == 0:
+            return None
+        times = [abs(t - target_time) for (t, _) in buffer_deque]
+        idx = int(np.argmin(times))
+        if times[idx] > max_dt:
+            return None
+        return buffer_deque[idx][1]
+
+    def compute_synced_needle_body_and_tip_in_image(self, image_header):
+        """
+        Compute NeedleBody/Tip in Image frame (mm) using time-synchronized poses.
+        Image lags tracker by self.image_lag_sec, so we look for poses at (t_img - lag).
+        """
+        if image_header is None:
+            return None
+        t_img = self._stamp_to_sec(image_header.stamp)
+        target_time = t_img - self.image_lag_sec
+
+        T_probe_sync = self._find_closest_transform(self.probe_buf, target_time)
+        T_needle_sync = self._find_closest_transform(self.needle_buf, target_time)
+
+        if T_probe_sync is None or T_needle_sync is None:
+            # Debug only to avoid spamming error logs
+            self.get_logger().debug("Synchronized poses not found within tolerance; skip synced overlay")
+            return None
+
+        return self.compute_needle_body_and_tip_in_image_from_transforms(
+            T_probe_sync, T_needle_sync, log_tip=False
+        )
 
     def draw_availability(self, frame):
         """Draw Tracked/Lost status for probe and needle in the top-left corner."""
@@ -373,9 +449,8 @@ class USVisualizer(Node):
     @staticmethod
     def draw_dashed_line(frame, pt1, pt2, color, thickness=2, dash_length=10, gap_length=6):
         """
-        在 frame 上绘制虚线。
-        pt1, pt2: (x, y) 像素坐标（int）
-        color: BGR
+        Draw a dashed line on frame.
+        pt1, pt2: (x, y) pixel coords (int); color: BGR
         """
         x1, y1 = pt1
         x2, y2 = pt2
@@ -399,72 +474,99 @@ class USVisualizer(Node):
     @staticmethod
     def draw_text_with_outline(frame, text, org, font=cv2.FONT_HERSHEY_SIMPLEX,
                                scale=0.55, color=(255, 255, 255), thickness=1):
-        """在图像上绘制带描边的文字，提升可读性。"""
+        """Draw text with outline for readability."""
         # outline
         cv2.putText(frame, text, org, font, scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
         # text
         cv2.putText(frame, text, org, font, scale, color, thickness, cv2.LINE_AA)
 
+    def draw_needle_overlay(self, frame, needle_body_xyz, tip_xyz, tag_suffix=""):
+        """
+        Draw needle tip, body, dashed axis, and coordinates on the given frame.
+        tag_suffix (e.g., "[synced]") will be appended to coordinate text lines.
+        """
+        # NOTE: Assume Image frame x,y directly map to image pixel coordinates (spacing not applied)
+        u_tip, v_tip = int(round(tip_xyz[0])), int(round(tip_xyz[1]))
+        u_body, v_body = int(round(needle_body_xyz[0])), int(round(needle_body_xyz[1]))
+        h, w = frame.shape[:2]
+
+        # Draw needle tip
+        if 0 <= u_tip < w and 0 <= v_tip < h:
+            cv2.circle(frame, (u_tip, v_tip), radius=6, color=(0, 0, 255), thickness=2)
+            cv2.putText(frame, "needle tip", (u_tip + 5, v_tip - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
+        else:
+            self.get_logger().debug(
+                f"Needle tip projected outside image: (u={u_tip}, v={v_tip}), frame size (w={w}, h={h})"
+            )
+
+        # Draw needle axis dashed line
+        color_axis = (0, 128, 255)  # orange-ish
+        if (np.isfinite([u_body, v_body, u_tip, v_tip]).all()):
+            self.draw_dashed_line(frame, (u_body, v_body), (u_tip, v_tip),
+                                  color=color_axis, thickness=2, dash_length=10, gap_length=6)
+        else:
+            self.get_logger().debug("Needle body or tip projection not finite; skip axis drawing")
+
+        # Draw coordinates text (mm)
+        tag = f" {tag_suffix}" if tag_suffix else ""
+        tip_text = f"Tip (mm): x={tip_xyz[0]:.1f}, y={tip_xyz[1]:.1f}, z={tip_xyz[2]:.1f}{tag}"
+        body_text = f"Origin (mm): x={needle_body_xyz[0]:.1f}, y={needle_body_xyz[1]:.1f}, z={needle_body_xyz[2]:.1f}{tag}"
+        self.draw_text_with_outline(frame, tip_text, (10, 95))
+        self.draw_text_with_outline(frame, body_text, (10, 120))
+
     def on_image(self, msg: CompressedImage):
         try:
             np_arr = np.frombuffer(msg.data, dtype=np.uint8)
-            frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-            if frame is None:
+            base_frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            if base_frame is None:
                 self.get_logger().warn("Failed to decode compressed image (cv2.imdecode returned None)")
                 return
 
-            # Draw availability status
-            self.draw_availability(frame)
+            # -------------------------------
+            # Unsynchronized overlay (original behavior) -> /visualize/us_imaging/compressed
+            # -------------------------------
+            frame_unsynced = base_frame.copy()
+            self.draw_availability(frame_unsynced)
 
-            # Compute needle body & tip position, then overlay
-            res = self.compute_needle_body_and_tip_in_image()
-            if res is not None:
-                needle_body_xyz, tip_xyz = res  # both in mm
-                # NOTE: 假设 Image frame 的 x,y 直接对应图像像素坐标（若需 spacing，请先转换）
-                u_tip, v_tip = int(round(tip_xyz[0])), int(round(tip_xyz[1]))
-                u_body, v_body = int(round(needle_body_xyz[0])), int(round(needle_body_xyz[1]))
-                h, w = frame.shape[:2]
-
-                # 画针尖
-                if 0 <= u_tip < w and 0 <= v_tip < h:
-                    cv2.circle(frame, (u_tip, v_tip), radius=6, color=(0, 0, 255), thickness=2)
-                    cv2.putText(frame, "needle tip", (u_tip + 5, v_tip - 8),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
-                else:
-                    self.get_logger().debug(
-                        f"Needle tip projected outside image: (u={u_tip}, v={v_tip}), frame size (w={w}, h={h})"
-                    )
-
-                # 画针轴虚线（needle body marker -> needle tip）
-                color_axis = (0, 128, 255)  # 橙色系
-                if (np.isfinite([u_body, v_body, u_tip, v_tip]).all()):
-                    self.draw_dashed_line(frame, (u_body, v_body), (u_tip, v_tip),
-                                          color=color_axis, thickness=2, dash_length=10, gap_length=6)
-                else:
-                    self.get_logger().debug("Needle body or tip projection not finite; skip axis drawing")
-
-                # 在图像上显示坐标（mm）
-                tip_text = f"Tip (mm): x={tip_xyz[0]:.1f}, y={tip_xyz[1]:.1f}, z={tip_xyz[2]:.1f}"
-                body_text = f"Origin (mm): x={needle_body_xyz[0]:.1f}, y={needle_body_xyz[1]:.1f}, z={needle_body_xyz[2]:.1f}"
-                self.draw_text_with_outline(frame, tip_text, (10, 95))
-                self.draw_text_with_outline(frame, body_text, (10, 120))
+            res_unsynced = self.compute_needle_body_and_tip_in_image()
+            if res_unsynced is not None:
+                needle_body_xyz, tip_xyz = res_unsynced  # both in mm
+                self.draw_needle_overlay(frame_unsynced, needle_body_xyz, tip_xyz, tag_suffix="")
             else:
                 self.get_logger().debug("NeedleBody/Tip not computed (missing or invalid transforms)")
 
-            # Publish compressed image
-            img_msg = self.bridge.cv2_to_compressed_imgmsg(frame, dst_format="jpeg")
-            img_msg.header = msg.header
-            self.image_pub.publish(img_msg)
+            img_msg_unsynced = self.bridge.cv2_to_compressed_imgmsg(frame_unsynced, dst_format="jpeg")
+            img_msg_unsynced.header = msg.header
+            self.image_pub.publish(img_msg_unsynced)
+
+            # -------------------------------
+            # Time-synchronized overlay -> /visualize/us_imaging_sync/compressed
+            # -------------------------------
+            frame_sync = base_frame.copy()
+            self.draw_availability(frame_sync)
+
+            res_sync = self.compute_synced_needle_body_and_tip_in_image(msg.header)
+            if res_sync is not None:
+                needle_body_xyz_sync, tip_xyz_sync = res_sync  # both in mm
+                self.draw_needle_overlay(frame_sync, needle_body_xyz_sync, tip_xyz_sync, tag_suffix="[synced]")
+            else:
+                self.get_logger().debug("Synchronized NeedleBody/Tip not available; skip synced overlay")
+
+            img_msg_sync = self.bridge.cv2_to_compressed_imgmsg(frame_sync, dst_format="jpeg")
+            img_msg_sync.header = msg.header
+            self.image_pub_sync.publish(img_msg_sync)
+
         except Exception as exc:
             self.get_logger().error(f"Exception decoding/publishing image: {exc}")
 
     def publish_decoded_coordinates(self):
         """
-        以 20 Hz 发布两个话题：
+        Publish at 20 Hz two topics:
         - decoded_coor_image/needle_tip: Float32MultiArray, data=[x,y,z] (mm)
         - decoded_coor_image/needle_origin: Float32MultiArray, data=[x,y,z] (mm)
-        坐标系：Image
-        需求：即使 needle 丢失，也持续发布，值用 NaN 填充。
+        Frame: Image
+        Requirement: even if needle is lost, continue publishing with NaN.
         """
         nan = float("nan")
         needle_body_xyz = None
