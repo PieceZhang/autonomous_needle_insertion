@@ -40,7 +40,7 @@ class TaskPanel(Plugin):
         # Task Label
         self.task_combo = QtWidgets.QComboBox()
         self.task_combo.setEditable(True)
-        self.task_combo.addItems(['Task 1', 'Task 2', 'Task 3', 'Task 4'])
+        self.task_combo.addItems(['Task 1', 'Task 2', 'Task 3', 'Task 4.1', 'Task 4.2'])
         self.task_combo.setCurrentIndex(-1)
         self.task_combo.lineEdit().setPlaceholderText('Select or type...')
         form.addRow('Task Label:', self.task_combo)
