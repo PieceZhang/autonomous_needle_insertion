@@ -132,7 +132,8 @@ RUN apt-get update \
       ros-$ROS_DISTRO-v4l2-camera \
       # === Added for US visualizer (OpenCV + cv_bridge) ===
       python3-opencv \
-      ros-$ROS_DISTRO-cv-bridge
+      ros-$ROS_DISTRO-cv-bridge \
+      ros-$ROS_DISTRO-image-transport-plugins
 # && rm -rf /var/lib/apt/lists/* \
 
 # --- Build drivers from local source into their workspaces ---

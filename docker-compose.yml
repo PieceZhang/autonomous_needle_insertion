@@ -117,6 +117,28 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  polaris_image_compressed:
+    <<: *ros_common
+    container_name: "${COMPOSE_PROJECT_NAME:-ros2}-polaris-image-compressed"
+    profiles: ["default", "gscam2-test", "dev"]
+    depends_on:
+      polaris_camera_driver:
+        condition: service_healthy
+    command: >
+      bash -lc "
+        set -e;
+        if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi;
+        echo 'Republishing /vega_vt/image_raw -> /vega_vt/image_raw/compressed';
+        ros2 run image_transport republish raw compressed in:=/vega_vt/image_raw out/compressed:=/vega_vt/image_raw/compressed
+      "
+    healthcheck:
+      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q '/vega_vt/image_raw/compressed'"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
   realsense_driver:
     <<: *ros_common
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-realsense-driver"

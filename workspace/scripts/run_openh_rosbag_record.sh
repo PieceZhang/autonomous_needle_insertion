@@ -14,7 +14,7 @@ echo "Use Ctrl+C to stop recording."
 sleep 0.25s
 
 ros2 bag record --output "$OUT_DIR/$BAG_NAME" --topics \
-                /vega_vt/image_raw /vega_vt/camera_info \
+                /vega_vt/image_raw/compressed /vega_vt/camera_info \
                 /image_raw/compressed \
                 /camera/camera/color/image_raw/compressed /camera/camera/color/camera_info /camera/camera/color/metadata \
                 /camera/camera/depth/image_rect_raw/compressedDepth /camera/camera/depth/camera_info /camera/camera/depth/metadata \

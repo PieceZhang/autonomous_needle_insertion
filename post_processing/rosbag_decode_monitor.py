@@ -75,10 +75,12 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 VIDEO_TOPICS: Set[str] = {
-    "/vega_vt/image_raw",
+    "/vega_vt/image_raw/compressed",
     "/image_raw/compressed",
     "/camera/camera/color/image_raw/compressed",
     "/camera/camera/depth/image_rect_raw/compressedDepth",
+    "/visualize/us_imaging/compressed",
+    "/visualize/us_imaging_sync/compressed"
 }
 
 KNOWN_ENCODINGS = {
