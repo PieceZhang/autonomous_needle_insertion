@@ -445,6 +445,110 @@ def quat_to_T(quat: Tuple[float, float, float, float, float, float, float]) -> n
     return T
 
 
+# --- New helpers: rotation matrix to quaternion and homogeneous to Pose/PoseStamped ---
+def _rotmat_to_quat_xyzw(R: np.ndarray) -> Tuple[float, float, float, float]:
+    """Convert a 3x3 rotation matrix to a unit quaternion (x, y, z, w) in ROS ordering."""
+    R = np.asarray(R, dtype=float)
+    if R.shape != (3, 3):
+        raise RuntimeError(f"Rotation matrix must be (3,3), got {R.shape}")
+    if not np.all(np.isfinite(R)):
+        raise RuntimeError("Rotation matrix contains NaN/Inf")
+
+    # Optional: tolerate small numerical drift
+    if not np.allclose(R.T @ R, np.eye(3), atol=1e-6):
+        raise RuntimeError("Rotation matrix is not orthonormal")
+
+    tr = float(R[0, 0] + R[1, 1] + R[2, 2])
+
+    if tr > 0.0:
+        S = np.sqrt(tr + 1.0) * 2.0
+        qw = 0.25 * S
+        qx = (R[2, 1] - R[1, 2]) / S
+        qy = (R[0, 2] - R[2, 0]) / S
+        qz = (R[1, 0] - R[0, 1]) / S
+    else:
+        # Find the largest diagonal element and proceed accordingly (more stable near 180 deg)
+        if R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
+            S = np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2.0
+            qw = (R[2, 1] - R[1, 2]) / S
+            qx = 0.25 * S
+            qy = (R[0, 1] + R[1, 0]) / S
+            qz = (R[0, 2] + R[2, 0]) / S
+        elif R[1, 1] > R[2, 2]:
+            S = np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2.0
+            qw = (R[0, 2] - R[2, 0]) / S
+            qx = (R[0, 1] + R[1, 0]) / S
+            qy = 0.25 * S
+            qz = (R[1, 2] + R[2, 1]) / S
+        else:
+            S = np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2.0
+            qw = (R[1, 0] - R[0, 1]) / S
+            qx = (R[0, 2] + R[2, 0]) / S
+            qy = (R[1, 2] + R[2, 1]) / S
+            qz = 0.25 * S
+
+    q = np.array([qx, qy, qz, qw], dtype=float)
+    if not np.all(np.isfinite(q)):
+        raise RuntimeError("Quaternion contains NaN/Inf")
+
+    n = float(np.dot(q, q))
+    if n < 1e-12 or not np.isfinite(n):
+        raise RuntimeError(f"Quaternion norm too small: {n}")
+
+    q /= np.sqrt(n)
+    return float(q[0]), float(q[1]), float(q[2]), float(q[3])
+
+
+def homogeneous_to_pose_msg(T: np.ndarray) -> Pose:
+    """Convert a 4x4 homogeneous transform into a geometry_msgs/Pose message.
+
+    The returned quaternion uses ROS ordering (x, y, z, w).
+    """
+    T = np.asarray(T, dtype=float)
+    if T.shape != (4, 4):
+        raise RuntimeError(f"Transform must be (4,4), got {T.shape}")
+    if not np.all(np.isfinite(T)):
+        raise RuntimeError("Transform contains NaN/Inf")
+    if not np.allclose(T[3, :], np.array([0.0, 0.0, 0.0, 1.0], dtype=float), atol=1e-8):
+        raise RuntimeError(f"Transform last row must be [0 0 0 1], got {T[3, :]}")
+
+    R = T[:3, :3]
+    p = T[:3, 3]
+
+    qx, qy, qz, qw = _rotmat_to_quat_xyzw(R)
+
+    pose = Pose()
+    pose.position.x = float(p[0])
+    pose.position.y = float(p[1])
+    pose.position.z = float(p[2])
+    pose.orientation.x = qx
+    pose.orientation.y = qy
+    pose.orientation.z = qz
+    pose.orientation.w = qw
+    return pose
+
+
+def homogeneous_to_pose_stamped(
+    T: np.ndarray,
+    frame_id: str,
+    node: Optional[Node] = None,
+) -> PoseStamped:
+    """Convert a 4x4 homogeneous transform into a geometry_msgs/PoseStamped.
+
+    If `node` is provided, the stamp uses `node.get_clock().now().to_msg()`.
+    Otherwise, it uses `rclpy.clock.Clock().now().to_msg()`.
+    """
+    ps = PoseStamped()
+    ps.header.frame_id = frame_id
+    if node is not None:
+        ps.header.stamp = node.get_clock().now().to_msg()
+    else:
+        ps.header.stamp = rclpy.clock.Clock().now().to_msg()
+
+    ps.pose = homogeneous_to_pose_msg(T)
+    return ps
+
+
 def get_needle_tip_pos_in_tracker(
     needle_pose_in_tracker: Tuple[float, float, float, float, float, float, float],
     needle_tip_offset_mm: np.ndarray,
@@ -938,9 +1042,29 @@ def main() -> None:
         ee_target_pose_in_base = tracker_in_base @ quat_to_T(probe_pose) @ np.linalg.inv(probe_in_ee)
         # logger.info(f"Target pose of EE in base: {ee_target_pose_in_base}")
 
+        pose_goal = homogeneous_to_pose_stamped(ee_target_pose_in_base, "base")
+        arm.set_start_state_to_current_state()
+        arm.set_goal_state(pose_stamped_msg=pose_goal, pose_link=tip_link)
+
+        # Setup conservative planning parameters
+        plan_params = PlanRequestParameters(robot, "")
+        plan_params.max_velocity_scaling_factor = MAX_VELOCITY_SCALING
+        plan_params.max_acceleration_scaling_factor = MAX_ACCELERATION_SCALING
+
+        # Plan trajectory
+        plan_result = arm.plan(single_plan_parameters=plan_params)
+        if not plan_result:
+            logger.error(f"Planning to waypoint failed; aborting")
+
+        # Execute with fallback
+        if not execute_trajectory_with_fallback(robot, plan_result.trajectory):
+            logger.error(f"Execution to waypoint failed; aborting")
+
+        logger.info(f"Reached target pose")
+
 
     except Exception as e:
-        logger.error(f"Square trajectory execution failed: {e}")
+        logger.error(f"Trajectory execution failed: {e}")
         raise
     finally:
         rclpy.shutdown()
