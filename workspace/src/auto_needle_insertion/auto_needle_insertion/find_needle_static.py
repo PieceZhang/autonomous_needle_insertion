@@ -30,7 +30,7 @@ from rclpy.node import Node
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Pose
 from moveit.core.robot_state import RobotState
 from moveit.planning import MoveItPy, PlanRequestParameters
 
@@ -99,16 +99,21 @@ def load_probe_image_transform(calibration_xml_path: str | Path) -> Tuple[np.nda
     # Image -> Probe (mm)
     T_probe_from_image = find_transform("Image", "Probe")
 
+    # Convert translation to meters
+    T_probe_from_image_m = T_probe_from_image.copy()
+    T_probe_from_image_m[:3, 3] *= 1e-3
+
     # Probe -> Image (inverse) (mm)
     try:
-        T_image_from_probe = np.linalg.inv(T_probe_from_image)
+        T_image_from_probe_m = np.linalg.inv(T_probe_from_image_m)
     except np.linalg.LinAlgError as e:
         raise RuntimeError(f"Probe -> Image inverse failed (singular matrix): {e}") from e
 
-    if not np.all(np.isfinite(T_image_from_probe)):
+    if not np.all(np.isfinite(T_image_from_probe_m)):
         raise RuntimeError("Probe -> Image inverse contains NaN/Inf")
 
-    return T_probe_from_image, T_image_from_probe
+    # return T_probe_from_image, T_image_from_probe
+    return T_probe_from_image_m
 
 
 # --- Needle tip offset helper ---
@@ -369,6 +374,45 @@ def _quat_xyzw_to_rotmat(qx: float, qy: float, qz: float, qw: float) -> np.ndarr
     return R
 
 
+def pose_to_homogeneous(pose: Pose) -> np.ndarray:
+    """Convert geometry_msgs/Pose to a 4x4 homogeneous transform.
+
+    Quaternion convention: (x, y, z, w) as in ROS.
+    """
+    # Translation
+    p = np.array([pose.position.x, pose.position.y, pose.position.z], dtype=float)
+
+    # Quaternion (x, y, z, w)
+    q = np.array([pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w], dtype=float)
+    if not np.all(np.isfinite(q)):
+        raise RuntimeError("Pose quaternion contains NaN/Inf")
+
+    n = float(np.dot(q, q))
+    if n < 1e-12:
+        raise RuntimeError("Pose quaternion norm too small")
+    q /= np.sqrt(n)
+
+    x, y, z, w = q
+    xx, yy, zz = x*x, y*y, z*z
+    xy, xz, yz = x*y, x*z, y*z
+    wx, wy, wz = w*x, w*y, w*z
+
+    R = np.array([
+        [1.0 - 2.0*(yy + zz), 2.0*(xy - wz),       2.0*(xz + wy)],
+        [2.0*(xy + wz),       1.0 - 2.0*(xx + zz), 2.0*(yz - wx)],
+        [2.0*(xz - wy),       2.0*(yz + wx),       1.0 - 2.0*(xx + yy)],
+    ], dtype=float)
+
+    T = np.eye(4, dtype=float)
+    T[:3, :3] = R
+    T[:3, 3] = p
+
+    if not np.all(np.isfinite(T)):
+        raise RuntimeError("Homogeneous transform contains NaN/Inf")
+
+    return T
+
+
 def quat_to_T(quat: Tuple[float, float, float, float, float, float, float]) -> np.ndarray:
     """Convert a pose (px,py,pz,qx,qy,qz,qw) to a 4x4 homogeneous transform.
 
@@ -458,10 +502,10 @@ def get_needle_tip_pos_in_tracker(
 
 
 def align_image_to_needle_axis(
-    image_pose_in_tracker: Tuple[float, float, float, float, float, float, float],
-    needle_marker_origin_in_tracker: np.ndarray,
-    needle_tip_pos_in_tracker: np.ndarray,
-    position_unit: str = "m",
+        T_image_in_tracker: np.ndarray,
+        needle_marker_origin_in_tracker: np.ndarray,
+        needle_tip_pos_in_tracker: np.ndarray,
+        position_unit: str = "m",
 ) -> np.ndarray:
     """Compute the target pose in tracker after aligning the image plane to the needle axis.
 
@@ -471,37 +515,37 @@ def align_image_to_needle_axis(
             P1 = needle_tip_pos_in_tracker
       - Keep the image plane's +Y axis direction unchanged in the tracker frame.
 
-    Construction:
-      - Let y_keep be the current image plane y-axis expressed in the tracker frame.
-      - Let v = (P1 - P0). To ensure both points lie in the plane, v must lie in the span of
-        the plane x- and y-axes. Since y is fixed, choose x as the component of v orthogonal
-        to y_keep (i.e., v projected onto the plane normal to y_keep).
-      - Define z = x × y for a right-handed frame.
-      - Choose the target plane origin to be P0 (needle marker origin), which guarantees
-        P0 lies on the plane and (by construction) P1 lies on the plane.
-
     Args:
-        image_pose_in_tracker: Current image plane pose in tracker frame as
-            (px, py, pz, qx, qy, qz, qw) with ROS quaternion order (x,y,z,w).
+        T_image_in_tracker: Current image plane pose in tracker frame as a (4,4)
+            homogeneous transform:
+                [ R  p ]
+                [ 0  1 ]
         needle_marker_origin_in_tracker: (3,) point P0 in tracker frame.
         needle_tip_pos_in_tracker: (3,) point P1 in tracker frame.
         position_unit: Unit of the provided positions. Use "m" (default) or "mm".
 
     Returns:
         T_target_in_tracker: (4,4) homogeneous transform in tracker that places the image-plane
-        in alignment with the needle axis.
+            in alignment with the needle axis.
 
     Raises:
         RuntimeError: If inputs are invalid (NaN/Inf) or the geometry is degenerate.
         ValueError: If position_unit is not supported.
     """
-    # Current pose
-    px, py, pz, qx, qy, qz, qw = image_pose_in_tracker
-    p_cur = np.array([px, py, pz], dtype=float)
-    if not np.all(np.isfinite(p_cur)):
-        raise RuntimeError("Image plane current position contains NaN/Inf")
+    # Validate input transform
+    T = np.asarray(T_image_in_tracker, dtype=float)
+    if T.shape != (4, 4):
+        raise RuntimeError(f"T_image_in_tracker must be shape (4,4), got {T.shape}")
+    if not np.all(np.isfinite(T)):
+        raise RuntimeError("T_image_in_tracker contains NaN/Inf")
 
-    R_cur = _quat_xyzw_to_rotmat(qx, qy, qz, qw)
+    # Optional: enforce proper homogeneous last row
+    if not np.allclose(T[3, :], np.array([0.0, 0.0, 0.0, 1.0], dtype=float), atol=1e-9):
+        raise RuntimeError(f"T_image_in_tracker last row must be [0 0 0 1], got {T[3, :]}")
+
+    # Extract current pose
+    R_cur = T[:3, :3]
+    p_cur = T[:3, 3]
 
     # Keep current Y axis direction (in tracker frame)
     y_keep = R_cur[:, 1]
@@ -514,7 +558,7 @@ def align_image_to_needle_axis(
     P0 = np.asarray(needle_marker_origin_in_tracker, dtype=float).reshape(-1)
     P1 = np.asarray(needle_tip_pos_in_tracker, dtype=float).reshape(-1)
     if P0.shape != (3,) or P1.shape != (3,):
-        raise RuntimeError("needle_marker_origin_tracker and needle_tip_pos_tracker must be shape (3,)")
+        raise RuntimeError("needle_marker_origin_in_tracker and needle_tip_pos_in_tracker must be shape (3,)")
     if not (np.all(np.isfinite(P0)) and np.all(np.isfinite(P1))):
         raise RuntimeError("Needle points contain NaN/Inf")
 
@@ -566,7 +610,7 @@ def align_image_to_needle_axis(
     # Target origin at the needle marker origin (plane passes through both points by construction)
     p_tgt = P0
 
-    # Absolute target pose in tracker: T_tracker_from_image_plane_target = [R_tgt, p_tgt]
+    # Absolute target pose in tracker
     T_tgt = np.eye(4, dtype=float)
     T_tgt[:3, :3] = R_tgt
     T_tgt[:3, 3] = p_tgt
@@ -578,58 +622,47 @@ def align_image_to_needle_axis(
 
 
 def center_needle_in_image(
-    image_pose_in_tracker: Tuple[float, float, float, float, float, float, float],
-    needle_marker_origin_in_tracker: np.ndarray,
-    needle_tip_pos_in_tracker: np.ndarray,
-    x_center_in_plane: float = 0.0,
-    y_target_in_plane: float = 0.0,
-    reference: str = "tip",
-    position_unit: str = "m",
+        T_image_in_tracker: np.ndarray,
+        needle_marker_origin_in_tracker: np.ndarray,
+        needle_tip_pos_in_tracker: np.ndarray,
+        x_center_in_plane: float = 0.0,
+        y_target_in_plane: float = 0.0,
+        reference: str = "tip",
+        position_unit: str = "m",
 ) -> np.ndarray:
-    """Compute an additional *in-plane* relative motion to center the needle tip at a desired in-plane location.
-
-    Context:
-      - You already oriented the image plane so the needle axis lies in the plane.
-      - Now you want to translate the plane *within its own xOy plane* (no rotation) so that the
-        *needle tip* appears at a desired in-image location.
-
-    Practical interpretation:
-      - The needle tip is projected into the current plane frame.
-      - We then translate the plane along its +X and +Y axes so that the tip's plane-frame coordinates
-        become:
-            x = x_center_in_plane   (center line)
-            y = y_target_in_plane   (user-controlled depth/along-plane position)
+    """Translate the image plane (no rotation) so the needle tip lands at a desired (x,y) in the plane frame.
 
     Args:
-        image_pose_in_tracker: Current image plane pose in tracker frame as
-            (px, py, pz, qx, qy, qz, qw) with ROS quaternion order (x,y,z,w).
+        T_image_in_tracker: Current image plane pose in tracker as a (4,4) homogeneous transform.
+            It maps coordinates expressed in the image-plane frame into the tracker frame.
         needle_marker_origin_in_tracker: Needle marker origin point P0 in tracker frame (3,).
         needle_tip_pos_in_tracker: Needle tip point P1 in tracker frame (3,).
         x_center_in_plane: Desired x coordinate of the needle tip in the plane frame.
-            Use 0.0 if the plane frame origin is at the image horizontal center.
         y_target_in_plane: Desired y coordinate of the needle tip in the plane frame.
-            Use 0.0 if the plane frame origin is at the image vertical center.
         reference: Kept for backward compatibility. Must be "tip".
         position_unit: Unit of the provided positions. Use "m" (default) or "mm".
 
     Returns:
         T_target_in_tracker: (4,4) homogeneous transform of the *target image plane pose* in the tracker frame.
-            This is a pure translation along the plane's +X and +Y axes; orientation is unchanged.
-
-    Raises:
-        RuntimeError: If inputs are invalid or degenerate.
-        ValueError: If `reference` or `position_unit` is not supported.
+            Orientation is unchanged; translation is along the plane +X and +Y axes.
     """
     if position_unit not in ("m", "mm"):
         raise ValueError("position_unit must be 'm' or 'mm'")
 
-    # Current plane pose
-    px, py, pz, qx, qy, qz, qw = image_pose_in_tracker
-    p_cur = np.array([px, py, pz], dtype=float)
-    if not np.all(np.isfinite(p_cur)):
-        raise RuntimeError("Image plane current position contains NaN/Inf")
+    T_cur = np.asarray(T_image_in_tracker, dtype=float)
+    if T_cur.shape != (4, 4):
+        raise RuntimeError(f"T_image_in_tracker must be shape (4,4), got {T_cur.shape}")
+    if not np.all(np.isfinite(T_cur)):
+        raise RuntimeError("T_image_in_tracker contains NaN/Inf")
+    if not np.allclose(T_cur[3, :], np.array([0.0, 0.0, 0.0, 1.0]), atol=1e-8):
+        raise RuntimeError("T_image_in_tracker last row must be [0, 0, 0, 1]")
 
-    R_cur = _quat_xyzw_to_rotmat(qx, qy, qz, qw)
+    R_cur = T_cur[:3, :3]
+    p_cur = T_cur[:3, 3]
+
+    # Optional orthonormality check
+    if not np.allclose(R_cur.T @ R_cur, np.eye(3), atol=1e-6):
+        raise RuntimeError("Rotation part of T_image_in_tracker is not orthonormal")
 
     P0 = np.asarray(needle_marker_origin_in_tracker, dtype=float).reshape(-1)
     P1 = np.asarray(needle_tip_pos_in_tracker, dtype=float).reshape(-1)
@@ -643,14 +676,11 @@ def center_needle_in_image(
         raise ValueError("center_needle_in_image is intended to center the needle tip; set reference='tip'.")
     P_ref = P1
 
-    # Express the reference point in the *current plane frame*.
-    # p_plane = R^T (p_world - p_origin)
+    # Express needle tip in the current plane frame: p_plane = R^T (p_world - p_origin)
     p_ref_plane = R_cur.T @ (P_ref - p_cur)
     if not np.all(np.isfinite(p_ref_plane)):
         raise RuntimeError("Reference point projection produced NaN/Inf")
 
-    # Optional sanity check: needle should already lie on the plane (z approximately 0)
-    # Tolerance depends on units.
     tol = 2e-3 if position_unit == "m" else 2.0  # 2 mm
     if abs(float(p_ref_plane[2])) > tol:
         raise RuntimeError(
@@ -660,10 +690,11 @@ def center_needle_in_image(
 
     x_ref = float(p_ref_plane[0])
     y_ref = float(p_ref_plane[1])
+
     dx = x_ref - float(x_center_in_plane)
     dy = y_ref - float(y_target_in_plane)
 
-    # Target pose in tracker: same orientation, translated along the plane +X and +Y axes.
+    # Translate plane along its own +X and +Y axes (expressed in tracker)
     x_axis_tracker = R_cur[:, 0]
     y_axis_tracker = R_cur[:, 1]
     p_tgt = p_cur + dx * x_axis_tracker + dy * y_axis_tracker
@@ -856,7 +887,7 @@ def main() -> None:
         with robot.get_planning_scene_monitor().read_only() as scene:
             scene.current_state.update()
             transform_matrix = scene.current_state.get_global_link_transform(tip_link)
-            current_ee_pose = scene.current_state.get_pose(tip_link)
+            current_ee_pose = pose_to_homogeneous(scene.current_state.get_pose(tip_link))
 
         # Extract and normalize local coordinate frame
         rotation_matrix = transform_matrix[:3, :3]
@@ -874,34 +905,38 @@ def main() -> None:
 
         # Report poses
         needle_pose = read_instrument_pose(instrument="needle", timeout_sec=2.0)
-        logger.info(_fmt_pose("Needle (tracker)", needle_pose))
+        # logger.info(_fmt_pose("Needle (tracker)", needle_pose))
 
         tip_offset = load_needle_tip_offset_mm("./calibration/needle_1_tip_offset.json")
         needle_tip_pose = get_needle_tip_pos_in_tracker(needle_pose, tip_offset)
-        logger.info(f"Needle tip (tracker): {needle_tip_pose}")
+        # logger.info(f"Needle tip (tracker): {needle_tip_pose}")
 
         probe_pose = read_instrument_pose(instrument="us_probe", timeout_sec=2.0)
-        logger.info(_fmt_pose("Probe  (tracker)", probe_pose))
+        # logger.info(_fmt_pose("Probe  (tracker)", probe_pose))
 
         probe_in_ee = load_hand_eye_transform("./calibration/hand_eye_20251228_124205.json")
-        logger.info(f"Eye to hand: {probe_in_ee}")
+        # logger.info(f"Eye to hand: {probe_in_ee}")
 
         image_in_probe = load_probe_image_transform("./calibration/PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20251212_144952_SRIL.xml")
-        logger.info(f"image to probe: {image_in_probe}")
+        # logger.info(f"image in probe: {image_in_probe}")
 
         # Pipeline for finding needle in a static method
-        image_in_tracker = probe_pose @ image_in_probe
+        image_in_tracker = quat_to_T(probe_pose) @ image_in_probe
+        # logger.info(f"image in tracker: {image_in_tracker}")
         image_pose_aligned = align_image_to_needle_axis(image_in_tracker, needle_pose[0:3], needle_tip_pose[0:3])
+        # logger.info(f"image pose when aligned: {image_pose_aligned}")
         image_pose_centered = center_needle_in_image(image_pose_aligned, needle_pose[0:3], needle_tip_pose[0:3])
+        # logger.info(f"image pose when centered: {image_pose_centered}")
 
         # image2hand = image2probe @ probe_in_ee
 
         # Calibrate tracker frame and robot base frame
-        tracker_in_base = cur_ee_pose @ quat_to_T(probe_in_ee) @ np.linalg.inv(quat_to_T(probe_pose))
+        tracker_in_base = current_ee_pose @ probe_in_ee @ np.linalg.inv(quat_to_T(probe_pose))
+        # logger.info(f"current ee pose: {current_ee_pose}")
+        # logger.info(f"tracker in base: {tracker_in_base}")
 
-        ee_target_pose_in_base = tracker_in_base @ quat_to_T(probe_pose) @ np.linalg.inv(quat_to_T(probe_in_ee))
-        logger.info(f"Target pose if EE in base: {ee_target_pose_in_base}")
-
+        ee_target_pose_in_base = tracker_in_base @ quat_to_T(probe_pose) @ np.linalg.inv(probe_in_ee)
+        # logger.info(f"Target pose of EE in base: {ee_target_pose_in_base}")
 
 
     except Exception as e:
