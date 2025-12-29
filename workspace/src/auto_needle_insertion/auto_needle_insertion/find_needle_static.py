@@ -305,10 +305,22 @@ def get_instrument_pose(
     msg: PoseStamped = last_msg["msg"]
     p = msg.pose.position
     q = msg.pose.orientation
-    return (
-        float(p.x), float(p.y), float(p.z),
-        float(q.x), float(q.y), float(q.z), float(q.w),
+
+    vals = np.array(
+        [
+            float(p.x), float(p.y), float(p.z),
+            float(q.x), float(q.y), float(q.z), float(q.w),
+        ],
+        dtype=float,
     )
+
+    # Fail fast if tracker publishes invalid numbers (NaN/Inf).
+    if not np.all(np.isfinite(vals)):
+        raise RuntimeError(
+            f"Received NaN/Inf from tracker on '{topic}' for instrument='{instrument}': {vals.tolist()}"
+        )
+
+    return tuple(float(x) for x in vals)
 
 
 # --- Needle tip computation helpers ---
