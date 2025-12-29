@@ -160,6 +160,58 @@ def load_needle_tip_offset_mm(json_path: str | Path) -> np.ndarray:
     return tip_vec
 
 
+# --- Hand-eye calibration helper ---
+def load_hand_eye_T_c2g(json_path: str | Path) -> np.ndarray:
+    """Load hand-eye calibration result T_c2g from a JSON file.
+
+    Expected JSON schema (minimum):
+        {
+          "T_c2g": [[...],[...],[...],[...]],
+          ... optional keys like "timestamp" ...
+        }
+
+    Returns:
+        T_c2g as a (4,4) numpy array (float).
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        RuntimeError: If the JSON is missing the expected key or has invalid content.
+    """
+    json_path = Path(json_path)
+    if not json_path.exists():
+        raise FileNotFoundError(str(json_path))
+
+    with json_path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Expected a JSON object at top-level in {json_path}")
+
+    if "T_c2g" not in data:
+        raise RuntimeError(f"Missing 'T_c2g' in {json_path}")
+
+    T = data["T_c2g"]
+
+    # Accept either a 4x4 nested list or a flat list of 16 values
+    if isinstance(T, (list, tuple)) and len(T) == 16 and not any(isinstance(x, (list, tuple)) for x in T):
+        T_mat = np.array([float(x) for x in T], dtype=float).reshape(4, 4)
+    else:
+        try:
+            T_mat = np.asarray(T, dtype=float)
+        except (TypeError, ValueError) as e:
+            raise RuntimeError(f"Invalid numeric values in 'T_c2g' in {json_path}: {e}") from e
+
+        if T_mat.shape != (4, 4):
+            raise RuntimeError(
+                f"'T_c2g' must be a 4x4 matrix (nested list) in {json_path}; got shape {T_mat.shape}"
+            )
+
+    if not np.all(np.isfinite(T_mat)):
+        raise RuntimeError(f"'T_c2g' contains NaN/Inf in {json_path}")
+
+    return T_mat
+
+
 # Instrument pose reading utilities
 def get_instrument_pose(
         instrument: str = "needle",
@@ -783,9 +835,13 @@ def main() -> None:
         tip_offset = load_needle_tip_offset_mm("./calibration/needle_1_tip_offset.json")
         needle_tip_pose = compute_needle_tip_position_in_tracker(needle_pose, tip_offset)
         probe_pose = get_instrument_pose(instrument="us_probe", timeout_sec=2.0)
+
+        eye2hand = load_hand_eye_T_c2g("./calibration/hand_eye_20251228_124205.json")
+
         logger.info(_fmt_pose("Needle (tracker)", needle_pose))
         logger.info(f"Needle tip (tracker): {needle_tip_pose}")
         logger.info(_fmt_pose("Probe  (tracker)", probe_pose))
+        logger.info(f"Eye to hand: {eye2hand}")
 
     except Exception as e:
         logger.error(f"Square trajectory execution failed: {e}")
