@@ -57,7 +57,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def load_probe_image_transforms(calibration_xml_path: str | Path) -> Tuple[np.ndarray, np.ndarray]:
+def load_probe_image_transform(calibration_xml_path: str | Path) -> Tuple[np.ndarray, np.ndarray]:
     """Load Image->Probe (and its inverse Probe->Image) from a PLUS-style calibration XML.
 
     Expected XML element:
@@ -161,7 +161,7 @@ def load_needle_tip_offset_mm(json_path: str | Path) -> np.ndarray:
 
 
 # --- Hand-eye calibration helper ---
-def load_hand_eye_T_c2g(json_path: str | Path) -> np.ndarray:
+def load_hand_eye_transform(json_path: str | Path) -> np.ndarray:
     """Load hand-eye calibration result T_c2g from a JSON file.
 
     Expected JSON schema (minimum):
@@ -213,7 +213,7 @@ def load_hand_eye_T_c2g(json_path: str | Path) -> np.ndarray:
 
 
 # Instrument pose reading utilities
-def get_instrument_pose(
+def read_instrument_pose(
         instrument: str = "needle",
         topic: Optional[str] = None,
         timeout_sec: float = 2.0,
@@ -369,7 +369,39 @@ def _quat_xyzw_to_rotmat(qx: float, qy: float, qz: float, qw: float) -> np.ndarr
     return R
 
 
-def compute_needle_tip_position_in_tracker(
+def quat_to_T(quat: Tuple[float, float, float, float, float, float, float]) -> np.ndarray:
+    """Convert a pose (px,py,pz,qx,qy,qz,qw) to a 4x4 homogeneous transform.
+
+    Assumes ROS quaternion ordering (x, y, z, w).  [oai_citation:0‡ROS Docs](https://docs.ros.org/en/diamondback/api/geometry_msgs/html/msg/Pose.html?utm_source=chatgpt.com)
+
+    Args:
+        quat: (px, py, pz, qx, qy, qz, qw)
+
+    Returns:
+        T: (4,4) homogeneous transform with rotation from quaternion and translation (p).  [oai_citation:1‡MathWorks](https://www.mathworks.com/help/ros/ug/convert-a-ros-pose-message-to-homogenous-transform.html?utm_source=chatgpt.com)
+
+    Raises:
+        RuntimeError: if inputs contain NaN/Inf.
+    """
+    px, py, pz, qx, qy, qz, qw = quat
+    vals = np.array([px, py, pz, qx, qy, qz, qw], dtype=float)
+    if not np.all(np.isfinite(vals)):
+        raise RuntimeError(f"Pose contains NaN/Inf: {vals.tolist()}")
+
+    # Uses your existing helper (expects x,y,z,w)
+    R = _quat_xyzw_to_rotmat(qx, qy, qz, qw)
+
+    T = np.eye(4, dtype=float)
+    T[:3, :3] = R
+    T[:3, 3] = [px, py, pz]
+
+    if not np.all(np.isfinite(T)):
+        raise RuntimeError("Computed transform contains NaN/Inf")
+
+    return T
+
+
+def get_needle_tip_pos_in_tracker(
     needle_pose_in_tracker: Tuple[float, float, float, float, float, float, float],
     needle_tip_offset_mm: np.ndarray,
     position_unit: str = "m",
@@ -425,13 +457,13 @@ def compute_needle_tip_position_in_tracker(
     return tip_pos_in_tracker
 
 
-def compute_image_plane_relative_motion_from_points(
-    image_plane_pose_in_tracker: Tuple[float, float, float, float, float, float, float],
+def align_image_to_needle_axis(
+    image_pose_in_tracker: Tuple[float, float, float, float, float, float, float],
     needle_marker_origin_in_tracker: np.ndarray,
     needle_tip_pos_in_tracker: np.ndarray,
     position_unit: str = "m",
 ) -> np.ndarray:
-    """Compute relative motion (target-from-current) for the image plane.
+    """Compute the target pose in tracker after aligning the image plane to the needle axis.
 
     Goal:
       - Move/rotate the image plane so that it contains both points:
@@ -449,22 +481,22 @@ def compute_image_plane_relative_motion_from_points(
         P0 lies on the plane and (by construction) P1 lies on the plane.
 
     Args:
-        image_plane_pose_in_tracker: Current image plane pose in tracker frame as
+        image_pose_in_tracker: Current image plane pose in tracker frame as
             (px, py, pz, qx, qy, qz, qw) with ROS quaternion order (x,y,z,w).
         needle_marker_origin_in_tracker: (3,) point P0 in tracker frame.
         needle_tip_pos_in_tracker: (3,) point P1 in tracker frame.
         position_unit: Unit of the provided positions. Use "m" (default) or "mm".
 
     Returns:
-        T_target_from_current: (4,4) homogeneous transform that maps coordinates from the
-            current image-plane frame into the target image-plane frame.
+        T_target_in_tracker: (4,4) homogeneous transform in tracker that places the image-plane
+        in alignment with the needle axis.
 
     Raises:
         RuntimeError: If inputs are invalid (NaN/Inf) or the geometry is degenerate.
         ValueError: If position_unit is not supported.
     """
     # Current pose
-    px, py, pz, qx, qy, qz, qw = image_plane_pose_in_tracker
+    px, py, pz, qx, qy, qz, qw = image_pose_in_tracker
     p_cur = np.array([px, py, pz], dtype=float)
     if not np.all(np.isfinite(p_cur)):
         raise RuntimeError("Image plane current position contains NaN/Inf")
@@ -534,59 +566,55 @@ def compute_image_plane_relative_motion_from_points(
     # Target origin at the needle marker origin (plane passes through both points by construction)
     p_tgt = P0
 
-    # Relative transform: T_target_from_current = inv(T_cur) * T_tgt
-    # Where T = [R p; 0 1]. In block form:
-    #   R_rel = R_cur^T * R_tgt
-    #   p_rel = R_cur^T * (p_tgt - p_cur)
-    R_rel = R_cur.T @ R_tgt
-    p_rel = R_cur.T @ (p_tgt - p_cur)
+    # Absolute target pose in tracker: T_tracker_from_image_plane_target = [R_tgt, p_tgt]
+    T_tgt = np.eye(4, dtype=float)
+    T_tgt[:3, :3] = R_tgt
+    T_tgt[:3, 3] = p_tgt
 
-    T_rel = np.eye(4, dtype=float)
-    T_rel[:3, :3] = R_rel
-    T_rel[:3, 3] = p_rel
+    if not np.all(np.isfinite(T_tgt)):
+        raise RuntimeError("Computed target pose contains NaN/Inf")
 
-    if not np.all(np.isfinite(T_rel)):
-        raise RuntimeError("Computed relative motion contains NaN/Inf")
-
-    return T_rel
+    return T_tgt
 
 
-def compute_image_plane_inplane_centering_motion(
-    image_plane_pose_in_tracker: Tuple[float, float, float, float, float, float, float],
+def center_needle_in_image(
+    image_pose_in_tracker: Tuple[float, float, float, float, float, float, float],
     needle_marker_origin_in_tracker: np.ndarray,
     needle_tip_pos_in_tracker: np.ndarray,
     x_center_in_plane: float = 0.0,
-    reference: str = "midpoint",
+    y_target_in_plane: float = 0.0,
+    reference: str = "tip",
     position_unit: str = "m",
 ) -> np.ndarray:
-    """Compute an additional *in-plane* relative motion to center the needle on the plane's vertical center line.
+    """Compute an additional *in-plane* relative motion to center the needle tip at a desired in-plane location.
 
     Context:
-      - You already oriented the image plane so the needle lies in the plane.
-      - Now you want to translate the plane *within its own xOy plane* (no rotation) so that the needle is
-        on the plane's vertical center line, i.e., the line x = x_center_in_plane in the plane frame.
-      - The plane's +Y axis direction is preserved automatically because this is a pure translation.
+      - You already oriented the image plane so the needle axis lies in the plane.
+      - Now you want to translate the plane *within its own xOy plane* (no rotation) so that the
+        *needle tip* appears at a desired in-image location.
 
     Practical interpretation:
-      - "Vertical center line" means the plane-frame y-axis direction, and the center line is defined by
-        x = constant.
-      - This function computes a translation along the plane X axis such that a chosen needle reference
-        point has x-coordinate equal to `x_center_in_plane` when expressed in the plane frame.
+      - The needle tip is projected into the current plane frame.
+      - We then translate the plane along its +X and +Y axes so that the tip's plane-frame coordinates
+        become:
+            x = x_center_in_plane   (center line)
+            y = y_target_in_plane   (user-controlled depth/along-plane position)
 
     Args:
-        image_plane_pose_in_tracker: Current image plane pose in tracker frame as
+        image_pose_in_tracker: Current image plane pose in tracker frame as
             (px, py, pz, qx, qy, qz, qw) with ROS quaternion order (x,y,z,w).
         needle_marker_origin_in_tracker: Needle marker origin point P0 in tracker frame (3,).
         needle_tip_pos_in_tracker: Needle tip point P1 in tracker frame (3,).
-        x_center_in_plane: Desired x coordinate of the needle reference point in the plane frame.
+        x_center_in_plane: Desired x coordinate of the needle tip in the plane frame.
             Use 0.0 if the plane frame origin is at the image horizontal center.
-        reference: Which needle point to center. One of: "origin", "tip", "midpoint" (default).
+        y_target_in_plane: Desired y coordinate of the needle tip in the plane frame.
+            Use 0.0 if the plane frame origin is at the image vertical center.
+        reference: Kept for backward compatibility. Must be "tip".
         position_unit: Unit of the provided positions. Use "m" (default) or "mm".
 
     Returns:
-        T_target_from_current: (4,4) homogeneous transform representing the desired *relative* motion
-            from current image-plane frame to target image-plane frame.
-            This is a pure translation in the current plane frame: +dx along X.
+        T_target_in_tracker: (4,4) homogeneous transform of the *target image plane pose* in the tracker frame.
+            This is a pure translation along the plane's +X and +Y axes; orientation is unchanged.
 
     Raises:
         RuntimeError: If inputs are invalid or degenerate.
@@ -596,7 +624,7 @@ def compute_image_plane_inplane_centering_motion(
         raise ValueError("position_unit must be 'm' or 'mm'")
 
     # Current plane pose
-    px, py, pz, qx, qy, qz, qw = image_plane_pose_in_tracker
+    px, py, pz, qx, qy, qz, qw = image_pose_in_tracker
     p_cur = np.array([px, py, pz], dtype=float)
     if not np.all(np.isfinite(p_cur)):
         raise RuntimeError("Image plane current position contains NaN/Inf")
@@ -611,14 +639,9 @@ def compute_image_plane_inplane_centering_motion(
         raise RuntimeError("Needle points contain NaN/Inf")
 
     ref = reference.strip().lower()
-    if ref == "origin":
-        P_ref = P0
-    elif ref == "tip":
-        P_ref = P1
-    elif ref == "midpoint":
-        P_ref = 0.5 * (P0 + P1)
-    else:
-        raise ValueError("reference must be one of: 'origin', 'tip', 'midpoint'")
+    if ref not in ("tip", "needle_tip"):
+        raise ValueError("center_needle_in_image is intended to center the needle tip; set reference='tip'.")
+    P_ref = P1
 
     # Express the reference point in the *current plane frame*.
     # p_plane = R^T (p_world - p_origin)
@@ -636,16 +659,23 @@ def compute_image_plane_inplane_centering_motion(
         )
 
     x_ref = float(p_ref_plane[0])
+    y_ref = float(p_ref_plane[1])
     dx = x_ref - float(x_center_in_plane)
+    dy = y_ref - float(y_target_in_plane)
 
-    # Relative transform in the *current* plane frame is a pure translation along +X by dx.
-    T_rel = np.eye(4, dtype=float)
-    T_rel[0, 3] = dx
+    # Target pose in tracker: same orientation, translated along the plane +X and +Y axes.
+    x_axis_tracker = R_cur[:, 0]
+    y_axis_tracker = R_cur[:, 1]
+    p_tgt = p_cur + dx * x_axis_tracker + dy * y_axis_tracker
 
-    if not np.all(np.isfinite(T_rel)):
-        raise RuntimeError("Computed in-plane centering motion contains NaN/Inf")
+    T_tgt = np.eye(4, dtype=float)
+    T_tgt[:3, :3] = R_cur
+    T_tgt[:3, 3] = p_tgt
 
-    return T_rel
+    if not np.all(np.isfinite(T_tgt)):
+        raise RuntimeError("Computed target pose contains NaN/Inf")
+
+    return T_tgt
 
 
 def get_planning_group_name(robot: MoveItPy) -> str:
@@ -826,7 +856,7 @@ def main() -> None:
         with robot.get_planning_scene_monitor().read_only() as scene:
             scene.current_state.update()
             transform_matrix = scene.current_state.get_global_link_transform(tip_link)
-            current_pose = scene.current_state.get_pose(tip_link)
+            current_ee_pose = scene.current_state.get_pose(tip_link)
 
         # Extract and normalize local coordinate frame
         rotation_matrix = transform_matrix[:3, :3]
@@ -842,18 +872,37 @@ def main() -> None:
                 f"quat(xyzw)=({qx:+.5f}, {qy:+.5f}, {qz:+.5f}, {qw:+.5f})"
             )
 
-        # Report instrument poses
-        needle_pose = get_instrument_pose(instrument="needle", timeout_sec=2.0)
-        tip_offset = load_needle_tip_offset_mm("./calibration/needle_1_tip_offset.json")
-        needle_tip_pose = compute_needle_tip_position_in_tracker(needle_pose, tip_offset)
-        probe_pose = get_instrument_pose(instrument="us_probe", timeout_sec=2.0)
-
-        eye2hand = load_hand_eye_T_c2g("./calibration/hand_eye_20251228_124205.json")
-
+        # Report poses
+        needle_pose = read_instrument_pose(instrument="needle", timeout_sec=2.0)
         logger.info(_fmt_pose("Needle (tracker)", needle_pose))
+
+        tip_offset = load_needle_tip_offset_mm("./calibration/needle_1_tip_offset.json")
+        needle_tip_pose = get_needle_tip_pos_in_tracker(needle_pose, tip_offset)
         logger.info(f"Needle tip (tracker): {needle_tip_pose}")
+
+        probe_pose = read_instrument_pose(instrument="us_probe", timeout_sec=2.0)
         logger.info(_fmt_pose("Probe  (tracker)", probe_pose))
-        logger.info(f"Eye to hand: {eye2hand}")
+
+        probe_in_ee = load_hand_eye_transform("./calibration/hand_eye_20251228_124205.json")
+        logger.info(f"Eye to hand: {probe_in_ee}")
+
+        image_in_probe = load_probe_image_transform("./calibration/PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20251212_144952_SRIL.xml")
+        logger.info(f"image to probe: {image_in_probe}")
+
+        # Pipeline for finding needle in a static method
+        image_in_tracker = probe_pose @ image_in_probe
+        image_pose_aligned = align_image_to_needle_axis(image_in_tracker, needle_pose[0:3], needle_tip_pose[0:3])
+        image_pose_centered = center_needle_in_image(image_pose_aligned, needle_pose[0:3], needle_tip_pose[0:3])
+
+        # image2hand = image2probe @ probe_in_ee
+
+        # Calibrate tracker frame and robot base frame
+        tracker_in_base = cur_ee_pose @ quat_to_T(probe_in_ee) @ np.linalg.inv(quat_to_T(probe_pose))
+
+        ee_target_pose_in_base = tracker_in_base @ quat_to_T(probe_pose) @ np.linalg.inv(quat_to_T(probe_in_ee))
+        logger.info(f"Target pose if EE in base: {ee_target_pose_in_base}")
+
+
 
     except Exception as e:
         logger.error(f"Square trajectory execution failed: {e}")
