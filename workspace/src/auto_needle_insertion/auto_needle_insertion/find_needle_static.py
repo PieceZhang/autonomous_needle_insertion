@@ -1108,12 +1108,24 @@ def main() -> None:
         #         [-0.985577 , -0.026049 , 0.237064 , -0.069138901],
         #         [0 , 0 , 0 , 1],
         # ], dtype=float)
+        # image_in_probe = np.array([
+        #     [0.107175, 0.872407, 0.476885, 0.114707699],
+        #     [-0.211703, 0.488672, -0.846393, 0.052905636],
+        #     [-0.971440, -0.010246, 0.237064, -0.069138901],
+        #     [0.0, 0.0, 0.0, 1.0],
+        # ], dtype=float)
+        # image_in_probe = np.array([
+        #     [0.0254156, 0.8490541, 0.5276912, 0.0876791],
+        #     [-0.0739174, 0.5280166, -0.8460127, 0.0255441],
+        #     [-0.9969407, -0.0175038, 0.0761794, -0.0664658],
+        #     [0.0, 0.0, 0.0, 1.0]
+        # ], dtype=float)
         image_in_probe = np.array([
-            [0.107175, 0.872407, 0.476885, 0.114707699],
-            [-0.211703, 0.488672, -0.846393, 0.052905636],
-            [-0.971440, -0.010246, 0.237064, -0.069138901],
-            [0.0, 0.0, 0.0, 1.0],
-        ], dtype=float)
+            [0.02541557, 0.84905477, 0.52769313, 0.08767910],
+            [-0.07391722, 0.52801478, -0.84601220, 0.02554410],
+            [-0.99694047, -0.01750372, 0.07617956, -0.06646580],
+            [0.0, 0.0, 0.0, 1.0]
+        ], dtype=np.float64)
         image_in_ee = probe_in_ee @ image_in_probe
         logger.info(f"Image in EE: {image_in_ee}")
         needle_tip_position = get_needle_tip_pos_in_tracker(needle_pose, needle_tip_offset)
@@ -1128,7 +1140,7 @@ def main() -> None:
         # logger.info(f"image in tracker: {image_in_tracker}")
         image_in_tracker_after_alignment = align_image_to_needle_axis(image_in_tracker, needle_pose[0:3], needle_tip_position)
         # logger.info(f"image pose when aligned: {image_in_tracker_after_alignment}")
-        image_in_tracker_after_centering = center_needle_in_image(image_in_tracker_after_alignment, needle_pose[0:3], needle_tip_position, x_center_in_plane=0.0, y_target_in_plane=0.050)
+        image_in_tracker_after_centering = center_needle_in_image(image_in_tracker_after_alignment, needle_pose[0:3], needle_tip_position, x_center_in_plane=0.0, y_target_in_plane=0.060)
         # logger.info(f"image pose when centered: {image_in_tracker_after_centering}")
 
         ee_target_pose_in_base = tracker_in_base @ image_in_tracker_after_centering @ np.linalg.inv(image_in_ee)
