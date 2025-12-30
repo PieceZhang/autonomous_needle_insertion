@@ -113,7 +113,7 @@ def load_probe_image_transform(calibration_xml_path: str | Path) -> Tuple[np.nda
         raise RuntimeError("Probe -> Image inverse contains NaN/Inf")
 
     # return T_probe_from_image, T_image_from_probe
-    return T_probe_from_image_m
+    return T_image_from_probe_m
 
 
 # --- Needle tip offset helper ---
@@ -547,6 +547,80 @@ def homogeneous_to_pose_stamped(
 
     ps.pose = homogeneous_to_pose_msg(T)
     return ps
+
+
+def probe_from_transducer_origin_pose(
+    T_probe_from_image: np.ndarray,
+    T_top_from_image: np.ndarray,
+    T_to_from_top: np.ndarray,
+    *,
+    translation_in: str = "mm",
+    translation_out: str = "m",
+    orthonormalize_rotation: bool = False,
+):
+    """
+    Compute the pose of the *physical* image-plane frame (TransducerOrigin, TO)
+    expressed in the Probe frame.
+
+    Inputs (PLUS/fCal conventions):
+      - T_probe_from_image: Transform From="Image" To="Probe"
+      - T_top_from_image:  Transform From="Image" To="TransducerOriginPixel" (TOP)
+      - T_to_from_top:     Transform From="TransducerOriginPixel" To="TransducerOrigin" (TO)
+        This typically encodes pixel spacing (mm per pixel), akin to standard pixel spacing concepts.  [oai_citation:1‡GitHub](https://github.com/PlusToolkit/PlusLib/issues/370)
+
+    Math:
+      T_to_from_image = T_to_from_top @ T_top_from_image
+      T_probe_from_to = T_probe_from_image @ inv(T_to_from_image)
+
+    Returns:
+      (T_probe_from_to, pose_dict) where pose_dict has:
+        position: (x,y,z) in translation_out
+        orientation: quaternion (x,y,z,w)
+
+    Notes:
+      - If your T_probe_from_image translation is already in mm (typical), keep translation_in="mm".
+      - If you need a strictly rigid pose (rotation orthonormal), set orthonormalize_rotation=True.
+    """
+    _check_hmat(T_probe_from_image, "T_probe_from_image")
+    _check_hmat(T_top_from_image, "T_top_from_image")
+    _check_hmat(T_to_from_top, "T_to_from_top")
+
+    T_probe_from_image = np.asarray(T_probe_from_image, dtype=float)
+    T_top_from_image = np.asarray(T_top_from_image, dtype=float)
+    T_to_from_top = np.asarray(T_to_from_top, dtype=float)
+
+    # Image -> TransducerOrigin (metric) via origin shift + spacing
+    T_to_from_image = T_to_from_top @ T_top_from_image
+
+    # Probe <- TO
+    T_probe_from_to = T_probe_from_image @ np.linalg.inv(T_to_from_image)
+
+    R = T_probe_from_to[:3, :3].copy()
+    t = T_probe_from_to[:3, 3].copy()
+
+    if orthonormalize_rotation:
+        R = _closest_rotation_svd(R)
+        T_probe_from_to[:3, :3] = R
+
+    q_xyzw = _rot_to_quat_xyzw(R)
+
+    # Unit conversion for translation
+    scale = 1.0
+    if translation_in == "mm" and translation_out == "m":
+        scale = 1e-3
+    elif translation_in == "m" and translation_out == "mm":
+        scale = 1e3
+    elif translation_in == translation_out:
+        scale = 1.0
+    else:
+        raise ValueError(f"Unsupported translation conversion: {translation_in} -> {translation_out}")
+
+    pose = {
+        "position": {"x": float(t[0] * scale), "y": float(t[1] * scale), "z": float(t[2] * scale)},
+        "orientation": {"x": float(q_xyzw[0]), "y": float(q_xyzw[1]), "z": float(q_xyzw[2]), "w": float(q_xyzw[3])},
+    }
+
+    return T_probe_from_to, pose
 
 
 def get_needle_tip_pos_in_tracker(
@@ -1007,42 +1081,60 @@ def main() -> None:
                 f"quat(xyzw)=({qx:+.5f}, {qy:+.5f}, {qz:+.5f}, {qw:+.5f})"
             )
 
-        # Report poses
+        # Load calibrations
+        image_in_probe = load_probe_image_transform("./calibration/PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20251212_144952_SRIL.xml")
+        # logger.info(f"probe in image: {image_in_probe}")
+        # logger.info(f"image in probe: {np.linalg.inv(image_in_probe)}")
+        probe_in_ee = load_hand_eye_transform("./calibration/hand_eye_20251228_124205.json")
+        # logger.info(f"probe in EE: {probe_in_ee}")
+        needle_tip_offset = load_needle_tip_offset_mm("./calibration/needle_1_tip_offset.json")
+
+        # Acquire poses
         needle_pose = read_instrument_pose(instrument="needle", timeout_sec=2.0)
         # logger.info(_fmt_pose("Needle (tracker)", needle_pose))
-
-        tip_offset = load_needle_tip_offset_mm("./calibration/needle_1_tip_offset.json")
-        needle_tip_pose = get_needle_tip_pos_in_tracker(needle_pose, tip_offset)
-        # logger.info(f"Needle tip (tracker): {needle_tip_pose}")
-
         probe_pose = read_instrument_pose(instrument="us_probe", timeout_sec=2.0)
-        # logger.info(_fmt_pose("Probe  (tracker)", probe_pose))
+        # logger.info(f"probe pose: {quat_to_T(probe_pose)}")
 
-        probe_in_ee = load_hand_eye_transform("./calibration/hand_eye_20251228_124205.json")
-        # logger.info(f"Eye to hand: {probe_in_ee}")
 
-        image_in_probe = load_probe_image_transform("./calibration/PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20251212_144952_SRIL.xml")
-        # logger.info(f"image in probe: {image_in_probe}")
-
-        # Pipeline for finding needle in a static method
-        image_in_tracker = quat_to_T(probe_pose) @ image_in_probe
-        # logger.info(f"image in tracker: {image_in_tracker}")
-        image_pose_aligned = align_image_to_needle_axis(image_in_tracker, needle_pose[0:3], needle_tip_pose[0:3])
-        # logger.info(f"image pose when aligned: {image_pose_aligned}")
-        image_pose_centered = center_needle_in_image(image_pose_aligned, needle_pose[0:3], needle_tip_pose[0:3])
-        # logger.info(f"image pose when centered: {image_pose_centered}")
-
-        # image2hand = image2probe @ probe_in_ee
+        # image_in_probe = np.array([
+        #     [0.107175, 0.872407, 0.476885, 0.103681629],
+        #     [-0.211703, 0.488672, -0.846393, 0.071431616],
+        #     [-0.971440, -0.010246, 0.237064, 0.019185049],
+        #     [0.0, 0.0, 0.0, 1.0],
+        # ], dtype=float)
+        # image_in_probe = np.array([
+        #         [0.123036 , 0.862034 , 0.476885 , 0.114707699],
+        #         [-0.206725 , 0.478400 , -0.846390 , 0.052905636],
+        #         [-0.985577 , -0.026049 , 0.237064 , -0.069138901],
+        #         [0 , 0 , 0 , 1],
+        # ], dtype=float)
+        image_in_probe = np.array([
+            [0.107175, 0.872407, 0.476885, 0.114707699],
+            [-0.211703, 0.488672, -0.846393, 0.052905636],
+            [-0.971440, -0.010246, 0.237064, -0.069138901],
+            [0.0, 0.0, 0.0, 1.0],
+        ], dtype=float)
+        image_in_ee = probe_in_ee @ image_in_probe
+        logger.info(f"Image in EE: {image_in_ee}")
+        needle_tip_position = get_needle_tip_pos_in_tracker(needle_pose, needle_tip_offset)
+        # logger.info(f"Needle tip (tracker): {needle_tip_position}")
 
         # Calibrate tracker frame and robot base frame
         tracker_in_base = current_ee_pose @ probe_in_ee @ np.linalg.inv(quat_to_T(probe_pose))
-        # logger.info(f"current ee pose: {current_ee_pose}")
         # logger.info(f"tracker in base: {tracker_in_base}")
+        logger.info(f"current ee pose: {current_ee_pose}")
 
-        ee_target_pose_in_base = tracker_in_base @ quat_to_T(probe_pose) @ np.linalg.inv(probe_in_ee)
-        # logger.info(f"Target pose of EE in base: {ee_target_pose_in_base}")
+        image_in_tracker = quat_to_T(probe_pose) @ image_in_probe
+        # logger.info(f"image in tracker: {image_in_tracker}")
+        image_in_tracker_after_alignment = align_image_to_needle_axis(image_in_tracker, needle_pose[0:3], needle_tip_position)
+        # logger.info(f"image pose when aligned: {image_in_tracker_after_alignment}")
+        image_in_tracker_after_centering = center_needle_in_image(image_in_tracker_after_alignment, needle_pose[0:3], needle_tip_position, x_center_in_plane=0.0, y_target_in_plane=0.050)
+        # logger.info(f"image pose when centered: {image_in_tracker_after_centering}")
 
-        pose_goal = homogeneous_to_pose_stamped(ee_target_pose_in_base, "base")
+        ee_target_pose_in_base = tracker_in_base @ image_in_tracker_after_centering @ np.linalg.inv(image_in_ee)
+        logger.info(f"Target pose of EE in base: {ee_target_pose_in_base}")
+
+        pose_goal = homogeneous_to_pose_stamped(ee_target_pose_in_base, planning_frame)
         arm.set_start_state_to_current_state()
         arm.set_goal_state(pose_stamped_msg=pose_goal, pose_link=tip_link)
 
