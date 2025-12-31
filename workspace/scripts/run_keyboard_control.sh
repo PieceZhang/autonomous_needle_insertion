@@ -29,4 +29,4 @@ echo "Keep this terminal focused to send keystrokes to the node."
 echo
 
 # Foreground (keeps stdin/tty for keystrokes)
-ros2 launch auto_needle_insertion dataset.launch.py
+ros2 launch auto_needle_insertion dataset.launch.py mode:=keyboard_control

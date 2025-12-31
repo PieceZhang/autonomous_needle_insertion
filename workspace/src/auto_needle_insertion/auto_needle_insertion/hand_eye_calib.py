@@ -101,7 +101,7 @@ MAX_ACCELERATION_SCALING = 0.20
 
 # Allow time for the planning scene to sync joint states
 PLANNING_SCENE_SYNC_DELAY = 0.5  # seconds
-POST_EXECUTION_SETTLE_SEC = 0.75  # small wait to ensure state update after motion
+POST_EXECUTION_SETTLE_SEC = 1  # small wait to ensure state update after motion
 
 # Controller fallback order (hardware -> default -> sim/common)
 CONTROLLER_NAMES = [
@@ -114,7 +114,7 @@ CONTROLLER_NAMES = [
 PREFERRED_TIP_LINKS = ["tool0", "ee_link"]
 
 # PoseStamped topic from ndi_ros2_driver pose_broadcaster for the tracker
-US_TRACKER_TOPIC = "/ndi/us_tracker_pose"
+US_TRACKER_TOPIC = "/ndi/us_probe_pose"
 
 # ---------------------- Logging ----------------------
 logging.basicConfig(level=logging.INFO)
@@ -505,8 +505,8 @@ def _default_local_deltas() -> List[LocalDelta]:
       Each rotation step includes a small orthogonal translation to keep the scene changing.
     """
     deg = math.radians
-    t = 0.02           # 2 cm per step (local frame)
-    r = deg(5.0)       # ~3 degrees per step (local frame)
+    t = 0.05           # 2 cm per step (local frame)
+    r = deg(3.0)       # ~3 degrees per step (local frame)
 
     deltas: List[LocalDelta] = []
 
@@ -564,16 +564,22 @@ def _default_local_deltas() -> List[LocalDelta]:
 
             deltas.append(LocalDelta(dx, dy, dz, droll, dpitch, dyaw))
 
-    steps = 8
+    steps = 15
     # +/-40° about roll (8 × +5°)
     add_rot_sweep(axis='roll', steps=steps, sign=-1, trans_axis='y')
     add_rot_sweep(axis='roll', steps=steps, sign= 1, trans_axis='y')
+    add_rot_sweep(axis='roll', steps=steps, sign= 1, trans_axis='y')
+    add_rot_sweep(axis='roll', steps=steps, sign=-1, trans_axis='y')
     # +/−45° about pitch
     add_rot_sweep(axis='pitch', steps=steps, sign=-1, trans_axis='x')
     add_rot_sweep(axis='pitch', steps=steps, sign= 1, trans_axis='x')
+    add_rot_sweep(axis='pitch', steps=steps, sign= 1, trans_axis='x')
+    add_rot_sweep(axis='pitch', steps=steps, sign=-1, trans_axis='x')
     # +/-45° about yaw
     add_rot_sweep(axis='yaw', steps=steps, sign=-1, trans_axis='z')
     add_rot_sweep(axis='yaw', steps=steps, sign= 1, trans_axis='z')
+    add_rot_sweep(axis='yaw', steps=steps, sign= 1, trans_axis='z')
+    add_rot_sweep(axis='yaw', steps=steps, sign=-1, trans_axis='z')
 
     return deltas
 
