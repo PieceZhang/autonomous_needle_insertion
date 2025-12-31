@@ -32,6 +32,7 @@ import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped, Pose
 from moveit.core.robot_state import RobotState
+from moveit.core.kinematic_constraints import construct_link_constraint
 from moveit.planning import MoveItPy, PlanRequestParameters
 
 # Module constants
@@ -1085,7 +1086,7 @@ def main() -> None:
         image_in_probe = load_probe_image_transform("./calibration/PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20251212_144952_SRIL.xml")
         # logger.info(f"probe in image: {image_in_probe}")
         # logger.info(f"image in probe: {np.linalg.inv(image_in_probe)}")
-        probe_in_ee = load_hand_eye_transform("./calibration/hand_eye_20251228_124205.json")
+        probe_in_ee = load_hand_eye_transform("./calibration/hand_eye_20251231_075559.json")
         # logger.info(f"probe in EE: {probe_in_ee}")
         needle_tip_offset = load_needle_tip_offset_mm("./calibration/needle_1_tip_offset.json")
 
@@ -1095,31 +1096,6 @@ def main() -> None:
         probe_pose = read_instrument_pose(instrument="us_probe", timeout_sec=2.0)
         # logger.info(f"probe pose: {quat_to_T(probe_pose)}")
 
-
-        # image_in_probe = np.array([
-        #     [0.107175, 0.872407, 0.476885, 0.103681629],
-        #     [-0.211703, 0.488672, -0.846393, 0.071431616],
-        #     [-0.971440, -0.010246, 0.237064, 0.019185049],
-        #     [0.0, 0.0, 0.0, 1.0],
-        # ], dtype=float)
-        # image_in_probe = np.array([
-        #         [0.123036 , 0.862034 , 0.476885 , 0.114707699],
-        #         [-0.206725 , 0.478400 , -0.846390 , 0.052905636],
-        #         [-0.985577 , -0.026049 , 0.237064 , -0.069138901],
-        #         [0 , 0 , 0 , 1],
-        # ], dtype=float)
-        # image_in_probe = np.array([
-        #     [0.107175, 0.872407, 0.476885, 0.114707699],
-        #     [-0.211703, 0.488672, -0.846393, 0.052905636],
-        #     [-0.971440, -0.010246, 0.237064, -0.069138901],
-        #     [0.0, 0.0, 0.0, 1.0],
-        # ], dtype=float)
-        # image_in_probe = np.array([
-        #     [0.0254156, 0.8490541, 0.5276912, 0.0876791],
-        #     [-0.0739174, 0.5280166, -0.8460127, 0.0255441],
-        #     [-0.9969407, -0.0175038, 0.0761794, -0.0664658],
-        #     [0.0, 0.0, 0.0, 1.0]
-        # ], dtype=float)
         image_in_probe = np.array([
             [0.02541557, 0.84905477, 0.52769313, 0.08767910],
             [-0.07391722, 0.52801478, -0.84601220, 0.02554410],
@@ -1140,7 +1116,7 @@ def main() -> None:
         # logger.info(f"image in tracker: {image_in_tracker}")
         image_in_tracker_after_alignment = align_image_to_needle_axis(image_in_tracker, needle_pose[0:3], needle_tip_position)
         # logger.info(f"image pose when aligned: {image_in_tracker_after_alignment}")
-        image_in_tracker_after_centering = center_needle_in_image(image_in_tracker_after_alignment, needle_pose[0:3], needle_tip_position, x_center_in_plane=0.0, y_target_in_plane=0.060)
+        image_in_tracker_after_centering = center_needle_in_image(image_in_tracker_after_alignment, needle_pose[0:3], needle_tip_position, x_center_in_plane=0.0, y_target_in_plane=0.080)
         # logger.info(f"image pose when centered: {image_in_tracker_after_centering}")
 
         ee_target_pose_in_base = tracker_in_base @ image_in_tracker_after_centering @ np.linalg.inv(image_in_ee)
@@ -1148,7 +1124,19 @@ def main() -> None:
 
         pose_goal = homogeneous_to_pose_stamped(ee_target_pose_in_base, planning_frame)
         arm.set_start_state_to_current_state()
-        arm.set_goal_state(pose_stamped_msg=pose_goal, pose_link=tip_link)
+        pos = pose_goal.pose.position
+        ori = pose_goal.pose.orientation
+        goal_c = construct_link_constraint(
+            link_name=tip_link,
+            source_frame=planning_frame,
+            cartesian_position=[pos.x, pos.y, pos.z],
+            cartesian_position_tolerance=1e-4,  # meters (start here)
+            orientation=[ori.x, ori.y, ori.z, ori.w],
+            orientation_tolerance=1e-4,  # radians (~0.057°) (start here)
+        )
+        arm.set_goal_state(motion_plan_constraints=[goal_c])
+
+        # arm.set_goal_state(pose_stamped_msg=pose_goal, pose_link=tip_link)
 
         # Setup conservative planning parameters
         plan_params = PlanRequestParameters(robot, "")
