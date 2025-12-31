@@ -99,22 +99,28 @@ def load_probe_image_transform(calibration_xml_path: str | Path) -> Tuple[np.nda
 
     # Image -> Probe (mm)
     T_probe_from_image = find_transform("Image", "Probe")
+    T_top_from_image = find_transform("Image", "TransducerOriginPixel")
+    T_to_from_top = find_transform("TransducerOriginPixel", "TransducerOrigin")
 
-    # Convert translation to meters
-    T_probe_from_image_m = T_probe_from_image.copy()
-    T_probe_from_image_m[:3, 3] *= 1e-3
+    return T_probe_from_image, T_top_from_image, T_to_from_top
 
-    # Probe -> Image (inverse) (mm)
-    try:
-        T_image_from_probe_m = np.linalg.inv(T_probe_from_image_m)
-    except np.linalg.LinAlgError as e:
-        raise RuntimeError(f"Probe -> Image inverse failed (singular matrix): {e}") from e
 
-    if not np.all(np.isfinite(T_image_from_probe_m)):
-        raise RuntimeError("Probe -> Image inverse contains NaN/Inf")
+def project_to_se3(T):
+    A = T[:3, :3]
+    t = T[:3, 3].copy()
 
-    # return T_probe_from_image, T_image_from_probe
-    return T_image_from_probe_m
+    U, S, Vt = np.linalg.svd(A)
+    R = U @ Vt
+
+    # enforce a proper rotation (det = +1)
+    if np.linalg.det(R) < 0:
+        U[:, -1] *= -1
+        R = U @ Vt
+
+    Tout = np.eye(4)
+    Tout[:3, :3] = R
+    Tout[:3, 3] = t
+    return Tout
 
 
 # --- Needle tip offset helper ---
@@ -373,45 +379,6 @@ def _quat_xyzw_to_rotmat(qx: float, qy: float, qz: float, qw: float) -> np.ndarr
         raise RuntimeError("Rotation matrix contains NaN/Inf")
 
     return R
-
-
-def pose_to_homogeneous(pose: Pose) -> np.ndarray:
-    """Convert geometry_msgs/Pose to a 4x4 homogeneous transform.
-
-    Quaternion convention: (x, y, z, w) as in ROS.
-    """
-    # Translation
-    p = np.array([pose.position.x, pose.position.y, pose.position.z], dtype=float)
-
-    # Quaternion (x, y, z, w)
-    q = np.array([pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w], dtype=float)
-    if not np.all(np.isfinite(q)):
-        raise RuntimeError("Pose quaternion contains NaN/Inf")
-
-    n = float(np.dot(q, q))
-    if n < 1e-12:
-        raise RuntimeError("Pose quaternion norm too small")
-    q /= np.sqrt(n)
-
-    x, y, z, w = q
-    xx, yy, zz = x*x, y*y, z*z
-    xy, xz, yz = x*y, x*z, y*z
-    wx, wy, wz = w*x, w*y, w*z
-
-    R = np.array([
-        [1.0 - 2.0*(yy + zz), 2.0*(xy - wz),       2.0*(xz + wy)],
-        [2.0*(xy + wz),       1.0 - 2.0*(xx + zz), 2.0*(yz - wx)],
-        [2.0*(xz - wy),       2.0*(yz + wx),       1.0 - 2.0*(xx + yy)],
-    ], dtype=float)
-
-    T = np.eye(4, dtype=float)
-    T[:3, :3] = R
-    T[:3, 3] = p
-
-    if not np.all(np.isfinite(T)):
-        raise RuntimeError("Homogeneous transform contains NaN/Inf")
-
-    return T
 
 
 def quat_to_T(quat: Tuple[float, float, float, float, float, float, float]) -> np.ndarray:
@@ -1065,61 +1032,36 @@ def main() -> None:
         # Get current end-effector pose and transform
         with robot.get_planning_scene_monitor().read_only() as scene:
             scene.current_state.update()
-            transform_matrix = scene.current_state.get_global_link_transform(tip_link)
-            current_ee_pose = pose_to_homogeneous(scene.current_state.get_pose(tip_link))
+            current_ee_transform = scene.current_state.get_global_link_transform(tip_link)
 
-        # Extract and normalize local coordinate frame
-        rotation_matrix = transform_matrix[:3, :3]
-        x_axis = rotation_matrix[:, 0] / np.linalg.norm(rotation_matrix[:, 0])
-        y_axis = rotation_matrix[:, 1] / np.linalg.norm(rotation_matrix[:, 1])
-        origin = transform_matrix[:3, 3]
-
-        # Read and report tracker poses for probe and needle
-        def _fmt_pose(name: str, pose: Tuple[float, float, float, float, float, float, float]) -> str:
-            px, py, pz, qx, qy, qz, qw = pose
-            return (
-                f"{name}: pos=({px:+.4f}, {py:+.4f}, {pz:+.4f}) m, "
-                f"quat(xyzw)=({qx:+.5f}, {qy:+.5f}, {qz:+.5f}, {qw:+.5f})"
-            )
+        # Calculate transducer origin (image plane) in probe frame
+        image_in_probe, image_in_top, top_in_to  = load_probe_image_transform("./calibration/PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20251230_SRIL.xml")
+        to_in_probe = image_in_probe @ np.linalg.inv(image_in_top) @ np.linalg.inv(top_in_to)
+        to_in_probe[:3, 3] *= 1e-3
+        to_in_probe = project_to_se3(to_in_probe)
+        logger.info(f"TO in probe: {to_in_probe}")
 
         # Load calibrations
-        image_in_probe = load_probe_image_transform("./calibration/PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20251212_144952_SRIL.xml")
-        # logger.info(f"probe in image: {image_in_probe}")
-        # logger.info(f"image in probe: {np.linalg.inv(image_in_probe)}")
         probe_in_ee = load_hand_eye_transform("./calibration/hand_eye_20251231_075559.json")
-        # logger.info(f"probe in EE: {probe_in_ee}")
         needle_tip_offset = load_needle_tip_offset_mm("./calibration/needle_1_tip_offset.json")
 
         # Acquire poses
         needle_pose = read_instrument_pose(instrument="needle", timeout_sec=2.0)
-        # logger.info(_fmt_pose("Needle (tracker)", needle_pose))
         probe_pose = read_instrument_pose(instrument="us_probe", timeout_sec=2.0)
-        # logger.info(f"probe pose: {quat_to_T(probe_pose)}")
 
-        image_in_probe = np.array([
-            [0.02541557, 0.84905477, 0.52769313, 0.08767910],
-            [-0.07391722, 0.52801478, -0.84601220, 0.02554410],
-            [-0.99694047, -0.01750372, 0.07617956, -0.06646580],
-            [0.0, 0.0, 0.0, 1.0]
-        ], dtype=np.float64)
-        image_in_ee = probe_in_ee @ image_in_probe
-        logger.info(f"Image in EE: {image_in_ee}")
+        to_in_ee = probe_in_ee @ to_in_probe
         needle_tip_position = get_needle_tip_pos_in_tracker(needle_pose, needle_tip_offset)
-        # logger.info(f"Needle tip (tracker): {needle_tip_position}")
 
-        # Calibrate tracker frame and robot base frame
-        tracker_in_base = current_ee_pose @ probe_in_ee @ np.linalg.inv(quat_to_T(probe_pose))
-        # logger.info(f"tracker in base: {tracker_in_base}")
-        logger.info(f"current ee pose: {current_ee_pose}")
+        # Calculate tracker frame and robot base frame
+        tracker_in_base = current_ee_transform @ probe_in_ee @ np.linalg.inv(quat_to_T(probe_pose))
 
-        image_in_tracker = quat_to_T(probe_pose) @ image_in_probe
-        # logger.info(f"image in tracker: {image_in_tracker}")
-        image_in_tracker_after_alignment = align_image_to_needle_axis(image_in_tracker, needle_pose[0:3], needle_tip_position)
-        # logger.info(f"image pose when aligned: {image_in_tracker_after_alignment}")
-        image_in_tracker_after_centering = center_needle_in_image(image_in_tracker_after_alignment, needle_pose[0:3], needle_tip_position, x_center_in_plane=0.0, y_target_in_plane=0.080)
-        # logger.info(f"image pose when centered: {image_in_tracker_after_centering}")
+        to_in_tracker = quat_to_T(probe_pose) @ to_in_probe
+        image_in_tracker_after_alignment = align_image_to_needle_axis(to_in_tracker, needle_pose[0:3], needle_tip_position)
+        image_in_tracker_after_centering = center_needle_in_image(
+            image_in_tracker_after_alignment, needle_pose[0:3], needle_tip_position,
+            x_center_in_plane=0.0, y_target_in_plane=0.080)
 
-        ee_target_pose_in_base = tracker_in_base @ image_in_tracker_after_centering @ np.linalg.inv(image_in_ee)
+        ee_target_pose_in_base = tracker_in_base @ image_in_tracker_after_centering @ np.linalg.inv(to_in_ee)
         logger.info(f"Target pose of EE in base: {ee_target_pose_in_base}")
 
         pose_goal = homogeneous_to_pose_stamped(ee_target_pose_in_base, planning_frame)
@@ -1135,8 +1077,6 @@ def main() -> None:
             orientation_tolerance=1e-4,  # radians (~0.057°) (start here)
         )
         arm.set_goal_state(motion_plan_constraints=[goal_c])
-
-        # arm.set_goal_state(pose_stamped_msg=pose_goal, pose_link=tip_link)
 
         # Setup conservative planning parameters
         plan_params = PlanRequestParameters(robot, "")
