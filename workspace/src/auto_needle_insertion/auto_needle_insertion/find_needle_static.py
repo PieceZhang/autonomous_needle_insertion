@@ -18,23 +18,20 @@ Safety:
     Always verify clearance before executing trajectories on real hardware.
 """
 
-import json
 import logging
 import time
-import xml.etree.ElementTree as ET
-from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped, Pose
-from moveit.core.robot_state import RobotState
 from moveit.core.kinematic_constraints import construct_link_constraint
 from moveit.planning import MoveItPy, PlanRequestParameters
 from rclpy.node import Node
 
 from auto_needle_insertion.utils.needle import Needle
 from auto_needle_insertion.utils.optical_tracking import read_instrument_pose
+from auto_needle_insertion.utils.us_probe import USProbe
 
 # Module constants
 NODE_NAME = "auto_needle_insertion"
@@ -57,123 +54,6 @@ PREFERRED_TIP_LINKS = ["tool0", "ee_link"]
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-
-def load_probe_image_transform(calibration_xml_path: str | Path) -> Tuple[np.ndarray, np.ndarray]:
-    """Load Image->Probe (and its inverse Probe->Image) from a PLUS-style calibration XML.
-
-    Expected XML element:
-        <Transform From="Image" To="Probe" Matrix="...16 numbers..." />
-
-    PLUS/IGT conventions represent rigid transforms as 4x4 homogeneous matrices.
-    """
-    calibration_xml_path = Path(calibration_xml_path)
-    if not calibration_xml_path.exists():
-        raise FileNotFoundError(str(calibration_xml_path))
-
-    root = ET.parse(str(calibration_xml_path)).getroot()
-
-    def find_transform(frm: str, to: str) -> np.ndarray:
-        elem = root.find(f".//Transform[@From='{frm}'][@To='{to}']")
-        if elem is None:
-            raise RuntimeError(
-                f"Transform From='{frm}' To='{to}' not found in {calibration_xml_path}"
-            )
-        matrix_str = elem.get("Matrix")
-        if not matrix_str:
-            raise RuntimeError(
-                f"Transform From='{frm}' To='{to}' has no Matrix attribute in {calibration_xml_path}"
-            )
-
-        values = [float(x) for x in matrix_str.replace(",", " ").split()]
-        if len(values) != 16:
-            raise RuntimeError(
-                f"Expected 16 matrix values (4x4), got {len(values)} for From='{frm}' To='{to}'"
-            )
-
-        mat = np.array(values, dtype=float).reshape(4, 4)
-        if not np.all(np.isfinite(mat)):
-            raise RuntimeError(
-                f"Transform From='{frm}' To='{to}' contains NaN/Inf in {calibration_xml_path}"
-            )
-        return mat
-
-    # Image -> Probe (mm)
-    T_probe_from_image = find_transform("Image", "Probe")
-    T_top_from_image = find_transform("Image", "TransducerOriginPixel")
-    T_to_from_top = find_transform("TransducerOriginPixel", "TransducerOrigin")
-
-    return T_probe_from_image, T_top_from_image, T_to_from_top
-
-
-def project_to_se3(T):
-    A = T[:3, :3]
-    t = T[:3, 3].copy()
-
-    U, S, Vt = np.linalg.svd(A)
-    R = U @ Vt
-
-    # enforce a proper rotation (det = +1)
-    if np.linalg.det(R) < 0:
-        U[:, -1] *= -1
-        R = U @ Vt
-
-    Tout = np.eye(4)
-    Tout[:3, :3] = R
-    Tout[:3, 3] = t
-    return Tout
-
-
-# --- Hand-eye calibration helper ---
-def load_hand_eye_transform(json_path: str | Path) -> np.ndarray:
-    """Load hand-eye calibration result T_c2g from a JSON file.
-
-    Expected JSON schema (minimum):
-        {
-          "T_c2g": [[...],[...],[...],[...]],
-          ... optional keys like "timestamp" ...
-        }
-
-    Returns:
-        T_c2g as a (4,4) numpy array (float).
-
-    Raises:
-        FileNotFoundError: If the file does not exist.
-        RuntimeError: If the JSON is missing the expected key or has invalid content.
-    """
-    json_path = Path(json_path)
-    if not json_path.exists():
-        raise FileNotFoundError(str(json_path))
-
-    with json_path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    if not isinstance(data, dict):
-        raise RuntimeError(f"Expected a JSON object at top-level in {json_path}")
-
-    if "T_c2g" not in data:
-        raise RuntimeError(f"Missing 'T_c2g' in {json_path}")
-
-    T = data["T_c2g"]
-
-    # Accept either a 4x4 nested list or a flat list of 16 values
-    if isinstance(T, (list, tuple)) and len(T) == 16 and not any(isinstance(x, (list, tuple)) for x in T):
-        T_mat = np.array([float(x) for x in T], dtype=float).reshape(4, 4)
-    else:
-        try:
-            T_mat = np.asarray(T, dtype=float)
-        except (TypeError, ValueError) as e:
-            raise RuntimeError(f"Invalid numeric values in 'T_c2g' in {json_path}: {e}") from e
-
-        if T_mat.shape != (4, 4):
-            raise RuntimeError(
-                f"'T_c2g' must be a 4x4 matrix (nested list) in {json_path}; got shape {T_mat.shape}"
-            )
-
-    if not np.all(np.isfinite(T_mat)):
-        raise RuntimeError(f"'T_c2g' contains NaN/Inf in {json_path}")
-
-    return T_mat
 
 
 def quat_to_T(quat: Tuple[float, float, float, float, float, float, float]) -> np.ndarray:
@@ -772,23 +652,23 @@ def main() -> None:
             scene.current_state.update()
             current_ee_transform = scene.current_state.get_global_link_transform(tip_link)
 
-        # Calculate transducer origin (image plane) in probe frame
-        image_in_probe, image_in_top, top_in_to  = load_probe_image_transform("./calibration/PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20251230_SRIL.xml")
-        to_in_probe = image_in_probe @ np.linalg.inv(image_in_top) @ np.linalg.inv(top_in_to)
-        to_in_probe[:3, 3] *= 1e-3
-        to_in_probe = project_to_se3(to_in_probe)
+        us_probe = USProbe()
+        us_probe.load_calibrations(
+            "./calibration/PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20251230_SRIL.xml",
+            "./calibration/hand_eye_20251231_075559.json",
+        )
+        to_in_probe = us_probe.to_in_probe
+        to_in_ee = us_probe.to_in_ee
+        probe_in_ee = us_probe.probe_in_ee
+        if to_in_probe is None or to_in_ee is None or probe_in_ee is None:
+            raise RuntimeError("US probe calibration failed to compute TO transforms.")
         logger.info(f"TO in probe: {to_in_probe}")
-
-        # Load calibrations
-        probe_in_ee = load_hand_eye_transform("./calibration/hand_eye_20251231_075559.json")
         needle = Needle()
         needle.load_tip_offset("./calibration/needle_1_tip_offset.json")
 
         # Acquire poses
         needle_pose = needle.report_pose(timeout_sec=2.0)
         probe_pose = read_instrument_pose(instrument="us_probe", timeout_sec=2.0)
-
-        to_in_ee = probe_in_ee @ to_in_probe
         needle_tip_position = needle.tip_position_in_tracker(needle_pose)
 
         # Calculate tracker frame and robot base frame
