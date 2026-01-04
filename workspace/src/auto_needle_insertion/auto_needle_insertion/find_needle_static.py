@@ -662,13 +662,11 @@ def main() -> None:
         probe_in_ee = us_probe.probe_in_ee
         if to_in_probe is None or to_in_ee is None or probe_in_ee is None:
             raise RuntimeError("US probe calibration failed to compute TO transforms.")
-        logger.info(f"TO in probe: {to_in_probe}")
+        probe_pose = us_probe.report_pose(timeout_sec=2.0)
+
         needle = Needle()
         needle.load_tip_offset("./calibration/needle_1_tip_offset.json")
-
-        # Acquire poses
         needle_pose = needle.report_pose(timeout_sec=2.0)
-        probe_pose = read_instrument_pose(instrument="us_probe", timeout_sec=2.0)
         needle_tip_position = needle.tip_position_in_tracker(needle_pose)
 
         # Calculate tracker frame and robot base frame
