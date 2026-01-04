@@ -24,9 +24,6 @@ import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import List, Optional, Tuple
-from threading import Event
-from rclpy.qos import QoSProfile, HistoryPolicy, ReliabilityPolicy
-from rclpy.node import Node
 
 import numpy as np
 import rclpy
@@ -34,6 +31,9 @@ from geometry_msgs.msg import PoseStamped, Pose
 from moveit.core.robot_state import RobotState
 from moveit.core.kinematic_constraints import construct_link_constraint
 from moveit.planning import MoveItPy, PlanRequestParameters
+from rclpy.node import Node
+
+from auto_needle_insertion.utils.needle import Needle
 
 # Module constants
 NODE_NAME = "auto_needle_insertion"
@@ -123,55 +123,6 @@ def project_to_se3(T):
     return Tout
 
 
-# --- Needle tip offset helper ---
-def load_needle_tip_offset_mm(json_path: str | Path) -> np.ndarray:
-    """Load needle tip offset (in mm) from a JSON file.
-    Expected JSON schema:
-        {
-          "tip_offset_mm": [x, y, z],
-          ... optional metrics ...
-        }
-
-    Args:
-        json_path: Path to the JSON file.
-
-    Returns:
-        A numpy array of shape (3,) in millimeters: [x_mm, y_mm, z_mm].
-
-    Raises:
-        FileNotFoundError: If the file does not exist.
-        RuntimeError: If the JSON is missing the expected key or has invalid content.
-    """
-    json_path = Path(json_path)
-    if not json_path.exists():
-        raise FileNotFoundError(str(json_path))
-
-    with json_path.open("r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    if not isinstance(data, dict):
-        raise RuntimeError(f"Expected a JSON object at top-level in {json_path}")
-
-    if "tip_offset_mm" not in data:
-        raise RuntimeError(f"Missing 'tip_offset_mm' in {json_path}")
-
-    tip = data["tip_offset_mm"]
-    if not isinstance(tip, (list, tuple)) or len(tip) != 3:
-        raise RuntimeError(
-            f"'tip_offset_mm' must be a list of 3 numbers in {json_path}; got: {tip!r}"
-        )
-
-    try:
-        tip_vec = np.array([float(tip[0]), float(tip[1]), float(tip[2])], dtype=float)
-    except (TypeError, ValueError) as e:
-        raise RuntimeError(f"Invalid numeric values in 'tip_offset_mm' in {json_path}: {e}") from e
-
-    if not np.all(np.isfinite(tip_vec)):
-        raise RuntimeError(f"'tip_offset_mm' contains NaN/Inf in {json_path}")
-
-    return tip_vec
-
-
 # --- Hand-eye calibration helper ---
 def load_hand_eye_transform(json_path: str | Path) -> np.ndarray:
     """Load hand-eye calibration result T_c2g from a JSON file.
@@ -224,163 +175,6 @@ def load_hand_eye_transform(json_path: str | Path) -> np.ndarray:
     return T_mat
 
 
-# Instrument pose reading utilities
-def read_instrument_pose(
-        instrument: str = "needle",
-        topic: Optional[str] = None,
-        timeout_sec: float = 2.0,
-        node: Optional[Node] = None,
-        qos_depth: int = 1,
-) -> Tuple[float, float, float, float, float, float, float]:
-    """Read a single instrument pose and return it as a position+quaternion tuple.
-
-    This helper subscribes to a `geometry_msgs/msg/PoseStamped` topic and waits
-    until one message arrives (or times out). If `topic` is not provided, a
-    default topic is selected based on `instrument`:
-
-      - instrument == "needle"   -> /ndi/needle_pose
-      - instrument == "us_probe" -> /ndi/us_probe_pose
-
-    The returned pose is:
-        (px, py, pz, qx, qy, qz, qw)
-    where the quaternion follows ROS conventions (x, y, z, w).
-
-    Args:
-        instrument: Instrument name selector ("needle" or "us_probe").
-        topic: Optional explicit topic name. If provided, it overrides `instrument`.
-        timeout_sec: Maximum time to wait for one message.
-        node: Optional existing rclpy Node to use. If not provided, a temporary
-            node is created and destroyed inside this function.
-        qos_depth: Queue depth for the subscription.
-
-    Returns:
-        Tuple (px, py, pz, qx, qy, qz, qw).
-
-    Raises:
-        ValueError: If `instrument` is unknown and `topic` is not provided.
-        TimeoutError: If no message is received within `timeout_sec`.
-    """
-    topic_map = {
-        "needle": "/ndi/needle_pose",
-        "us_probe": "/ndi/us_probe_pose",
-    }
-
-    if topic is None:
-        key = instrument.strip().lower()
-        if key not in topic_map:
-            raise ValueError(
-                f"Unknown instrument '{instrument}'. Provide topic=... or use one of: {sorted(topic_map.keys())}"
-            )
-        topic = topic_map[key]
-
-    owns_node = False
-
-    # Be robust if this utility gets called outside of main().
-    if not rclpy.ok():
-        rclpy.init()
-
-    if node is None:
-        node = rclpy.create_node(f"{NODE_NAME}_instrument_pose_reader")
-        owns_node = True
-
-    got_msg = Event()
-    last_msg: dict = {}
-
-    qos = QoSProfile(
-        history=HistoryPolicy.KEEP_LAST,
-        depth=qos_depth,
-        reliability=ReliabilityPolicy.RELIABLE,
-    )
-
-    def _cb(msg: PoseStamped) -> None:
-        last_msg["msg"] = msg
-        got_msg.set()
-
-    sub = node.create_subscription(PoseStamped, topic, _cb, qos)
-
-    start = time.monotonic()
-    while rclpy.ok() and not got_msg.is_set():
-        remaining = timeout_sec - (time.monotonic() - start)
-        if remaining <= 0.0:
-            break
-        # spin_once() is blocking; keep a small timeout to remain responsive.
-        rclpy.spin_once(node, timeout_sec=min(0.1, remaining))
-
-    node.destroy_subscription(sub)
-
-    if owns_node:
-        node.destroy_node()
-
-    if not got_msg.is_set():
-        raise TimeoutError(f"Timed out waiting for PoseStamped on '{topic}'")
-
-    msg: PoseStamped = last_msg["msg"]
-    p = msg.pose.position
-    q = msg.pose.orientation
-
-    vals = np.array(
-        [
-            float(p.x), float(p.y), float(p.z),
-            float(q.x), float(q.y), float(q.z), float(q.w),
-        ],
-        dtype=float,
-    )
-
-    # Fail fast if tracker publishes invalid numbers (NaN/Inf).
-    if not np.all(np.isfinite(vals)):
-        raise RuntimeError(
-            f"Received NaN/Inf from tracker on '{topic}' for instrument='{instrument}': {vals.tolist()}"
-        )
-
-    return tuple(float(x) for x in vals)
-
-
-# --- Needle tip computation helpers ---
-def _quat_xyzw_to_rotmat(qx: float, qy: float, qz: float, qw: float) -> np.ndarray:
-    """Convert a ROS quaternion (x,y,z,w) to a 3x3 rotation matrix.
-
-    The input quaternion is normalized internally.
-
-    Args:
-        qx, qy, qz, qw: Quaternion components in ROS order (x, y, z, w).
-
-    Returns:
-        (3,3) rotation matrix.
-
-    Raises:
-        RuntimeError: If the quaternion norm is too small or contains NaN/Inf.
-    """
-    q = np.array([qx, qy, qz, qw], dtype=float)
-    if not np.all(np.isfinite(q)):
-        raise RuntimeError("Quaternion contains NaN/Inf")
-
-    n = float(np.dot(q, q))
-    if n < 1e-12:
-        raise RuntimeError(f"Quaternion norm too small: {n}")
-
-    q *= 1.0 / np.sqrt(n)
-    x, y, z, w = q  # ROS order
-
-    # Standard unit-quaternion to rotation-matrix conversion
-    xx, yy, zz = x * x, y * y, z * z
-    xy, xz, yz = x * y, x * z, y * z
-    wx, wy, wz = w * x, w * y, w * z
-
-    R = np.array(
-        [
-            [1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz),         2.0 * (xz + wy)],
-            [2.0 * (xy + wz),       1.0 - 2.0 * (xx + zz),   2.0 * (yz - wx)],
-            [2.0 * (xz - wy),       2.0 * (yz + wx),         1.0 - 2.0 * (xx + yy)],
-        ],
-        dtype=float,
-    )
-
-    if not np.all(np.isfinite(R)):
-        raise RuntimeError("Rotation matrix contains NaN/Inf")
-
-    return R
-
-
 def quat_to_T(quat: Tuple[float, float, float, float, float, float, float]) -> np.ndarray:
     """Convert a pose (px,py,pz,qx,qy,qz,qw) to a 4x4 homogeneous transform.
 
@@ -400,8 +194,7 @@ def quat_to_T(quat: Tuple[float, float, float, float, float, float, float]) -> n
     if not np.all(np.isfinite(vals)):
         raise RuntimeError(f"Pose contains NaN/Inf: {vals.tolist()}")
 
-    # Uses your existing helper (expects x,y,z,w)
-    R = _quat_xyzw_to_rotmat(qx, qy, qz, qw)
+    R = Needle._quat_xyzw_to_rotmat(qx, qy, qz, qw)
 
     T = np.eye(4, dtype=float)
     T[:3, :3] = R
@@ -589,62 +382,6 @@ def probe_from_transducer_origin_pose(
     }
 
     return T_probe_from_to, pose
-
-
-def get_needle_tip_pos_in_tracker(
-    needle_pose_in_tracker: Tuple[float, float, float, float, float, float, float],
-    needle_tip_offset_mm: np.ndarray,
-    position_unit: str = "m",
-) -> np.ndarray:
-    """Compute needle tip position in the tracker frame.
-
-    Assumptions:
-      - `needle_marker_pose_tracker` is the pose of the *needle marker origin* in the tracker frame,
-        formatted as (px, py, pz, qx, qy, qz, qw) following ROS conventions.
-      - `needle_tip_offset_mm_marker` is a 3D offset vector from marker origin to needle tip,
-        expressed in the *marker's local frame* in millimeters.
-      - The returned tip position is expressed in the same units as the marker position.
-        By default (ROS REP-103), positions are in meters.
-
-    Args:
-        needle_pose_in_tracker: (px, py, pz, qx, qy, qz, qw) in tracker frame.
-        needle_tip_offset_mm: (3,) offset vector in marker frame, in mm.
-        position_unit: Unit of (px,py,pz). Use "m" (default) or "mm".
-
-    Returns:
-        tip_pos_in_tracker: (3,) numpy array of needle tip position in tracker frame.
-
-    Raises:
-        RuntimeError: If inputs are invalid or contain NaN/Inf.
-        ValueError: If `position_unit` is not supported.
-    """
-    px, py, pz, qx, qy, qz, qw = needle_pose_in_tracker
-    p_marker = np.array([px, py, pz], dtype=float)
-    if not np.all(np.isfinite(p_marker)):
-        raise RuntimeError("Marker position contains NaN/Inf")
-
-    tip = np.asarray(needle_tip_offset_mm, dtype=float).reshape(-1)
-    if tip.shape != (3,):
-        raise RuntimeError(f"needle_tip_offset_mm_marker must be shape (3,), got {tip.shape}")
-    if not np.all(np.isfinite(tip)):
-        raise RuntimeError("Needle tip offset contains NaN/Inf")
-
-    # Convert offset into the same distance unit as the marker position
-    if position_unit == "m":
-        tip_offset = tip / 1000.0
-    elif position_unit == "mm":
-        tip_offset = tip
-    else:
-        raise ValueError("position_unit must be 'm' or 'mm'")
-
-    R_tracker_from_marker = _quat_xyzw_to_rotmat(qx, qy, qz, qw)
-
-    tip_pos_in_tracker = p_marker + (R_tracker_from_marker @ tip_offset)
-
-    if not np.all(np.isfinite(tip_pos_in_tracker)):
-        raise RuntimeError("Computed tip position contains NaN/Inf")
-
-    return tip_pos_in_tracker
 
 
 def align_image_to_needle_axis(
@@ -1043,14 +780,15 @@ def main() -> None:
 
         # Load calibrations
         probe_in_ee = load_hand_eye_transform("./calibration/hand_eye_20251231_075559.json")
-        needle_tip_offset = load_needle_tip_offset_mm("./calibration/needle_1_tip_offset.json")
+        needle = Needle()
+        needle.load_tip_offset("./calibration/needle_1_tip_offset.json")
 
         # Acquire poses
-        needle_pose = read_instrument_pose(instrument="needle", timeout_sec=2.0)
-        probe_pose = read_instrument_pose(instrument="us_probe", timeout_sec=2.0)
+        needle_pose = needle.report_pose(timeout_sec=2.0)
+        probe_pose = Needle._read_instrument_pose(instrument="us_probe", timeout_sec=2.0)
 
         to_in_ee = probe_in_ee @ to_in_probe
-        needle_tip_position = get_needle_tip_pos_in_tracker(needle_pose, needle_tip_offset)
+        needle_tip_position = needle.tip_position_in_tracker(needle_pose)
 
         # Calculate tracker frame and robot base frame
         tracker_in_base = current_ee_transform @ probe_in_ee @ np.linalg.inv(quat_to_T(probe_pose))
@@ -1104,4 +842,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
