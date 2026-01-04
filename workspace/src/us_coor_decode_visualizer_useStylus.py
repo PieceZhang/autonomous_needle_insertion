@@ -181,17 +181,20 @@ class USVisualizer(Node):
         ws_dir = os.environ.get("RUNTIME_WS_DIR", "/ani_ws")
         calib_dir = os.path.join(ws_dir, "calibration")
         pattern = os.path.join(calib_dir, "PlusDeviceSet_fCal*.xml")
-        files = glob.glob(pattern)
-        if len(files) == 0:
+        files = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
+        if not files:
             msg = f"Calibration file not found: {pattern}"
             self.get_logger().error(msg)
             raise FileNotFoundError(msg)
-        if len(files) > 1:
-            msg = f"Multiple calibration files found: {files}. Ensure only one XML starting with PlusDeviceSet_fCal."
-            self.get_logger().error(msg)
-            raise RuntimeError(msg)
 
         xml_path = files[0]
+        if len(files) > 1:
+            latest_ts = os.path.getmtime(xml_path)
+            self.get_logger().warn(
+                f"Multiple calibration files found; using latest ({xml_path}) "
+                f"modified at {latest_ts:.0f}."
+            )
+
         self.get_logger().info(f"Reading calibration file: {xml_path}")
 
         tree = ET.parse(xml_path)
