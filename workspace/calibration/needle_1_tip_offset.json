@@ -1,10 +1,10 @@
 {
   "tip_offset_mm": [
-    0.45,
-    33.12,
-    -105.36
+    106.28,
+    -98.35,
+    0.06
   ],
-  "RMSE_error_mm": 0.77,
-  "Max_error_mm": 1.42,
-  "Minor_angle_deg": 40.48
+  "RMSE_error_mm": 1.27,
+  "Max_error_mm": 2.70,
+  "Minor_angle_deg": 35.42
 }
