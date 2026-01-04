@@ -206,12 +206,12 @@ class USVisualizer(Node):
             msg = f"Calibration file not found: {pattern}"
             self.get_logger().error(msg)
             raise FileNotFoundError(msg)
-        if len(files) > 1:
-            msg = f"Multiple calibration files found: {files}. Ensure only one XML starting with PlusDeviceSet_fCal."
-            self.get_logger().error(msg)
-            raise RuntimeError(msg)
-
+        files.sort(key=os.path.getmtime, reverse=True)
         xml_path = files[0]
+        if len(files) > 1:
+            self.get_logger().warn(
+                f"Multiple calibration files found: {files}. Using the latest (by mtime): {xml_path}"
+            )
         self.get_logger().info(f"Reading calibration file: {xml_path}")
 
         tree = ET.parse(xml_path)
