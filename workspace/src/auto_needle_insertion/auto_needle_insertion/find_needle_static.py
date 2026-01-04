@@ -34,6 +34,7 @@ from moveit.planning import MoveItPy, PlanRequestParameters
 from rclpy.node import Node
 
 from auto_needle_insertion.utils.needle import Needle
+from auto_needle_insertion.utils.optical_tracking import read_instrument_pose
 
 # Module constants
 NODE_NAME = "auto_needle_insertion"
@@ -785,7 +786,7 @@ def main() -> None:
 
         # Acquire poses
         needle_pose = needle.report_pose(timeout_sec=2.0)
-        probe_pose = Needle._read_instrument_pose(instrument="us_probe", timeout_sec=2.0)
+        probe_pose = read_instrument_pose(instrument="us_probe", timeout_sec=2.0)
 
         to_in_ee = probe_in_ee @ to_in_probe
         needle_tip_position = needle.tip_position_in_tracker(needle_pose)
