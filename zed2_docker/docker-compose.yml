@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  zed_ros2_neural:
+    image: zed_ros2_desktop_u22.04_sdk_4.2.3_cuda_12.6.3:latest
+    container_name: zed_ros2_neural
+    privileged: true
+    network_mode: host
+    ipc: host
+    pid: host
+
+    environment:
+      - DISPLAY=${DISPLAY}
+      - NVIDIA_DRIVER_CAPABILITIES=all
+
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /dev:/dev
+      - /dev/shm:/dev/shm
+
+    device_requests:
+      - driver: nvidia
+        count: all
+        capabilities: [gpu]
+
+    stdin_open: true
+    tty: true
+    restart: "no"
+
+    command: >
+      bash -c "
+        source /opt/ros/humble/setup.bash &&
+        source /root/ros2_ws/install/local_setup.bash &&
+        ros2 launch zed_wrapper zed_camera.launch.py
+          camera_model:=zed2 depth_quality:=NEURAL
+      "
