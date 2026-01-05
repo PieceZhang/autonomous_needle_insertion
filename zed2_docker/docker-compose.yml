@@ -10,6 +10,8 @@ services:
     environment:
       - DISPLAY=${DISPLAY}
       - NVIDIA_DRIVER_CAPABILITIES=all
+      - ROS_DOMAIN_ID=42
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
