@@ -10,8 +10,8 @@ services:
     environment:
       - DISPLAY=${DISPLAY}
       - NVIDIA_DRIVER_CAPABILITIES=all
-      - ROS_DOMAIN_ID=42
-      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
@@ -28,9 +28,5 @@ services:
       bash -c "
         source /opt/ros/humble/setup.bash &&
         source /root/ros2_ws/install/local_setup.bash &&
-        apt-get update &&
-        apt-get install -y ros-humble-rmw-cyclonedds-cpp &&
-        apt install -y ros-humble-rviz2 &&
-        source /opt/ros/humble/setup.bash &&
         ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zed2 depth_quality:=NEURAL
       "
