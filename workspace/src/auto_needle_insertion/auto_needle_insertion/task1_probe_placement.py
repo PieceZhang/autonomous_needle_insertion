@@ -1,8 +1,10 @@
+import os
 import logging
 import math
 import random
 import threading
 import time
+import sys
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -22,7 +24,11 @@ from auto_needle_insertion.rosbag_recorder_control import (
     RosbagController,
     TaskInfoPublisher,
     sleep_with_spin,
+    KeystrokeTopicInput,
 )
+
+# Suppress rcutils error spam (typesupport mismatch messages) unless fatal
+os.environ.setdefault("RCUTILS_LOGGING_SEVERITY_THRESHOLD", "FATAL")
 
 # ----------------- Parameters -----------------
 NODE_NAME = "task1_probe_placement"
@@ -41,6 +47,34 @@ STANDARD_TILT_X_MAX_DEG = 6.0   # tilt motion amplitude about +/−X
 # ----------------- Logging -----------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def _auto_continue_enabled() -> bool:
+    auto_env = os.getenv("TASK1_AUTO_CONTINUE", "").strip().lower()
+    return auto_env in ("1", "true", "yes")
+
+
+def _is_enter_key(token: Optional[str]) -> bool:
+    if token is None:
+        return False
+    t = token.strip().lower()
+    return t in ("", "enter", "return", "\n", "\r", "<enter>", "<return>", "<vk_13>", "65293", "<vk_65293>")
+
+
+def _is_cancel_key(token: Optional[str]) -> bool:
+    if token is None:
+        return False
+    return token.strip().lower() == "c"
+
+
+def _await_user(prompt: str) -> None:
+    if _auto_continue_enabled():
+        logger.info("Auto-continue enabled via TASK1_AUTO_CONTINUE; skipping prompt: %s", prompt)
+        return
+    if not sys.stdin or not sys.stdin.isatty():
+        raise SystemExit(
+            f"Non-interactive stdin detected. To run without prompts, set TASK1_AUTO_CONTINUE=1; otherwise run from a terminal. Prompt: {prompt}"
+        )
+    input(prompt)
 
 
 # ----------------- Math helpers -----------------
@@ -200,8 +234,13 @@ class ProbePlacementTask:
 
         self.task_info_pub = TaskInfoPublisher(topic_name="task_info_collection_states")
         self.task_proc_pub = TaskProcedurePublisher(topic_name="task_procedure")
+        self.key_input = KeystrokeTopicInput(
+            glyph_topic="/keyboard_listener/glyphkey_pressed",
+            keycode_topic="/keyboard_listener/key_pressed",
+        )
         self.executor.add_node(self.task_info_pub)
         self.executor.add_node(self.task_proc_pub)
+        self.executor.add_node(self.key_input)
 
         self._spin_thread = threading.Thread(target=self._spin_executor, daemon=True)
         self._spin_thread.start()
@@ -307,6 +346,7 @@ class ProbePlacementTask:
         self.task_proc_pub.publish_step("1")
         self.capture_state.gt_to_in_tracker = self._capture_to_in_tracker()
         logger.info("Captured GT point P1 (to_in_tracker).")
+        print(_fmt("Step 1: GT captured.", "🧭"), flush=True)
 
     def capture_corner(self) -> None:
         if self.capture_state.gt_to_in_tracker is None:
@@ -315,6 +355,7 @@ class ProbePlacementTask:
         T_corner = self._capture_to_in_tracker()
         self.capture_state.corners.append(T_corner)
         logger.info(f"Captured corner C{len(self.capture_state.corners)}.")
+        print(_fmt(f"Step 2: Corner C{len(self.capture_state.corners)} captured.", "📐"), flush=True)
 
     def _sample_random_pose_in_area(self) -> np.ndarray:
         if self.capture_state.gt_to_in_tracker is None or len(self.capture_state.corners) < 4:
@@ -340,15 +381,18 @@ class ProbePlacementTask:
     def move_to_home_pose(self, T_home: np.ndarray) -> None:
         self.initialize_moveit()
         self.task_proc_pub.publish_step("3")
+        print(_fmt("Step 3: Moving to random home pose P2.", "🏠"), flush=True)
         self._plan_and_execute_to_to_frame(T_home, label="P2 home")
 
     def start_recording(self) -> None:
         self.task_proc_pub.publish_step("4")
+        print(_fmt("Step 4: Starting rosbag recording.", "⏺️"), flush=True)
         self.task_info_pub.set_state("started")
         self.rosbag.start_recording()
 
     def stop_recording(self) -> None:
         self.task_proc_pub.publish_step("7")
+        print(_fmt("Step 7: Stopping rosbag recording.", "⏹️"), flush=True)
         self.task_info_pub.set_state("stopped_success")
         sleep_with_spin(self.executor, 0.2)
         self.rosbag.stop_recording("Success")
@@ -360,6 +404,7 @@ class ProbePlacementTask:
     def perform_standard_action(self, T_home: np.ndarray) -> None:
         self.initialize_moveit()
         self.task_proc_pub.publish_step("5")
+        print(_fmt("Step 5: Performing standard motion sequence.", "🔄"), flush=True)
         sequences = [
             ("rotation", self._standard_motion_sequence(STANDARD_ROT_Y_MAX_DEG)),
             ("rock", self._standard_motion_sequence(STANDARD_ROCK_Z_MAX_DEG)),
@@ -374,6 +419,7 @@ class ProbePlacementTask:
     def move_to_gt(self) -> None:
         self.initialize_moveit()
         self.task_proc_pub.publish_step("6")
+        print(_fmt("Step 6: Moving to GT P1.", "🎯"), flush=True)
         if self.capture_state.gt_to_in_tracker is None:
             raise RuntimeError("GT not captured")
         self._plan_and_execute_to_to_frame(self.capture_state.gt_to_in_tracker, label="GT P1")
@@ -381,53 +427,115 @@ class ProbePlacementTask:
     def close(self) -> None:
         self._spin_running = False
         try:
+            self.executor.remove_node(self.task_info_pub)
+            self.executor.remove_node(self.task_proc_pub)
+            self.executor.remove_node(self.key_input)
+        except Exception:
+            pass
+        try:
             self.executor.shutdown()
         except Exception:
             pass
         if self._spin_thread.is_alive():
             self._spin_thread.join(timeout=1.0)
+        try:
+            self.task_info_pub.destroy_node()
+            self.task_proc_pub.destroy_node()
+            self.key_input.destroy_node()
+        except Exception:
+            pass
         rclpy.shutdown()
 
 
-# ----------------- CLI Loop -----------------
-def main() -> None:
-    print("Before continuing, PAUSE/STOP the URCap program on the UR control panel, then press Enter.", flush=True)
-    input("Confirm URCap is paused/stopped and press Enter to continue...")
+# ----------------- Terminal styling for clearer prompts -----------------
+_COLOR_RESET = "\033[0m"
+_COLOR_CYAN = "\033[36m"
+_COLOR_GREEN = "\033[32m"
+_COLOR_YELLOW = "\033[33m"
+_COLOR_MAGENTA = "\033[35m"
+_COLOR_RED = "\033[31m"
 
+
+def _fmt(msg: str, icon: str = "") -> str:
+    icon_part = f"{icon} " if icon else ""
+    return f"{_COLOR_CYAN}{icon_part}{msg}{_COLOR_RESET}"
+
+
+# ----------------- CLI Loop -----------------
+def _wait_for_enter(task: ProbePlacementTask, prompt: str, allow_cancel: bool = True) -> bool:
+    if task is None:
+        raise RuntimeError("task must be provided for key-based prompts")
+    print(_fmt(prompt, "👉"), flush=True)
+    if _auto_continue_enabled():
+        return True
+    while rclpy.ok():
+        token = task.key_input.get_key()
+        if _is_enter_key(token):
+            return True
+        if allow_cancel and _is_cancel_key(token):
+            return False
+        time.sleep(0.05)
+    return False
+
+
+def _cancel_requested(task: ProbePlacementTask) -> bool:
+    if task is None:
+        return False
+    while True:
+        token = task.key_input.get_key()
+        if token is None:
+            return False
+        if _is_cancel_key(token):
+            return True
+
+
+def main() -> None:
     task = ProbePlacementTask()
+    print(_fmt("Before continuing, PAUSE/STOP the URCap program on the UR control panel, then press Enter (via keyboard listener).", "⏸️"), flush=True)
+    if not _wait_for_enter(task, "Confirm URCap is paused/stopped and press Enter to continue...", allow_cancel=False):
+        task.close()
+        return
+
     print(
-        "Task 1 probe placement: press Enter to capture GT (step1), then Enter 4x to capture corners (step2).\n"
-        "Afterward, press Enter to run steps 3-7 (home->record->standard action->GT->stop). Press 'c' then Enter to exit.",
+        _fmt(
+            "Task 1 probe placement: press Enter to capture GT (step1), then Enter 4x to capture corners (step2).\n"
+            "Afterward, steps 3-7 will auto-repeat (home->record->standard action->GT->stop) until you press 'c'.",
+            "🛰️",
+        ),
         flush=True,
     )
     try:
-        # Step 1: GT capture
-        input("[Step 1] Press Enter to capture GT point P1...")
+        if not _wait_for_enter(task, "[Step 1] Press Enter to capture GT point P1...", allow_cancel=False):
+            return
         task.capture_gt()
+        print(_fmt("GT captured ✅", "📍"), flush=True)
 
-        # Step 2: Corners
         for i in range(4):
-            input(f"[Step 2] Press Enter to capture corner C{i+1}...")
+            if not _wait_for_enter(task, f"[Step 2] Press Enter to capture corner C{i+1}..."):
+                print(_fmt("Cancel requested, exiting.", "🛑"), flush=True)
+                return
             task.capture_corner()
-        print("GT and 4 corners captured.", flush=True)
-        input("Now START the URCap program on the UR control panel, then press Enter to continue to motions...")
-        print("Repeated trials: press Enter to run steps 3-7, or 'c'+Enter to stop.", flush=True)
+            print(_fmt(f"Corner C{i+1} captured", "📐"), flush=True)
+        print(_fmt("GT and 4 corners captured.", "✅"), flush=True)
 
-        while True:
-            user_in = input("Press Enter to run sequence, or 'c'+Enter to stop: ")
-            if user_in.strip().lower() == "c":
+        if not _wait_for_enter(task, "Now START the URCap program on the UR control panel, then press Enter to continue to motions...", allow_cancel=False):
+            return
+        print(_fmt("Auto-running steps 3-7. Press 'c' at any time to stop.", "▶️"), flush=True)
+
+        while rclpy.ok():
+            if _cancel_requested(task):
                 break
-            # Steps 3-7
             T_home = task._sample_random_pose_in_area()
             task.move_to_home_pose(T_home)
             task.start_recording()
             task.perform_standard_action(T_home)
             task.move_to_gt()
             task.stop_recording()
+            print(_fmt("Completed one full cycle of steps 3-7.", "🔁"), flush=True)
 
-        print("Exiting task.", flush=True)
+        print(_fmt("Exiting task.", "👋"), flush=True)
     except KeyboardInterrupt:
-        print("Interrupted by user.", flush=True)
+        print(_fmt("Interrupted by user.", "🛑"), flush=True)
     finally:
         task.close()
 
