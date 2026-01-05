@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   zed_ros2_neural:
     image: zed_ros2_desktop_u22.04_sdk_4.2.3_cuda_12.6.3:latest
