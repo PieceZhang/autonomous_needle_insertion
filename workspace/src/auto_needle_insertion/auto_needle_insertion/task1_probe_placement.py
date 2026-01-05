@@ -17,6 +17,7 @@ from rclpy.executors import SingleThreadedExecutor
 from std_msgs.msg import String
 
 from auto_needle_insertion.utils.needle import Needle
+from auto_needle_insertion.utils.pose_representations import quat_xyzw_to_rotmat
 from auto_needle_insertion.utils.us_probe import USProbe
 from auto_needle_insertion.utils.optical_tracking import read_instrument_pose
 from auto_needle_insertion.utils.transducer_motions import compose_transducer_motions, transducer_motions
@@ -93,7 +94,7 @@ def quat_to_T(quat: Tuple[float, float, float, float, float, float, float]) -> n
     vals = np.array([px, py, pz, qx, qy, qz, qw], dtype=float)
     if not np.all(np.isfinite(vals)):
         raise RuntimeError(f"Pose contains NaN/Inf: {vals.tolist()}")
-    R = Needle._quat_xyzw_to_rotmat(qx, qy, qz, qw)
+    R = quat_xyzw_to_rotmat(qx, qy, qz, qw)
     T = np.eye(4, dtype=float)
     T[:3, :3] = R
     T[:3, 3] = [px, py, pz]
