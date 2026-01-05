@@ -1,6 +1,8 @@
 import math
-import numpy as np
 from dataclasses import dataclass
+from typing import List, Tuple
+
+import numpy as np
 
 _MOTION_MAP = {
     "slide": "x", "x": "x",
@@ -85,9 +87,71 @@ def compose_transducer_motions(sequence) -> np.ndarray:
     return T
 
 
+def random_small_perturbation_sequence(
+    rot_range_deg: Tuple[float, float] = (-3.0, 3.0),
+    sweep_range_mm: Tuple[float, float] = (-4.0, 4.0),
+    slide_range_mm: Tuple[float, float] = (-4.0, 4.0),
+    rng: np.random.Generator | None = None,
+) -> List[Tuple[str, float]]:
+    """Return a small perturbation sequence: rotation -> sweep -> slide.
+
+    Defaults are intentionally conservative so the needle remains in view.
+
+    Args:
+        rot_range_deg: Inclusive min/max rotation about probe Y (degrees).
+        sweep_range_mm: Inclusive min/max sweep translation along Z (mm).
+        slide_range_mm: Inclusive min/max slide translation along X (mm).
+        rng: Optional NumPy random generator for reproducible sampling.
+
+    Returns:
+        List of (motion, value) pairs ordered as rotation, sweep, slide.
+    """
+    rng = np.random.default_rng() if rng is None else rng
+    rot = float(rng.uniform(*rot_range_deg))
+    sweep = float(rng.uniform(*sweep_range_mm))
+    slide = float(rng.uniform(*slide_range_mm))
+    return [("rotation", rot), ("sweep", sweep), ("slide", slide)]
+
+
+def apply_random_small_perturbation(
+    T_probe: np.ndarray,
+    rot_range_deg: Tuple[float, float] = (-3.0, 3.0),
+    sweep_range_mm: Tuple[float, float] = (-4.0, 4.0),
+    slide_range_mm: Tuple[float, float] = (-4.0, 4.0),
+    rng: np.random.Generator | None = None,
+) -> Tuple[List[np.ndarray], List[Tuple[str, float]]]:
+    """Apply a small random rotation->sweep->slide perturbation to a probe pose.
+
+    Args:
+        T_probe: 4x4 homogeneous pose of the probe.
+        rot_range_deg: Inclusive min/max rotation about probe Y (degrees).
+        sweep_range_mm: Inclusive min/max sweep translation along Z (mm).
+        slide_range_mm: Inclusive min/max slide translation along X (mm).
+        rng: Optional NumPy random generator for reproducible sampling.
+
+    Returns:
+        (poses, sequence) where poses are the incremental probe poses after each
+        step in the sampled motion list.
+    """
+    if T_probe.shape != (4, 4):
+        raise ValueError("T_probe must be a 4x4 homogeneous matrix")
+    seq = random_small_perturbation_sequence(
+        rot_range_deg=rot_range_deg,
+        sweep_range_mm=sweep_range_mm,
+        slide_range_mm=slide_range_mm,
+        rng=rng,
+    )
+    poses: List[np.ndarray] = []
+    T_running = np.array(T_probe, dtype=float, copy=True)
+    for motion, value in seq:
+        T_step = transducer_motions(motion, value)
+        T_running = T_running @ T_step
+        poses.append(T_running)
+    return poses, seq
+
+
 @dataclass
 class LocalDelta:
     """Pose delta in the *current EE local frame*."""
     dx: float; dy: float; dz: float      # meters
     droll: float; dpitch: float; dyaw: float  # radians
-
