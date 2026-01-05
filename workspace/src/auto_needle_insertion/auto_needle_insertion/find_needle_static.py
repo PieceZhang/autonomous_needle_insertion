@@ -118,63 +118,6 @@ def get_tip_link_name(robot: MoveItPy, group_name: str) -> str:
     return link_names[-1]  # Fallback to last link
 
 
-def generate_square_waypoints(edge_length: float) -> List[Tuple[float, float]]:
-    """Generate waypoints for a square path in local coordinates.
-
-    Args:
-        edge_length: Length of square edge in meters
-
-    Returns:
-        List of (dx, dy) waypoints in local frame
-    """
-    half_edge = edge_length / 2.0
-
-    # Square path: bottom-left -> CCW -> close -> return to center
-    return [
-        (-half_edge, -half_edge),  # Bottom-left
-        (half_edge, -half_edge),   # Bottom-right
-        (half_edge, half_edge),    # Top-right
-        (-half_edge, half_edge),   # Top-left
-        (-half_edge, -half_edge),  # Close the square
-        (0.0, 0.0),               # Return to center
-    ]
-
-
-def create_pose_stamped(
-    origin: np.ndarray,
-    x_axis: np.ndarray,
-    y_axis: np.ndarray,
-    dx: float,
-    dy: float,
-    orientation,
-    planning_frame: str
-) -> PoseStamped:
-    """Create PoseStamped message for waypoint in local frame.
-
-    Args:
-        origin: Origin position in global frame
-        x_axis: Normalized X-axis of local frame
-        y_axis: Normalized Y-axis of local frame
-        dx: Displacement along local X-axis
-        dy: Displacement along local Y-axis
-        orientation: Original orientation to maintain
-        planning_frame: Planning frame ID
-
-    Returns:
-        PoseStamped message for the waypoint
-    """
-    position = origin + dx * x_axis + dy * y_axis
-
-    pose_stamped = PoseStamped()
-    pose_stamped.header.frame_id = planning_frame
-    pose_stamped.pose.position.x = float(position[0])
-    pose_stamped.pose.position.y = float(position[1])
-    pose_stamped.pose.position.z = float(position[2])
-    pose_stamped.pose.orientation = orientation
-
-    return pose_stamped
-
-
 def execute_trajectory_with_fallback(
     robot: MoveItPy,
     trajectory,

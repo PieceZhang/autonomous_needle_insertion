@@ -1,5 +1,4 @@
 import math
-from dataclasses import dataclass
 from typing import List, Tuple
 
 import numpy as np
@@ -149,9 +148,3 @@ def apply_random_small_perturbation(
         poses.append(T_running)
     return poses, seq
 
-
-@dataclass
-class LocalDelta:
-    """Pose delta in the *current EE local frame*."""
-    dx: float; dy: float; dz: float      # meters
-    droll: float; dpitch: float; dyaw: float  # radians
