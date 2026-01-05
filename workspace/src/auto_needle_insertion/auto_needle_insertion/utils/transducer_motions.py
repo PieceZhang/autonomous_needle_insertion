@@ -184,8 +184,6 @@ def standard_action_pose_sequence(
         ("sweep", -2.0 * sweep_mm),
         ("sweep", sweep_mm),
         ("compression", compression_mm),
-        ("compression", -2.0 * compression_mm),
-        ("compression", compression_mm),
     ]
 
     poses: List[np.ndarray] = [np.array(T_probe, dtype=float, copy=True)]

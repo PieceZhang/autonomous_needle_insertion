@@ -228,6 +228,8 @@ def main() -> None:
             image_in_tracker_after_alignment, needle_pose[0:3], needle_tip_position,
             x_center_in_plane=0.0, y_target_in_plane=0.080)
 
+        # Apply small random perturbations.
+        # If needle is not visible after a perturbation, retry up to MAX_PERTURBATION_TRIALS times.
         candidate_image_in_tracker = None
         rng = np.random.default_rng()
         for attempt in range(1, MAX_PERTURBATION_TRIALS + 1):
