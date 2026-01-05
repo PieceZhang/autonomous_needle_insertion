@@ -82,3 +82,11 @@ def compose_transducer_motions(sequence) -> np.ndarray:
         T_step = transducer_motions(motion, value)
         T = T @ T_step
     return T
+
+
+@dataclass
+class LocalDelta:
+    """Pose delta in the *current EE local frame*."""
+    dx: float; dy: float; dz: float      # meters
+    droll: float; dpitch: float; dyaw: float  # radians
+
