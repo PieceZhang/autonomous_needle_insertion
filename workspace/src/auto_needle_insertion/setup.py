@@ -25,6 +25,7 @@ setup(
         "console_scripts": [
             "keyboard_control = auto_needle_insertion.keyboard_control:main",
             "find_needle_static = auto_needle_insertion.find_needle_static:main",
+            "task1_probe_placement = auto_needle_insertion.task1_probe_placement:main",
             "ee_moveit_keyboard = auto_needle_insertion.ee_moveit_keyboard:main",
             "ee_moveit_square = auto_needle_insertion.ee_moveit_square:main",
             "ee_pose_logger = auto_needle_insertion.ee_pose_logger:main",
