@@ -29,7 +29,7 @@ services:
         source /opt/ros/humble/setup.bash &&
         source /root/ros2_ws/install/local_setup.bash &&
         apt-get update &&
-        apt-get install -y ros-humble-rmw-cyclonedds-cpp &&
+        apt-get install -y ros-jazzy-rmw-cyclonedds-cpp &&
         apt install -y ros-humble-rviz2 &&
         source /opt/ros/humble/setup.bash &&
         ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zed2 depth_quality:=NEURAL
