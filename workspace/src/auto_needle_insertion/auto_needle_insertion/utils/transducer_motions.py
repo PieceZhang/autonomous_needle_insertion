@@ -1,5 +1,6 @@
 import math
 import numpy as np
+from dataclasses import dataclass
 
 _MOTION_MAP = {
     "slide": "x", "x": "x",
@@ -84,7 +85,7 @@ def compose_transducer_motions(sequence) -> np.ndarray:
     return T
 
 
-# @dataclass
+@dataclass
 class LocalDelta:
     """Pose delta in the *current EE local frame*."""
     dx: float; dy: float; dz: float      # meters
