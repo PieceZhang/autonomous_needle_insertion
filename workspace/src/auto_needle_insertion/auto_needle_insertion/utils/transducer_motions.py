@@ -148,3 +148,51 @@ def apply_random_small_perturbation(
         poses.append(T_running)
     return poses, seq
 
+
+def standard_action_pose_sequence(
+    T_probe: np.ndarray,
+    tilt_deg: float,
+    rock_deg: float,
+    sweep_mm: float,
+    compression_mm: float,
+) -> List[np.ndarray]:
+    """Return pose sequence for standard action with center -> opposite -> center for each motion.
+
+    Args:
+        T_probe: 4x4 homogeneous pose of the probe.
+        tilt_deg: Rotation about probe X (degrees) for tilt/fan.
+        rock_deg: Rotation about probe Z (degrees) for rock.
+        sweep_mm: Translation along Z (mm) for sweep.
+        compression_mm: Translation along Y (mm) for compression.
+
+    Returns:
+        List of poses including the start pose, each action step, and return to start.
+    """
+    if T_probe.shape != (4, 4):
+        raise ValueError("T_probe must be a 4x4 homogeneous matrix")
+    if not np.all(np.isfinite(T_probe)):
+        raise ValueError("T_probe must contain finite values")
+
+    motions = [
+        ("tilt", tilt_deg),
+        ("tilt", -2.0 * tilt_deg),
+        ("tilt", tilt_deg),
+        ("rock", rock_deg),
+        ("rock", -2.0 * rock_deg),
+        ("rock", rock_deg),
+        ("sweep", sweep_mm),
+        ("sweep", -2.0 * sweep_mm),
+        ("sweep", sweep_mm),
+        ("compression", compression_mm),
+        ("compression", -2.0 * compression_mm),
+        ("compression", compression_mm),
+    ]
+
+    poses: List[np.ndarray] = [np.array(T_probe, dtype=float, copy=True)]
+    T_running = poses[0]
+    for motion, value in motions:
+        T_step = transducer_motions(motion, value)
+        T_running = T_running @ T_step
+        poses.append(T_running)
+
+    return poses
