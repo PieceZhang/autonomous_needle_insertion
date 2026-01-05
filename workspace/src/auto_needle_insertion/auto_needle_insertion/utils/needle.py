@@ -10,6 +10,7 @@ import numpy as np
 from rclpy.node import Node
 
 from auto_needle_insertion.utils.optical_tracking import read_instrument_pose
+from auto_needle_insertion.utils.pose_representations import quat_xyzw_to_rotmat
 
 
 class Needle:
@@ -134,38 +135,6 @@ class Needle:
         return tip_vec
 
     @staticmethod
-    def _quat_xyzw_to_rotmat(qx: float, qy: float, qz: float, qw: float) -> np.ndarray:
-        """Convert a ROS quaternion (x,y,z,w) to a 3x3 rotation matrix."""
-        q = np.array([qx, qy, qz, qw], dtype=float)
-        if not np.all(np.isfinite(q)):
-            raise RuntimeError("Quaternion contains NaN/Inf")
-
-        norm = np.linalg.norm(q)
-        if norm <= 0.0:
-            raise RuntimeError("Quaternion has zero norm")
-        q = q / norm
-        qx, qy, qz, qw = q
-
-        xx = qx * qx
-        yy = qy * qy
-        zz = qz * qz
-        xy = qx * qy
-        xz = qx * qz
-        yz = qy * qz
-        wx = qw * qx
-        wy = qw * qy
-        wz = qw * qz
-
-        return np.array(
-            [
-                [1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy)],
-                [2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx)],
-                [2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy)],
-            ],
-            dtype=float,
-        )
-
-    @staticmethod
     def _get_needle_tip_pos_in_tracker(
         needle_pose_in_tracker: Tuple[float, float, float, float, float, float, float],
         needle_tip_offset_mm: np.ndarray,
@@ -211,7 +180,7 @@ class Needle:
         else:
             raise ValueError("position_unit must be 'm' or 'mm'")
 
-        R_tracker_from_marker = Needle._quat_xyzw_to_rotmat(qx, qy, qz, qw)
+        R_tracker_from_marker = quat_xyzw_to_rotmat(qx, qy, qz, qw)
 
         tip_pos_in_tracker = p_marker + (R_tracker_from_marker @ tip_offset)
 

@@ -10,6 +10,7 @@ from typing import Optional, Tuple
 import numpy as np
 
 from auto_needle_insertion.utils.optical_tracking import read_instrument_pose
+from auto_needle_insertion.utils.pose_representations import project_to_se3, translation_scale
 
 
 class USProbe:
@@ -89,12 +90,12 @@ class USProbe:
             @ np.linalg.inv(self.top_in_to)
         )
 
-        scale = self._translation_scale(translation_in, translation_out)
+        scale = translation_scale(translation_in, translation_out)
         to_in_probe = to_in_probe.copy()
         to_in_probe[:3, 3] *= scale
 
         if orthonormalize_rotation:
-            to_in_probe = self._project_to_se3(to_in_probe)
+            to_in_probe = project_to_se3(to_in_probe)
 
         self.to_in_probe = to_in_probe
         return to_in_probe
@@ -141,39 +142,6 @@ class USProbe:
             node=node,
             qos_depth=qos_depth,
         )
-
-    @staticmethod
-    def _translation_scale(translation_in: str, translation_out: str) -> float:
-        if translation_in == "mm" and translation_out == "m":
-            return 1e-3
-        if translation_in == "m" and translation_out == "mm":
-            return 1e3
-        if translation_in == translation_out:
-            return 1.0
-        raise ValueError(f"Unsupported translation conversion: {translation_in} -> {translation_out}")
-
-    @staticmethod
-    def _project_to_se3(T: np.ndarray) -> np.ndarray:
-        T = np.asarray(T, dtype=float)
-        if T.shape != (4, 4):
-            raise RuntimeError(f"Transform must be (4,4), got {T.shape}")
-        if not np.all(np.isfinite(T)):
-            raise RuntimeError("Transform contains NaN/Inf")
-
-        A = T[:3, :3]
-        t = T[:3, 3].copy()
-
-        U, _, Vt = np.linalg.svd(A)
-        R = U @ Vt
-
-        if np.linalg.det(R) < 0:
-            U[:, -1] *= -1
-            R = U @ Vt
-
-        Tout = np.eye(4)
-        Tout[:3, :3] = R
-        Tout[:3, 3] = t
-        return Tout
 
     @staticmethod
     def _load_hand_eye_transform(json_path: str | Path) -> np.ndarray:
