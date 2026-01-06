@@ -87,6 +87,8 @@ VIDEO_TOPICS: Set[str] = {
     "/camera/camera/depth/image_rect_raw/compressedDepth",
     "/visualize/us_imaging/compressed",
     "/visualize/us_imaging_sync/compressed",
+    "/zed/zed_node/depth/depth_registered/compressedDepth",
+    "/zed/zed_node/stereo/image_rect_color/compressed"
 }
 
 KNOWN_ENCODINGS = {

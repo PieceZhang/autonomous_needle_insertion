@@ -16,9 +16,6 @@ sleep 0.25s
 ros2 bag record --output "$OUT_DIR/$BAG_NAME" --topics \
                 /vega_vt/image_raw/compressed /vega_vt/camera_info \
                 /image_raw/compressed \
-                /camera/camera/color/image_raw/compressed /camera/camera/color/camera_info /camera/camera/color/metadata \
-                /camera/camera/depth/image_rect_raw/compressedDepth /camera/camera/depth/camera_info /camera/camera/depth/metadata \
-                /camera/camera/extrinsics/depth_to_color \
                 /ati_ft_broadcaster/wrench \
                 /joint_states \
                 /tcp_pose_broadcaster/pose \
@@ -26,10 +23,16 @@ ros2 bag record --output "$OUT_DIR/$BAG_NAME" --topics \
                 /decoded_coor_image/needle_tip /decoded_coor_image/needle_origin \
                 /task_info /task_info_collection_states \
                 /keyboard_listener/glyphkey_pressed /keyboard_listener/key_pressed \
-                /visualize/us_imaging/compressed /visualize/us_imaging_sync/compressed
+                /visualize/us_imaging/compressed /visualize/us_imaging_sync/compressed \
+                /zed/zed_node/stereo/image_rect_color/compressed \
+                /zed/zed_node/depth/depth_registered/compressedDepth \
+                /zed/zed_node/pose
 #                --compression-mode file \
 #                --compression-format zstd
 
 
 # most of the size comes from /vega_vt/image_raw
 
+#                /camera/camera/color/image_raw/compressed /camera/camera/color/camera_info /camera/camera/color/metadata \
+#                /camera/camera/depth/image_rect_raw/compressedDepth /camera/camera/depth/camera_info /camera/camera/depth/metadata \
+#                /camera/camera/extrinsics/depth_to_color \
