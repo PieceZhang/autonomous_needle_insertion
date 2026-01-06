@@ -46,10 +46,16 @@ CONTROLLER_NAMES = ["scaled_joint_trajectory_controller", "joint_trajectory_cont
 PREFERRED_TIP_LINKS = ["tool0", "ee_link"]
 
 # Random ranges (editable):
-RAND_ROT_DEG = 8.0              # rotation jitter for P2 (roll/pitch/yaw, deg)
-STANDARD_ROT_Y_MAX_DEG = 6.0    # rotation motion amplitude about +/−Y
-STANDARD_ROCK_Z_MAX_DEG = 6.0   # rock motion amplitude about +/−Z
-STANDARD_TILT_X_MAX_DEG = 6.0   # tilt motion amplitude about +/−X
+INITIAL_AREA_DIAMETER = 0.07     # meters, diameter of circular area around C0 for P2 sampling
+RAND_ROT_DEG = 3.0              # rotation jitter for P2 (roll/pitch/yaw, deg)
+STANDARD_ROT_Y_MAX_DEG = 10.0    # rotation motion amplitude about +/−Y
+STANDARD_ROCK_Z_MAX_DEG = 10.0   # rock motion amplitude about +/−Z
+STANDARD_TILT_X_MAX_DEG = 10.0   # tilt motion amplitude about +/−X
+DELAY_AFTER_ROSBAG_MS = 300      # milliseconds to wait before starting rosbag recording
+MAX_TRACKER_LOST_SEC = float(os.getenv("TASK1_MAX_TRACKER_LOST", "3.0"))
+MAXIMUM_TRACKER_LOST = float(
+    os.getenv("TASK1_MAXIMUM_TRACKER_LOST", os.getenv("TASK1_MAX_TRACKER_LOST", "3.0"))
+)
 
 # ----------------- Logging -----------------
 logging.basicConfig(level=logging.INFO)
@@ -217,17 +223,20 @@ def get_tip_link_name(robot: MoveItPy, group_name: str) -> str:
 
 
 def execute_trajectory_with_fallback(robot: MoveItPy, trajectory, controllers: List[str] = CONTROLLER_NAMES) -> bool:
+    logger.info(f"Attempting execution with controllers: {controllers}")
     for controller in controllers:
         if controller is None:
             continue
         try:
+            logger.info(f"Sending trajectory to controller '{controller or 'default'}'")
             if controller:
                 robot.execute(trajectory, controllers=[controller])
             else:
                 robot.execute(trajectory)
+            logger.info(f"Controller '{controller or 'default'}' accepted trajectory")
             return True
         except Exception as e:
-            logger.warning(f"Controller '{controller}' failed: {e}")
+            logger.warning(f"Controller '{controller or 'default'}' failed: {e}")
     logger.error("All controllers failed")
     return False
 
@@ -236,12 +245,7 @@ def execute_trajectory_with_fallback(robot: MoveItPy, trajectory, controllers: L
 @dataclass
 class CaptureState:
     gt_to_in_tracker: Optional[np.ndarray] = None
-    corners: List[np.ndarray] = None
-
-    def __post_init__(self):
-        if self.corners is None:
-            self.corners = []
-
+    center_to_in_tracker: Optional[np.ndarray] = None
 
 # ----------------- Core logic -----------------
 class ProbePlacementTask:
@@ -285,6 +289,8 @@ class ProbePlacementTask:
 
         self.capture_state = CaptureState()
         self.rosbag = RosbagController()
+        self._last_probe_pose: Optional[Tuple[float, ...]] = None
+        self._last_probe_pose_time: Optional[float] = None
 
     def initialize_moveit(self) -> None:
         if self.robot is not None:
@@ -329,7 +335,7 @@ class ProbePlacementTask:
 
     def _tracker_in_base(self) -> np.ndarray:
         current_ee_transform = self._current_ee_transform()
-        probe_pose = self.us_probe.report_pose(timeout_sec=2.0)
+        probe_pose = self._safe_probe_pose(timeout_sec=2.0)
         tracker_in_base = current_ee_transform @ self.us_probe.probe_in_ee @ np.linalg.inv(quat_to_T(probe_pose))
         return tracker_in_base
 
@@ -342,6 +348,10 @@ class ProbePlacementTask:
         self.arm.set_start_state_to_current_state()
         pos = pose_goal.pose.position
         ori = pose_goal.pose.orientation
+        logger.info(
+            f"Planning for {label or 'target'} | pos=({pos.x:.4f},{pos.y:.4f},{pos.z:.4f}) "
+            f"ori=({ori.x:.4f},{ori.y:.4f},{ori.z:.4f},{ori.w:.4f})"
+        )
         goal_c = construct_link_constraint(
             link_name=self.tip_link,
             source_frame=self.planning_frame,
@@ -353,12 +363,46 @@ class ProbePlacementTask:
         self.arm.set_goal_state(motion_plan_constraints=[goal_c])
         plan_result = self.arm.plan(single_plan_parameters=self.plan_params)
         if not plan_result:
+            logger.error(f"Planning failed for {label or 'target'}")
             raise RuntimeError(f"Planning failed for {label or 'target'}")
+        logger.info(f"Planning success for {label or 'target'}; executing with controllers {self.controller_order}")
         if not execute_trajectory_with_fallback(self.robot, plan_result.trajectory, controllers=self.controller_order):
+            logger.error(f"Execution failed for {label or 'target'}")
             raise RuntimeError(f"Execution failed for {label or 'target'}")
+        logger.info(f"Execution succeeded for {label or 'target'}")
+
+    def _validate_probe_pose(self, pose: Tuple[float, ...]) -> Tuple[float, ...]:
+        arr = np.asarray(pose, dtype=float).reshape(-1)
+        if arr.size != 7 or not np.all(np.isfinite(arr)):
+            raise RuntimeError(f"Tracker pose invalid: {arr.tolist()}")
+        return pose
+
+    def _safe_probe_pose(self, timeout_sec: float = 2.0) -> Tuple[float, ...]:
+        now = time.monotonic()
+        try:
+            pose = self.us_probe.report_pose(timeout_sec=timeout_sec)
+            pose = self._validate_probe_pose(pose)
+            self._last_probe_pose = pose
+            self._last_probe_pose_time = now
+            return pose
+        except Exception as exc:
+            if (
+                self._last_probe_pose is not None
+                and self._last_probe_pose_time is not None
+                and (now - self._last_probe_pose_time) <= MAXIMUM_TRACKER_LOST
+            ):
+                age = now - self._last_probe_pose_time
+                logger.warning(
+                    "Tracker pose unavailable (%s); reusing cached pose (age=%.2fs <= %.2fs).",
+                    exc,
+                    age,
+                    MAXIMUM_TRACKER_LOST,
+                )
+                return self._last_probe_pose
+            raise RuntimeError("Tracker pose unavailable and cache expired.") from exc
 
     def _capture_to_in_tracker(self) -> np.ndarray:
-        probe_pose = self.us_probe.report_pose(timeout_sec=2.0)
+        probe_pose = self._safe_probe_pose(timeout_sec=2.0)
         to_in_tracker = quat_to_T(probe_pose) @ self.us_probe.to_in_probe
         _check_hmat(to_in_tracker, "to_in_tracker")
         return to_in_tracker
@@ -369,22 +413,26 @@ class ProbePlacementTask:
         logger.info("Captured GT point P1 (to_in_tracker).")
         print(_fmt("Step 1: GT captured.", "🧭"), flush=True)
 
-    def capture_corner(self) -> None:
+    def capture_center(self) -> None:
         if self.capture_state.gt_to_in_tracker is None:
             raise RuntimeError("Capture GT (step 1) first.")
         self.task_proc_pub.publish_step("2")
-        T_corner = self._capture_to_in_tracker()
-        self.capture_state.corners.append(T_corner)
-        logger.info(f"Captured corner C{len(self.capture_state.corners)}.")
-        print(_fmt(f"Step 2: Corner C{len(self.capture_state.corners)} captured.", "📐"), flush=True)
+        self.capture_state.center_to_in_tracker = self._capture_to_in_tracker()
+        logger.info("Captured center C0.")
+        print(_fmt("Step 2: Center C0 captured.", "📍"), flush=True)
 
     def _sample_random_pose_in_area(self) -> np.ndarray:
-        if self.capture_state.gt_to_in_tracker is None or len(self.capture_state.corners) < 4:
-            raise RuntimeError("Need GT and 4 corners captured before sampling P2.")
-        corners = self.capture_state.corners[:4]
-        weights = np.random.dirichlet([1.0, 1.0, 1.0, 1.0])
-        positions = np.stack([c[:3, 3] for c in corners], axis=0)
-        p = weights @ positions
+        if self.capture_state.gt_to_in_tracker is None or self.capture_state.center_to_in_tracker is None:
+            raise RuntimeError("Need GT and center C0 captured before sampling P2.")
+        center = self.capture_state.center_to_in_tracker
+        radius = INITIAL_AREA_DIAMETER * 0.5
+        r = radius * math.sqrt(random.random())
+        theta = random.uniform(0.0, 2.0 * math.pi)
+        dx = r * math.cos(theta)
+        dy = r * math.sin(theta)
+        p = center[:3, 3].copy()
+        p[0] += dx
+        p[1] += dy
         R_gt = self.capture_state.gt_to_in_tracker[:3, :3]
         jitter_seq = [
             ("rx", random.uniform(-RAND_ROT_DEG, RAND_ROT_DEG)),
@@ -409,6 +457,7 @@ class ProbePlacementTask:
         self.task_proc_pub.publish_step("4")
         print(_fmt("Step 4: Starting rosbag recording.", "⏺️"), flush=True)
         self.task_info_pub.set_state("started")
+        sleep_with_spin(self.executor, DELAY_AFTER_ROSBAG_MS / 1000.0)
         self.rosbag.start_recording()
 
     def stop_recording(self) -> None:
@@ -433,6 +482,7 @@ class ProbePlacementTask:
         ]
         for motion, values in sequences:
             for val in values:
+                logger.info(f"Standard action: {motion} {val:.2f} deg from home")
                 T_delta = transducer_motions(motion, val)
                 T_target = T_home @ T_delta
                 self._plan_and_execute_to_to_frame(T_target, label=f"{motion}:{val:.2f}")
@@ -519,7 +569,7 @@ def main() -> None:
 
     print(
         _fmt(
-            "Task 1 probe placement: press Enter to capture GT (step1), then Enter 4x to capture corners (step2).\n"
+            "Task 1 probe placement: press Enter to capture GT (step1), then Enter to capture center C0 (step2).\n"
             "Afterward, steps 3-7 will auto-repeat (home->record->standard action->GT->stop) until you press 'c'.",
             "🛰️",
         ),
@@ -531,13 +581,12 @@ def main() -> None:
         task.capture_gt()
         print(_fmt("GT captured ✅", "📍"), flush=True)
 
-        for i in range(4):
-            if not _wait_for_enter(task, f"[Step 2] Press Enter to capture corner C{i+1}..."):
-                print(_fmt("Cancel requested, exiting.", "🛑"), flush=True)
-                return
-            task.capture_corner()
-            print(_fmt(f"Corner C{i+1} captured", "📐"), flush=True)
-        print(_fmt("GT and 4 corners captured.", "✅"), flush=True)
+        if not _wait_for_enter(task, "[Step 2] Press Enter to capture center C0 for the initial area..."):
+            print(_fmt("Cancel requested, exiting.", "🛑"), flush=True)
+            return
+        task.capture_center()
+        print(_fmt("Center C0 captured", "📍"), flush=True)
+        print(_fmt("GT and center captured.", "✅"), flush=True)
 
         if not _wait_for_enter(task, "Now START the URCap program on the UR control panel, then press Enter to continue to motions...", allow_cancel=False):
             return
