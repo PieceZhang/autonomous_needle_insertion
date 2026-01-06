@@ -227,6 +227,37 @@ def main() -> None:
         image_in_tracker_after_centering = center_needle_in_image(
             image_in_tracker_after_alignment, needle_pose[0:3], needle_tip_position,
             x_center_in_plane=0.0, y_target_in_plane=0.080)
+        ee_target_pose_in_base = tracker_in_base @ image_in_tracker_after_centering @ np.linalg.inv(to_in_ee)
+
+        pose_goal = homogeneous_to_pose_stamped(ee_target_pose_in_base, planning_frame)
+        arm.set_start_state_to_current_state()
+        pos = pose_goal.pose.position
+        ori = pose_goal.pose.orientation
+        goal_c = construct_link_constraint(
+            link_name=tip_link,
+            source_frame=planning_frame,
+            cartesian_position=[pos.x, pos.y, pos.z],
+            cartesian_position_tolerance=1e-4,  # meters (start here)
+            orientation=[ori.x, ori.y, ori.z, ori.w],
+            orientation_tolerance=1e-4,  # radians (~0.057°) (start here)
+        )
+        arm.set_goal_state(motion_plan_constraints=[goal_c])
+
+        # Setup conservative planning parameters
+        plan_params = PlanRequestParameters(robot, "")
+        plan_params.max_velocity_scaling_factor = MAX_VELOCITY_SCALING
+        plan_params.max_acceleration_scaling_factor = MAX_ACCELERATION_SCALING
+
+        # Plan trajectory
+        plan_result = arm.plan(single_plan_parameters=plan_params)
+        if not plan_result:
+            logger.error(f"Planning to waypoint failed; aborting")
+
+        # Execute with fallback
+        if not execute_trajectory_with_fallback(robot, plan_result.trajectory):
+            logger.error(f"Execution to waypoint failed; aborting")
+
+        logger.info(f"P1 reached ...")
 
         # Apply small random perturbations.
         # If needle is not visible after a perturbation, retry up to MAX_PERTURBATION_TRIALS times.
@@ -234,9 +265,11 @@ def main() -> None:
         rng = np.random.default_rng()
         for attempt in range(1, MAX_PERTURBATION_TRIALS + 1):
             seed = int(rng.integers(0, 2**32 - 1))
-            preview_sequence = random_small_perturbation_sequence(rng=np.random.default_rng(seed))
             poses, _ = apply_random_small_perturbation(
                 image_in_tracker_after_centering,
+                rot_range_deg = (-10.0, 10.0),
+                sweep_range_mm = (-50.0, 50.0),
+                slide_range_mm = (-50.0, 50.0),
                 rng=np.random.default_rng(seed),
             )
             if not poses:
@@ -252,14 +285,15 @@ def main() -> None:
                 position_unit="m",
             )
             if needle_visible:
-                logger.info(f"Accepted perturbation sequence (attempt {attempt}): {preview_sequence}")
+                logger.info(f"Accepted perturbation sequence")
                 break
-            logger.info(f"Rejected perturbation sequence (attempt {attempt}): {preview_sequence}")
+            logger.info(f"Rejected perturbation sequence")
 
         if candidate_image_in_tracker is None:
             raise RuntimeError("Failed to find a valid perturbation with the needle in view.")
 
         ee_target_pose_in_base = tracker_in_base @ candidate_image_in_tracker @ np.linalg.inv(to_in_ee)
+        logger.info(f"candidate image in tracker: {candidate_image_in_tracker}")
         logger.info(f"Target pose of EE in base: {ee_target_pose_in_base}")
 
         pose_goal = homogeneous_to_pose_stamped(ee_target_pose_in_base, planning_frame)
@@ -290,7 +324,7 @@ def main() -> None:
         if not execute_trajectory_with_fallback(robot, plan_result.trajectory):
             logger.error(f"Execution to waypoint failed; aborting")
 
-        logger.info(f"Reached target pose")
+        logger.info(f"P2 Reached target pose")
 
 
     except Exception as e:
