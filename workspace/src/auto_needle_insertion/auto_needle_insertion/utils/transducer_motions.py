@@ -183,7 +183,7 @@ def standard_action_pose_sequence(
         ("sweep", sweep_mm),
         ("sweep", -2.0 * sweep_mm),
         ("sweep", sweep_mm),
-        ("compression", compression_mm),
+        ("compression", -compression_mm),
     ]
 
     poses: List[np.ndarray] = [np.array(T_probe, dtype=float, copy=True)]
@@ -194,3 +194,69 @@ def standard_action_pose_sequence(
         poses.append(T_running)
 
     return poses
+
+def sweep_z_waypoints(T_probe: np.ndarray,
+                      sweep_mm: float,
+                      num_points: int) -> tuple[list[np.ndarray], list[tuple[str, float]]]:
+    """
+    Generate waypoints for sweeping motion along z axis (0 -> -sweep -> +sweep -> 0).
+
+    Args:
+        T_probe:  4x4 homogeneous pose of the probe.
+        sweep_mm: Translation along Z (mm) for sweep.
+        num_points: number of points
+
+    Returns:
+       List of (motion, value) pairs.
+    """
+    if T_probe.shape != (4, 4):
+        raise ValueError("T_probe must be 4x4")
+
+    zs = np.linspace(-sweep_mm, sweep_mm, num_points).tolist()
+    poses: List[np.ndarray] = [np.array(T_probe, dtype=float, copy=True)]
+    seq: List[Tuple[str, float]] = []
+
+    prev_z = 0.0
+    T_running = np.array(T_probe, dtype=float, copy=True)
+    for z in zs:
+        dz = z - prev_z
+        T_step = transducer_motions("z", dz)  # mm
+        T_running = T_running @ T_step
+        poses.append(T_running)
+        seq.append(("z", dz))
+        prev_z = z
+
+    return poses, seq
+
+def rotate_waypoints(T_probe: np.ndarray,
+                     rotate_deg: float,
+                     num_points: int) -> tuple[list[np.ndarray], list[tuple[str, float]]]:
+    """
+    Genarate waypoints by rotating around y axis (0 -> -rotate_deg -> +rotate_deg).
+    
+    Args:
+        T_probe: 4x4 homogeneous pose of the probe.
+        rotate_deg: Rotation amplitude (positive, in degrees), range [-rotate_deg, +rotate_deg]
+        num_points: Number of sample points (>=2), including endpoints
+
+    Returns:
+        List of (motion, value) pairs.
+    """
+    if T_probe.shape != (4, 4):
+        raise ValueError("T_probe must be 4x4")
+
+    ys = np.linspace(-rotate_deg, rotate_deg, num_points).tolist()
+    poses: list[np.ndarray] = [np.array(T_probe, dtype=float, copy=True)]
+    seq: list[tuple[str, float]] = []
+
+    prev_y = 0.0
+    T_running = np.array(T_probe, dtype=float, copy=True)
+    for y in ys:
+        dy = y - prev_y 
+        T_step = transducer_motions("rotation", dy)  # deg
+        T_running = T_running @ T_step
+        poses.append(T_running)
+        seq.append(("rotation", dy))
+        prev_y = y
+
+    return poses, seq
