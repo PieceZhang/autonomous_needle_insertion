@@ -36,7 +36,13 @@ NODE_NAME = "task1_probe_placement"
 PLANNING_SCENE_SYNC_DELAY = 0.5
 MAX_VELOCITY_SCALING = 0.2
 MAX_ACCELERATION_SCALING = 0.2
-CONTROLLER_NAMES = ["scaled_joint_trajectory_controller", "", "joint_trajectory_controller"]
+# Planning robustness tweaks
+PLANNING_TIME = 10.0              # seconds
+PLANNING_ATTEMPTS = 5
+GOAL_POSITION_TOLERANCE = 5e-4    # meters
+GOAL_ORIENTATION_TOLERANCE = 5e-3 # radians (~0.29 deg)
+# Controller preference: try the non-scaled controller first, then scaled, then default
+CONTROLLER_NAMES = ["scaled_joint_trajectory_controller", "joint_trajectory_controller", ""]
 PREFERRED_TIP_LINKS = ["tool0", "ee_link"]
 
 # Random ranges (editable):
@@ -48,6 +54,15 @@ STANDARD_TILT_X_MAX_DEG = 6.0   # tilt motion amplitude about +/−X
 # ----------------- Logging -----------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def _controller_order_from_env() -> List[str]:
+    env_val = os.getenv("TASK1_CONTROLLER_ORDER", "").strip()
+    if not env_val:
+        return CONTROLLER_NAMES
+    # comma-separated controller names
+    order = [c.strip() for c in env_val.split(",") if c.strip()]
+    return order or CONTROLLER_NAMES
+
 
 def _auto_continue_enabled() -> bool:
     auto_env = os.getenv("TASK1_AUTO_CONTINUE", "").strip().lower()
@@ -203,6 +218,8 @@ def get_tip_link_name(robot: MoveItPy, group_name: str) -> str:
 
 def execute_trajectory_with_fallback(robot: MoveItPy, trajectory, controllers: List[str] = CONTROLLER_NAMES) -> bool:
     for controller in controllers:
+        if controller is None:
+            continue
         try:
             if controller:
                 robot.execute(trajectory, controllers=[controller])
@@ -253,6 +270,7 @@ class ProbePlacementTask:
         self.planning_frame = None
         self.tip_link = None
         self.arm_group_name = None
+        self.controller_order = list(dict.fromkeys(_controller_order_from_env()))
 
         # Calibration
         self.us_probe = USProbe()
@@ -292,6 +310,8 @@ class ProbePlacementTask:
         self.plan_params = PlanRequestParameters(self.robot, "")
         self.plan_params.max_velocity_scaling_factor = MAX_VELOCITY_SCALING
         self.plan_params.max_acceleration_scaling_factor = MAX_ACCELERATION_SCALING
+        self.plan_params.planning_time = PLANNING_TIME
+        self.plan_params.planning_attempts = PLANNING_ATTEMPTS
 
     def _spin_executor(self) -> None:
         while rclpy.ok() and self._spin_running:
@@ -326,15 +346,15 @@ class ProbePlacementTask:
             link_name=self.tip_link,
             source_frame=self.planning_frame,
             cartesian_position=[pos.x, pos.y, pos.z],
-            cartesian_position_tolerance=1e-4,
+            cartesian_position_tolerance=GOAL_POSITION_TOLERANCE,
             orientation=[ori.x, ori.y, ori.z, ori.w],
-            orientation_tolerance=1e-4,
+            orientation_tolerance=GOAL_ORIENTATION_TOLERANCE,
         )
         self.arm.set_goal_state(motion_plan_constraints=[goal_c])
         plan_result = self.arm.plan(single_plan_parameters=self.plan_params)
         if not plan_result:
             raise RuntimeError(f"Planning failed for {label or 'target'}")
-        if not execute_trajectory_with_fallback(self.robot, plan_result.trajectory):
+        if not execute_trajectory_with_fallback(self.robot, plan_result.trajectory, controllers=self.controller_order):
             raise RuntimeError(f"Execution failed for {label or 'target'}")
 
     def _capture_to_in_tracker(self) -> np.ndarray:
@@ -547,6 +567,7 @@ if __name__ == "__main__":
 '''
 # run with:
 source ./install/setup.bash 
+ros2 control list_controllers | grep trajectory
 ros2 launch auto_needle_insertion dataset.launch.py mode:=task1_probe_placement
 '''
 

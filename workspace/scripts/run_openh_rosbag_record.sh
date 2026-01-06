@@ -21,7 +21,7 @@ ros2 bag record --output "$OUT_DIR/$BAG_NAME" --topics \
                 /tcp_pose_broadcaster/pose \
                 /ndi/us_probe_pose /ndi/needle_pose /ndi/stylus_pose \
                 /decoded_coor_image/needle_tip /decoded_coor_image/needle_origin \
-                /task_info /task_info_collection_states \
+                /task_info /task_info_collection_states /task_procedure \
                 /keyboard_listener/glyphkey_pressed /keyboard_listener/key_pressed \
                 /visualize/us_imaging/compressed /visualize/us_imaging_sync/compressed \
                 /zed/zed_node/stereo/image_rect_color/compressed \
