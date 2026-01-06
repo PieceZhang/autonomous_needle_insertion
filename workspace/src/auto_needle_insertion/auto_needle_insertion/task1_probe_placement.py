@@ -35,7 +35,7 @@ os.environ.setdefault("RCUTILS_LOGGING_SEVERITY_THRESHOLD", "FATAL")
 NODE_NAME = "task1_probe_placement"
 PLANNING_SCENE_SYNC_DELAY = 0.5
 MAX_VELOCITY_SCALING = 0.2
-MAX_ACCELERATION_SCALING = 0.2
+MAX_ACCELERATION_SCALING = 0.1
 # Planning robustness tweaks
 PLANNING_TIME = 10.0              # seconds
 PLANNING_ATTEMPTS = 5
@@ -52,10 +52,7 @@ STANDARD_ROT_Y_MAX_DEG = 10.0    # rotation motion amplitude about +/−Y
 STANDARD_ROCK_Z_MAX_DEG = 10.0   # rock motion amplitude about +/−Z
 STANDARD_TILT_X_MAX_DEG = 10.0   # tilt motion amplitude about +/−X
 DELAY_AFTER_ROSBAG_MS = 300      # milliseconds to wait before starting rosbag recording
-MAX_TRACKER_LOST_SEC = float(os.getenv("TASK1_MAX_TRACKER_LOST", "3.0"))
-MAXIMUM_TRACKER_LOST = float(
-    os.getenv("TASK1_MAXIMUM_TRACKER_LOST", os.getenv("TASK1_MAX_TRACKER_LOST", "3.0"))
-)
+MAXIMUM_TRACKER_LOST = 5
 
 # ----------------- Logging -----------------
 logging.basicConfig(level=logging.INFO)
@@ -90,7 +87,7 @@ def _is_cancel_key(token: Optional[str]) -> bool:
 
 def _await_user(prompt: str) -> None:
     if _auto_continue_enabled():
-        logger.info("Auto-continue enabled via TASK1_AUTO_CONTINUE; skipping prompt: %s", prompt)
+        print(f"Auto-continue enabled via TASK1_AUTO_CONTINUE; skipping prompt: {prompt}", flush=True)
         return
     if not sys.stdin or not sys.stdin.isatty():
         raise SystemExit(
@@ -223,17 +220,17 @@ def get_tip_link_name(robot: MoveItPy, group_name: str) -> str:
 
 
 def execute_trajectory_with_fallback(robot: MoveItPy, trajectory, controllers: List[str] = CONTROLLER_NAMES) -> bool:
-    logger.info(f"Attempting execution with controllers: {controllers}")
+    print(f"Attempting execution with controllers: {controllers}", flush=True)
     for controller in controllers:
         if controller is None:
             continue
         try:
-            logger.info(f"Sending trajectory to controller '{controller or 'default'}'")
+            print(f"Sending trajectory to controller '{controller or 'default'}'", flush=True)
             if controller:
                 robot.execute(trajectory, controllers=[controller])
             else:
                 robot.execute(trajectory)
-            logger.info(f"Controller '{controller or 'default'}' accepted trajectory")
+            print(f"Controller '{controller or 'default'}' accepted trajectory", flush=True)
             return True
         except Exception as e:
             logger.warning(f"Controller '{controller or 'default'}' failed: {e}")
@@ -296,7 +293,7 @@ class ProbePlacementTask:
         if self.robot is not None:
             return
 
-        logger.info("Initializing MoveIt (requires URCap running)...")
+        print("Initializing MoveIt (requires URCap running)...", flush=True)
         self.robot = MoveItPy(node_name=NODE_NAME)
         time.sleep(PLANNING_SCENE_SYNC_DELAY)
 
@@ -310,8 +307,8 @@ class ProbePlacementTask:
         self.tip_link = get_tip_link_name(self.robot, self.arm_group_name)
         self.arm = self.robot.get_planning_component(self.arm_group_name)
 
-        logger.info(f"Planning frame: {self.planning_frame}")
-        logger.info(f"Using group: {self.arm_group_name}, tip link: {self.tip_link}")
+        print(f"Planning frame: {self.planning_frame}", flush=True)
+        print(f"Using group: {self.arm_group_name}, tip link: {self.tip_link}", flush=True)
 
         self.plan_params = PlanRequestParameters(self.robot, "")
         self.plan_params.max_velocity_scaling_factor = MAX_VELOCITY_SCALING
@@ -348,9 +345,10 @@ class ProbePlacementTask:
         self.arm.set_start_state_to_current_state()
         pos = pose_goal.pose.position
         ori = pose_goal.pose.orientation
-        logger.info(
+        print(
             f"Planning for {label or 'target'} | pos=({pos.x:.4f},{pos.y:.4f},{pos.z:.4f}) "
-            f"ori=({ori.x:.4f},{ori.y:.4f},{ori.z:.4f},{ori.w:.4f})"
+            f"ori=({ori.x:.4f},{ori.y:.4f},{ori.z:.4f},{ori.w:.4f})",
+            flush=True,
         )
         goal_c = construct_link_constraint(
             link_name=self.tip_link,
@@ -365,11 +363,11 @@ class ProbePlacementTask:
         if not plan_result:
             logger.error(f"Planning failed for {label or 'target'}")
             raise RuntimeError(f"Planning failed for {label or 'target'}")
-        logger.info(f"Planning success for {label or 'target'}; executing with controllers {self.controller_order}")
+        print(f"Planning success for {label or 'target'}; executing with controllers {self.controller_order}", flush=True)
         if not execute_trajectory_with_fallback(self.robot, plan_result.trajectory, controllers=self.controller_order):
             logger.error(f"Execution failed for {label or 'target'}")
             raise RuntimeError(f"Execution failed for {label or 'target'}")
-        logger.info(f"Execution succeeded for {label or 'target'}")
+        print(f"Execution succeeded for {label or 'target'}", flush=True)
 
     def _validate_probe_pose(self, pose: Tuple[float, ...]) -> Tuple[float, ...]:
         arr = np.asarray(pose, dtype=float).reshape(-1)
@@ -410,7 +408,7 @@ class ProbePlacementTask:
     def capture_gt(self) -> None:
         self.task_proc_pub.publish_step("1")
         self.capture_state.gt_to_in_tracker = self._capture_to_in_tracker()
-        logger.info("Captured GT point P1 (to_in_tracker).")
+        print("Captured GT point P1 (to_in_tracker).", flush=True)
         print(_fmt("Step 1: GT captured.", "🧭"), flush=True)
 
     def capture_center(self) -> None:
@@ -418,7 +416,7 @@ class ProbePlacementTask:
             raise RuntimeError("Capture GT (step 1) first.")
         self.task_proc_pub.publish_step("2")
         self.capture_state.center_to_in_tracker = self._capture_to_in_tracker()
-        logger.info("Captured center C0.")
+        print("Captured center C0.", flush=True)
         print(_fmt("Step 2: Center C0 captured.", "📍"), flush=True)
 
     def _sample_random_pose_in_area(self) -> np.ndarray:
@@ -482,7 +480,7 @@ class ProbePlacementTask:
         ]
         for motion, values in sequences:
             for val in values:
-                logger.info(f"Standard action: {motion} {val:.2f} deg from home")
+                print(f"Standard action: {motion} {val:.2f} deg from home", flush=True)
                 T_delta = transducer_motions(motion, val)
                 T_target = T_home @ T_delta
                 self._plan_and_execute_to_to_frame(T_target, label=f"{motion}:{val:.2f}")
