@@ -212,7 +212,7 @@ def sweep_z_waypoints(
     motions: list[tuple[str, float]] = [
         ("sweep", -sweep_abs),          # 0 -> -sweep
         ("sweep",  2.0 * sweep_abs),    # -sweep -> +sweep
-        ("sweep", -sweep_abs),          # +sweep -> 0
+        # ("sweep", -sweep_abs),          # +sweep -> 0
     ]
 
     poses: list[np.ndarray] = [np.array(T_probe, dtype=float, copy=True)]
@@ -257,7 +257,7 @@ def rotate_waypoints(
     motions: list[tuple[str, float]] = [
         ("rotation", -rot_abs),          # 0 -> -theta
         ("rotation",  2.0 * rot_abs),    # -theta -> +theta
-        ("rotation", -rot_abs),          # +theta -> 0
+        # ("rotation", -rot_abs),          # +theta -> 0
     ]
 
     poses: list[np.ndarray] = [np.array(T_probe, dtype=float, copy=True)]
