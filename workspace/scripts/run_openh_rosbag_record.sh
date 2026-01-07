@@ -24,8 +24,9 @@ ros2 bag record --output "$OUT_DIR/$BAG_NAME" --topics \
                 /task_info /task_info_collection_states /task_procedure \
                 /keyboard_listener/glyphkey_pressed /keyboard_listener/key_pressed \
                 /visualize/us_imaging/compressed /visualize/us_imaging_sync/compressed \
-                /zed/zed_node/stereo/image_rect_color/compressed \
+                /zed/zed_node/rgb/color/rect/image/compressed \
                 /zed/zed_node/depth/depth_registered/compressedDepth \
+                /zed/zed_node/point_cloud/cloud_registered \
                 /zed/zed_node/pose
 #                --compression-mode file \
 #                --compression-format zstd

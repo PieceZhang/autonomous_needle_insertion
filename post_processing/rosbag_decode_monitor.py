@@ -88,7 +88,10 @@ VIDEO_TOPICS: Set[str] = {
     "/visualize/us_imaging/compressed",
     "/visualize/us_imaging_sync/compressed",
     "/zed/zed_node/depth/depth_registered/compressedDepth",
-    "/zed/zed_node/stereo/image_rect_color/compressed"
+    "/zed/zed_node/rgb/color/rect/image/compressed"
+}
+POINTCLOUD_TOPICS: Set[str] = {
+    "/zed/zed_node/point_cloud/cloud_registered",
 }
 
 KNOWN_ENCODINGS = {
@@ -382,6 +385,13 @@ def require_video_dependencies() -> None:
         )
 
 
+def require_numpy_dependency() -> None:
+    if np is None:
+        raise RuntimeError(
+            "Decoding pointcloud topics requires the 'numpy' Python package. Install it via `pip install numpy`."
+        )
+
+
 def require_zstd_dependency() -> None:
     if zstd is None:
         raise RuntimeError(
@@ -656,6 +666,80 @@ def _raw_bytes_to_bgr(buffer: bytes, width: int, height: int, encoding: str, big
     return _raw_image_to_bgr(pseudo)
 
 
+POINTFIELD_DATATYPES = {
+    1: "int8",
+    2: "uint8",
+    3: "int16",
+    4: "uint16",
+    5: "int32",
+    6: "uint32",
+    7: "float32",
+    8: "float64",
+}
+
+def pointcloud_msg_to_array(msg: Any) -> Tuple["tnp.ndarray", Dict[str, Any]]:
+    if np is None:
+        require_numpy_dependency()
+    required = ("width", "height", "fields", "point_step", "row_step", "data")
+    if not all(hasattr(msg, attr) for attr in required):
+        raise ValueError("Unsupported pointcloud message; expected sensor_msgs/msg/PointCloud2-like fields.")
+    width = int(getattr(msg, "width", 0))
+    height = int(getattr(msg, "height", 0))
+    point_step = int(getattr(msg, "point_step", 0))
+    row_step = int(getattr(msg, "row_step", 0))
+    fields = list(getattr(msg, "fields", []) or [])
+    data = getattr(msg, "data", None)
+    is_bigendian = bool(getattr(msg, "is_bigendian", False))
+    is_dense = bool(getattr(msg, "is_dense", False))
+    if width <= 0 or height <= 0 or point_step <= 0 or data is None:
+        raise ValueError("Invalid PointCloud2 message dimensions or data.")
+    buf = memoryview(data)
+    expected_bytes = point_step * width * height
+    if len(buf) < expected_bytes:
+        raise ValueError(
+            f"PointCloud2 data buffer shorter than expected ({len(buf)} < {expected_bytes})."
+        )
+    names: List[str] = []
+    formats: List[Any] = []
+    offsets: List[int] = []
+    field_meta: List[Dict[str, Any]] = []
+    endian = ">" if is_bigendian else "<"
+    for f in fields:
+        name = getattr(f, "name", None)
+        datatype = int(getattr(f, "datatype", 0))
+        offset = int(getattr(f, "offset", 0))
+        count = int(getattr(f, "count", 1)) or 1
+        base = POINTFIELD_DATATYPES.get(datatype)
+        if not name or base is None:
+            continue
+        dtype = np.dtype(base).newbyteorder(endian)
+        if count > 1:
+            dtype = np.dtype((dtype, (count,)))
+        names.append(name)
+        formats.append(dtype)
+        offsets.append(offset)
+        field_meta.append(
+            {"name": name, "datatype": datatype, "offset": offset, "count": count}
+        )
+    if not names:
+        raise ValueError("PointCloud2 fields could not be interpreted.")
+    dtype = np.dtype({"names": names, "formats": formats, "offsets": offsets, "itemsize": point_step})
+    cloud = np.frombuffer(buf[:expected_bytes], dtype=dtype, count=width * height)
+    if height > 1:
+        cloud = cloud.reshape((height, width))
+    meta = {
+        "width": width,
+        "height": height,
+        "point_step": point_step,
+        "row_step": row_step,
+        "is_bigendian": is_bigendian,
+        "is_dense": is_dense,
+        "fields": field_meta,
+        "dtype": dtype.descr,
+    }
+    return cloud, meta
+
+
 class VideoTopicWriter:
     DEFAULT_FPS = 30.0
     MIN_FPS = 1.0
@@ -751,6 +835,66 @@ class VideoTopicWriter:
         return self.video_path, self.info_path
 
 
+class PointCloudTopicWriter:
+    def __init__(self, topic: str, output_dir: Path, overwrite: bool):
+        require_numpy_dependency()
+        self.topic = topic
+        self.output_dir = output_dir / sanitize_topic_name(topic)
+        self.overwrite = overwrite
+        self.info_path = self.output_dir / "pointcloud_info.json"
+        self._prepare_outputs()
+        self.cloud_count = 0
+        self.cloud_paths: List[Path] = []
+        self.timestamps: List[int] = []
+        self.bag_files: Set[str] = set()
+        self.first_meta: Optional[Dict[str, Any]] = None
+
+    def _prepare_outputs(self) -> None:
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        if self.info_path.exists():
+            if not self.overwrite:
+                raise FileExistsError(f"{self.info_path} already exists. Use --overwrite to replace it.")
+            self.info_path.unlink()
+        if self.overwrite:
+            for f in self.output_dir.glob("cloud_*.npz"):
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+        elif any(self.output_dir.glob("cloud_*.npz")):
+            raise FileExistsError(
+                f"Pointcloud outputs already exist for {self.topic}. Use --overwrite to replace them."
+            )
+
+    def add_cloud(self, cloud: "tnp.ndarray", timestamp_ns: int, bag_file: str, meta: Dict[str, Any]) -> None:
+        path = self.output_dir / f"cloud_{self.cloud_count:06d}.npz"
+        np.savez_compressed(path, points=cloud)
+        self.cloud_paths.append(path)
+        self.timestamps.append(int(timestamp_ns))
+        self.bag_files.add(bag_file)
+        if self.first_meta is None:
+            self.first_meta = meta
+        self.cloud_count += 1
+
+    def finalize(self) -> Optional[Tuple[List[Path], Path]]:
+        if self.cloud_count == 0:
+            return None
+        start_ns = min(self.timestamps) if self.timestamps else None
+        end_ns = max(self.timestamps) if self.timestamps else None
+        info = {
+            "topic": self.topic,
+            "cloud_count": self.cloud_count,
+            "cloud_files": [str(p) for p in self.cloud_paths],
+            "start_time_ns": start_ns,
+            "end_time_ns": end_ns,
+            "bag_files": sorted(self.bag_files),
+            "pointcloud_meta": self.first_meta,
+        }
+        with self.info_path.open("w", encoding="utf-8") as f:
+            json.dump(info, f, indent=2)
+        return self.cloud_paths, self.info_path
+
+
 def _safe_get_duration_seconds(info: Dict[str, Any]) -> float:
     dur = info.get("duration")
     if isinstance(dur, dict) and "nanoseconds" in dur:
@@ -811,7 +955,7 @@ def write_rosbag_info(metadata_path: Path, output_dir: Path, overwrite: bool, mc
             if topic_name:
                 sanitized = sanitize_topic_name(topic_name)
                 topic_dir = output_dir / sanitized
-                for info_fname in ("messages_info.json", "video_info.json"):
+                for info_fname in ("messages_info.json", "video_info.json", "pointcloud_info.json"):
                     candidate = topic_dir / info_fname
                     if candidate.is_file():
                         try:
@@ -918,11 +1062,17 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace, l
         return False
 
     selected_video_topics = set(topic_specs) & VIDEO_TOPICS
+    selected_pointcloud_topics = set(topic_specs) & POINTCLOUD_TOPICS
     if selected_video_topics:
         try:
             require_video_dependencies()
         except RuntimeError:
             # Dependency missing; cannot decode this bag; stay silent.
+            return False
+    if selected_pointcloud_topics:
+        try:
+            require_numpy_dependency()
+        except RuntimeError:
             return False
 
     expected_topics: Set[str] = set(topic_specs.keys())
@@ -945,6 +1095,7 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace, l
     ndjson_info_paths: Dict[str, Path] = {}
     ndjson_stats: Dict[str, Dict[str, Any]] = {}
     video_writers: Dict[str, VideoTopicWriter] = {}
+    pointcloud_writers: Dict[str, PointCloudTopicWriter] = {}
     total_messages = 0
     seen_topics: Set[str] = set()
 
@@ -1003,6 +1154,20 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace, l
                             continue
                         timestamp_ns = message.publish_time or message.log_time or 0
                         video_writer.add_frame(frame, timestamp_ns, mcap_path.name)
+                        total_messages += 1
+                        continue
+
+                    if topic in selected_pointcloud_topics:
+                        if topic not in pointcloud_writers:
+                            pointcloud_writers[topic] = PointCloudTopicWriter(topic, out_bag_dir, args.overwrite)
+                        pc_writer = pointcloud_writers[topic]
+                        try:
+                            cloud, cloud_meta = pointcloud_msg_to_array(decoded_msg)
+                        except Exception as exc:  # pragma: no cover
+                            logger.warn(f"Skipping pointcloud for {topic} in {mcap_path.name}: {exc}")
+                            continue
+                        timestamp_ns = message.publish_time or message.log_time or 0
+                        pc_writer.add_cloud(cloud, timestamp_ns, mcap_path.name, cloud_meta)
                         total_messages += 1
                         continue
 
@@ -1101,6 +1266,18 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace, l
         else:
             logger.warn(f"No frames decoded for {topic}; MP4 not created.")
 
+    pointcloud_outputs: Dict[str, Tuple[List[Path], Path]] = {}
+    for topic, writer in pointcloud_writers.items():
+        try:
+            result = writer.finalize()
+        except Exception as exc:  # pragma: no cover
+            logger.error(f"Failed to finalize pointclouds for {topic} in bag {bag_name}: {exc}")
+            return True
+        if result:
+            pointcloud_outputs[topic] = result
+        else:
+            logger.warn(f"No pointclouds decoded for {topic}; outputs not created.")
+
     try:
         info_json_path = write_rosbag_info(metadata_path, out_bag_dir, args.overwrite, mcap_path=None)
         logger.info(f"Wrote rosbag info -> {info_json_path}")
@@ -1109,7 +1286,8 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace, l
 
     logger.info(
         f"Finished decoding {bag_output_name}. Processed {total_messages} message(s), "
-        f"{len(ndjson_paths)} NDJSON topic(s), {len(video_outputs)} video topic(s)."
+        f"{len(ndjson_paths)} NDJSON topic(s), {len(video_outputs)} video topic(s), "
+        f"{len(pointcloud_outputs)} pointcloud topic(s)."
     )
     if ndjson_paths:
         logger.info("NDJSON outputs:")
@@ -1122,6 +1300,11 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace, l
         logger.info("Video outputs:")
         for topic, (video_path, info_path) in video_outputs.items():
             logger.info(f"   {topic} -> {video_path}")
+            logger.info(f"      info -> {info_path}")
+    if pointcloud_outputs:
+        logger.info("Pointcloud outputs:")
+        for topic, (cloud_paths, info_path) in pointcloud_outputs.items():
+            logger.info(f"   {topic} -> {len(cloud_paths)} cloud file(s)")
             logger.info(f"      info -> {info_path}")
 
     return True
@@ -1165,3 +1348,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
