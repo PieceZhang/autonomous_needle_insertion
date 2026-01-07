@@ -486,14 +486,22 @@ def move_tip_to_x_over_2_known(robot, arm, tip_link, planning_frame, to_in_base,
     plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target)
     return to_in_base
 
-def rotate_base_z_to_zero_known(robot, arm, tip_link, planning_frame, to_in_base, to_in_ee, tracker_in_base, needle_pose_tracker,
+def rotate_base_z_to_zero_known(robot, arm, tip_link, planning_frame, to_in_base, to_in_base_p1, to_in_ee, 
+                                tracker_in_base, needle_pose_tracker,
                                 ry_step_deg=0.4, tol_z=5e-4, max_iter=50):
+    x_ref = to_in_base_p1[0:3, 0]
     for _ in range(max_iter):
         base_in_to = base_in_to_frame(to_in_base, tracker_in_base, needle_pose_tracker)
         err_z = float(base_in_to[2])
         if abs(err_z) < tol_z:
             break
-        delta_deg = -ry_step_deg
+        x_cur = to_in_base[0:3, 0]
+        dot1 = float(np.dot(x_ref, x_cur))
+        dot1 = max(min(dot1, 1.0), -1.0)  
+        if err_z < 0 and dot1 > 0:
+            delta_deg = ry_step_deg
+        else:
+            delta_deg = -ry_step_deg
         T_step = transducer_motions("rotation", delta_deg)
         to_target = to_in_base @ T_step
         ee_target = to_target @ np.linalg.inv(to_in_ee)
@@ -514,6 +522,7 @@ def run_subtask_2(
     tip_link: str,
     planning_frame: str,
     to_in_ee: np.ndarray,
+    to_in_base_p1: np.ndarray,
     tracker_in_base: np.ndarray,
     needle_tip_position: np.ndarray,
     needle_pose: np.ndarray,
@@ -587,7 +596,7 @@ def run_subtask_2(
     logger.info("--------- Step 7-2: rotate to let base z to 0--------")
     to_in_base = rotate_base_z_to_zero_known(
         robot, arm, tip_link, planning_frame,
-        to_in_base, to_in_ee,
+        to_in_base, to_in_base_p1, to_in_ee,
         tracker_in_base,
         needle_pose,
     )
@@ -722,6 +731,7 @@ def main() -> None:
             logger.error("Execution to p1 failed; aborting")
             return
         logger.info("Reached target pose p1")
+        to_in_base_p1 = ee_target_pose_in_base @ to_in_ee
 
         # Plan and execute to p2
         ok = plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target_pose_in_base_p2)
@@ -738,12 +748,14 @@ def main() -> None:
         # )
 
         logger.info('start task 4.2')
+
         run_subtask_2(
             robot=robot,
             arm=arm,
             tip_link=tip_link,
             planning_frame=planning_frame,
             to_in_ee=to_in_ee,
+            to_in_base_p1=to_in_base_p1,
             tracker_in_base=tracker_in_base,
             needle_tip_position=needle_tip_position,
             needle_pose=needle_pose,
