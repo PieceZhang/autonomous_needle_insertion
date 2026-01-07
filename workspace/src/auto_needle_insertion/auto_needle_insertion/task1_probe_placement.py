@@ -47,10 +47,10 @@ PREFERRED_TIP_LINKS = ["tool0", "ee_link"]
 
 # Random ranges (editable):
 INITIAL_AREA_DIAMETER = 0.07     # meters, diameter of circular area around C0 for P2 sampling
-RAND_ROT_DEG = 3.0              # rotation jitter for P2 (roll/pitch/yaw, deg)
-STANDARD_ROT_Y_MAX_DEG = 10.0    # rotation motion amplitude about +/−Y
-STANDARD_ROCK_Z_MAX_DEG = 10.0   # rock motion amplitude about +/−Z
-STANDARD_TILT_X_MAX_DEG = 10.0   # tilt motion amplitude about +/−X
+RAND_ROT_DEG = 8.0              # rotation jitter for P2 (roll/pitch/yaw, deg)
+STANDARD_ROT_Y_MAX_DEG = 5.0    # rotation motion amplitude about +/−Y
+STANDARD_ROCK_Z_MAX_DEG = 5.0   # rock motion amplitude about +/−Z
+STANDARD_TILT_X_MAX_DEG = 5.0   # tilt motion amplitude about +/−X
 DELAY_AFTER_ROSBAG_MS = 300      # milliseconds to wait before starting rosbag recording
 MAXIMUM_TRACKER_LOST = 5
 
@@ -289,6 +289,9 @@ class ProbePlacementTask:
         self._last_probe_pose: Optional[Tuple[float, ...]] = None
         self._last_probe_pose_time: Optional[float] = None
 
+        # Cache tracker->base transform once (tracker assumed static in base frame)
+        self._tracker_in_base_cached: Optional[np.ndarray] = None
+
     def initialize_moveit(self) -> None:
         if self.robot is not None:
             return
@@ -331,10 +334,15 @@ class ProbePlacementTask:
             return scene.current_state.get_global_link_transform(self.tip_link)
 
     def _tracker_in_base(self) -> np.ndarray:
-        current_ee_transform = self._current_ee_transform()
-        probe_pose = self._safe_probe_pose(timeout_sec=2.0)
-        tracker_in_base = current_ee_transform @ self.us_probe.probe_in_ee @ np.linalg.inv(quat_to_T(probe_pose))
-        return tracker_in_base
+        if self._tracker_in_base_cached is None:
+            current_ee_transform = self._current_ee_transform()
+            probe_pose = self._safe_probe_pose(timeout_sec=2.0)
+            self._tracker_in_base_cached = current_ee_transform @ self.us_probe.probe_in_ee @ np.linalg.inv(
+                quat_to_T(probe_pose)
+            )
+            _check_hmat(self._tracker_in_base_cached, "tracker_in_base_cached")
+            print("Computed tracker_in_base once (assuming static tracker/base).", flush=True)
+        return self._tracker_in_base_cached
 
     def _plan_and_execute_to_to_frame(self, to_in_tracker: np.ndarray, label: str = "") -> None:
         self.initialize_moveit()
@@ -600,6 +608,8 @@ def main() -> None:
             task.move_to_gt()
             task.stop_recording()
             print(_fmt("Completed one full cycle of steps 3-7.", "🔁"), flush=True)
+            if not _wait_for_enter(task, "Press Enter to start the next cycle, or 'c' to cancel..."):
+                break
 
         print(_fmt("Exiting task.", "👋"), flush=True)
     except KeyboardInterrupt:
