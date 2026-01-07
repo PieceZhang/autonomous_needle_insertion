@@ -494,8 +494,18 @@ def rotate_base_z_to_zero_known(robot, arm, tip_link, planning_frame, to_in_base
         if abs(err_z) < tol_z:
             break
         delta_deg = ry_step_deg
-        to_in_base, ee_target = apply_local_step(to_in_base, to_in_ee, ("ry", delta_deg))
-        plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target)
+        T_step = transducer_motions("sweep", delta_deg)
+        to_target = to_in_base @ T_step
+        ee_target = to_target @ np.linalg.inv(to_in_ee)
+
+        # to_in_base, ee_target = apply_local_step(to_in_base, to_in_ee, ("z", dz_mm))
+        ok = plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target)
+        to_in_base = to_target
+        if not ok:
+            logger.error("move_tip_z_to_zero_known: execution failed")
+            break
+        # to_in_base, ee_target = apply_local_step(to_in_base, to_in_ee, ("ry", delta_deg))
+        # plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target)
     return to_in_base
 
 def run_subtask_2(
