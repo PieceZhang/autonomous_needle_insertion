@@ -50,6 +50,7 @@ from auto_needle_insertion.utils.transducer_motions import (
     random_small_perturbation_sequence,
     transducer_motions,
     sweep_z_waypoints,
+    slide_x_waypoints,
     rotate_waypoints,
     standard_action_pose_sequence,
 )
@@ -75,13 +76,13 @@ CONTROLLER_NAMES = [
 # Preferred tip link names in order of preference
 PREFERRED_TIP_LINKS = ["tool0", "ee_link"]
 
-# Task42 parameters and tolerances
-TIP_Z_TOL = 1e-3        # 1 mm
-TIP_X_TOL = 1e-3        # 1 mm
-BASE_Z_TOL = 1e-3       # 1 mm
-RY_STEP_DEG = 0.3       # ry fine-tune step
-MAX_ITER_TIP = 8
-MAX_ITER_BASE = 12
+# # Task42 parameters and tolerances
+# TIP_Z_TOL = 1e-3        # 1 mm
+# TIP_X_TOL = 1e-3        # 1 mm
+# BASE_Z_TOL = 1e-3       # 1 mm
+# RY_STEP_DEG = 0.3       # ry fine-tune step
+# MAX_ITER_TIP = 8
+# MAX_ITER_BASE = 12
 
 STEP5_SWEEP_MM = 10.0    # sweep amplitude for z sweep (positive, mm)
 STEP5_NUM = 10           # number of points (>=2) for z sweep
@@ -438,12 +439,37 @@ def base_in_to_frame(to_in_base: np.ndarray, tracker_in_base: np.ndarray, needle
     base_in_base_h = tracker_in_base @ np.concatenate([base_tracker, [1.0]])
     return point_in_local(to_in_base, base_in_base_h[:3])
 
-def move_tip_z_to_zero_known(robot, arm, tip_link, planning_frame, to_in_base, to_in_ee, tracker_in_base, tip_in_tracker, max_step_mm=5.0):
-    tip_in_to = tip_in_to_frame(to_in_base, tracker_in_base, tip_in_tracker)
-    dz_mm = float(np.clip(-tip_in_to[2] * 1000.0, -max_step_mm, max_step_mm))
-    to_in_base, ee_target = apply_local_step(to_in_base, to_in_ee, ("z", dz_mm))
-    plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target)
+def move_tip_z_to_zero_known(
+    robot, arm, tip_link, planning_frame,
+    to_in_base, to_in_ee,
+    tracker_in_base, tip_in_tracker,
+    max_step_mm=2.0,
+    tol=1e-3,          # 1 mm
+    max_iter=5,
+):
+    """
+    Let the needle tip approach to z = 0 in the tracker frame.
+    Iteratively compute tip z error
+    """
+    for _ in range(max_iter):
+        tip_in_to = tip_in_to_frame(to_in_base, tracker_in_base, tip_in_tracker)
+        err_z = float(tip_in_to[2])
+        if abs(err_z) < tol:
+            break
+        dz_mm = float(np.clip(-err_z * 1000.0, -max_step_mm, max_step_mm))
+        to_in_base, ee_target = apply_local_step(to_in_base, to_in_ee, ("z", dz_mm))
+        ok = plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target)
+        if not ok:
+            logger.error("move_tip_z_to_zero_known: execution failed")
+            break
     return to_in_base
+
+# def move_tip_z_to_zero_known(robot, arm, tip_link, planning_frame, to_in_base, to_in_ee, tracker_in_base, tip_in_tracker, max_step_mm=5.0):
+#     tip_in_to = tip_in_to_frame(to_in_base, tracker_in_base, tip_in_tracker)
+#     dz_mm = float(np.clip(-tip_in_to[2] * 1000.0, -max_step_mm, max_step_mm))
+#     to_in_base, ee_target = apply_local_step(to_in_base, to_in_ee, ("z", dz_mm))
+#     plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target)
+#     return to_in_base
 
 def move_tip_to_x_over_2_known(robot, arm, tip_link, planning_frame, to_in_base, to_in_ee, tracker_in_base, tip_in_tracker, x_target, max_step_mm=5.0):
     tip_in_to = tip_in_to_frame(to_in_base, tracker_in_base, tip_in_tracker)
@@ -455,7 +481,7 @@ def move_tip_to_x_over_2_known(robot, arm, tip_link, planning_frame, to_in_base,
     plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target)
     return to_in_base
 
-def rotate_base_z_to_zero_known(robot, arm, tip_link, planning_frame, to_in_base, to_in_ee, tracker_in_base, needle_pose_tracker, ry_step_deg=0.5, tol_z=1e-3, max_iter=8):
+def rotate_base_z_to_zero_known(robot, arm, tip_link, planning_frame, to_in_base, to_in_ee, tracker_in_base, needle_pose_tracker, ry_step_deg=0.3, tol_z=1e-3, max_iter=8):
     for _ in range(max_iter):
         base_in_to = base_in_to_frame(to_in_base, tracker_in_base, needle_pose_tracker)
         err_z = float(base_in_to[2])
@@ -466,34 +492,40 @@ def rotate_base_z_to_zero_known(robot, arm, tip_link, planning_frame, to_in_base
         plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target)
     return to_in_base
 
-def run_task42_known_sequence(
+def run_subtask_2(
     robot,
     arm,
     tip_link: str,
     planning_frame: str,
     to_in_ee: np.ndarray,
     tracker_in_base: np.ndarray,
-    to_in_tracker: np.ndarray,
     needle_tip_position: np.ndarray,
     needle_pose: np.ndarray,
     sweep_mm: float = STEP5_SWEEP_MM,
-    sweep_num: int = STEP5_NUM,
     x_target: float = TIP_TARGET_X,
     rotate_deg: float = STEP7_ROTATE_DEG,
-    rotate_num: int = STEP7_NUM,
 ):
     # Current transducer pose in base
-    to_in_base = tracker_in_base @ to_in_tracker
-
+    current_ee_transfrorm = get_current_ee_transform(robot, tip_link)
+    to_in_base = current_ee_transfrorm @ to_in_ee
+    logger.info("Step 5-1: sweep along local z axis")
     # Sweep -z to +z
-    _, seq = sweep_z_waypoints(np.eye(4), sweep_mm=sweep_mm, num_points=sweep_num)
-    for i, step in enumerate(seq):
-        to_in_base, ee_target = apply_local_step(to_in_base, to_in_ee, step)
-        if not plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target):
-            logger.error(f"[known] z sweep failed at index {i}")
-            return to_in_base
+    poses_sweep = sweep_z_waypoints(to_in_base, sweep_mm=sweep_mm)
+    ok = execute_probe_pose_sequence(robot, arm, tip_link, planning_frame, to_in_ee, poses_sweep[1:])
+    if not ok:
+        logger.error("[known] z sweep failed")
+        return to_in_base
+    to_in_base = poses_sweep[-1]
+
+    # _, seq = sweep_z_waypoints(np.eye(4), sweep_mm=sweep_mm, num_points=sweep_num)
+    # for i, step in enumerate(seq):
+    #     to_in_base, ee_target = apply_local_step(to_in_base, to_in_ee, step)
+    #     if not plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target):
+    #         logger.error(f"[known] z sweep failed at index {i}")
+    #         return to_in_base
 
     # Tip to ( *, *, 0 )
+    logger.info("Step 5-2: sweep to let tip z to 0")
     to_in_base = move_tip_z_to_zero_known(
         robot, arm, tip_link, planning_frame,
         to_in_base, to_in_ee,
@@ -502,30 +534,45 @@ def run_task42_known_sequence(
     )
 
     # Tip to ( x/2, *, 0 )
-    to_in_base = move_tip_to_x_over_2_known(
-        robot, arm, tip_link, planning_frame,
-        to_in_base, to_in_ee,
-        tracker_in_base,
-        needle_tip_position,
-        x_target=x_target,
-    )
+    logger.info("Step 6: slide to (x/2, *, 0))")
+    poses_slide = slide_x_waypoints(to_in_base, slide_mm=STEP6_SLIDE_MM/2)
+    ok = execute_probe_pose_sequence(robot, arm, tip_link, planning_frame, to_in_ee, poses_slide[1:])
+    if ok:
+        to_in_base = poses_slide[-1]
+
+    # to_in_base = move_tip_to_x_over_2_known(
+    #     robot, arm, tip_link, planning_frame,
+    #     to_in_base, to_in_ee,
+    #     tracker_in_base,
+    #     needle_tip_position,
+    #     x_target=x_target,
+    # )
 
     # Rotate -theta to +theta
-    _, seq7 = rotate_waypoints(np.eye(4), rotate_deg=rotate_deg, num_points=rotate_num)
-    for i, step in enumerate(seq7):
-        to_in_base, ee_target = apply_local_step(to_in_base, to_in_ee, step)
-        if not plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target):
-            logger.error(f"[known] ry sweep failed at index {i}")
-            return to_in_base
+    logger.info("Step 7-1: rotate around y axis")
+    poses_rotate = rotate_waypoints(to_in_base, rotate_deg=rotate_deg)
+    ok = execute_probe_pose_sequence(robot, arm, tip_link, planning_frame, to_in_ee, poses_rotate[1:])
+    if not ok:
+        logger.error("[known] ry sweep failed")
+        return to_in_base
+    to_in_base = poses_rotate[-1]
+
+    # _, seq7 = rotate_waypoints(np.eye(4), rotate_deg=rotate_deg, num_points=rotate_num)
+    # for i, step in enumerate(seq7):
+    #     to_in_base, ee_target = apply_local_step(to_in_base, to_in_ee, step)
+    #     if not plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target):
+    #         logger.error(f"[known] ry sweep failed at index {i}")
+    #         return to_in_base
 
     # Adjust needle origin z to 0 via ry
+    logger.info("Step 7-2: rotate to let base z to 0")
     to_in_base = rotate_base_z_to_zero_known(
         robot, arm, tip_link, planning_frame,
         to_in_base, to_in_ee,
         tracker_in_base,
         needle_pose,
     )
-    return to_in_base
+    # return to_in_base
 
 
 # ---------------------- Main ----------------------
@@ -671,7 +718,7 @@ def main() -> None:
         # )
 
         logger.info('start task 4.2')
-        to_in_base = run_task42_known_sequence(
+        run_subtask_2(
             robot=robot,
             arm=arm,
             tip_link=tip_link,
