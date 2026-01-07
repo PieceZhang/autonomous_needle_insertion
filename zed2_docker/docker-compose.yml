@@ -17,6 +17,7 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /dev:/dev
       - /dev/shm:/dev/shm
+      - ./bridge.yaml:/bridge.yaml:ro
 
     gpus: all
 
@@ -30,3 +31,14 @@ services:
         source /root/ros2_ws/install/local_setup.bash &&
         ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zed2 depth_quality:=NEURAL
       "
+      
+      
+  domain_bridge:
+    image: zed_ros2_desktop_u24.04_sdk_5.1.0_cuda_12.6.3:latest
+    network_mode: host
+    volumes:
+      - ./bridge.yaml:/bridge.yaml:ro
+    command: >
+      bash -lc "source /opt/ros/jazzy/setup.bash &&
+                ros2 run domain_bridge domain_bridge /bridge.yaml"
+                
