@@ -46,9 +46,9 @@ CONTROLLER_NAMES = ["scaled_joint_trajectory_controller", "joint_trajectory_cont
 PREFERRED_TIP_LINKS = ["tool0", "ee_link"]
 
 # Random ranges (editable):
-INITIAL_AREA_DIAMETER = 0.07     # meters, diameter of circular area around C0 for P2 sampling
-RAND_ROT_DEG = 8.0              # rotation jitter for P2 (roll/pitch/yaw, deg)
-STANDARD_ROT_Y_MAX_DEG = 5.0    # rotation motion amplitude about +/−Y
+INITIAL_AREA_DIAMETER = 0.12     # meters, diameter of circular area around C0 for P2 sampling
+RAND_ROT_DEG = 10.0              # rotation jitter for P2 (roll/pitch/yaw, deg)
+STANDARD_ROT_Y_MAX_DEG = 20.0    # rotation motion amplitude about +/−Y
 STANDARD_ROCK_Z_MAX_DEG = 5.0   # rock motion amplitude about +/−Z
 STANDARD_TILT_X_MAX_DEG = 5.0   # tilt motion amplitude about +/−X
 DELAY_AFTER_ROSBAG_MS = 300      # milliseconds to wait before starting rosbag recording
@@ -483,8 +483,8 @@ class ProbePlacementTask:
         print(_fmt("Step 5: Performing standard motion sequence.", "🔄"), flush=True)
         sequences = [
             ("rotation", self._standard_motion_sequence(STANDARD_ROT_Y_MAX_DEG)),
-            ("rock", self._standard_motion_sequence(STANDARD_ROCK_Z_MAX_DEG)),
-            ("tilt", self._standard_motion_sequence(STANDARD_TILT_X_MAX_DEG)),
+            # ("rock", self._standard_motion_sequence(STANDARD_ROCK_Z_MAX_DEG)),
+            # ("tilt", self._standard_motion_sequence(STANDARD_TILT_X_MAX_DEG)),
         ]
         for motion, values in sequences:
             for val in values:
@@ -608,8 +608,8 @@ def main() -> None:
             task.move_to_gt()
             task.stop_recording()
             print(_fmt("Completed one full cycle of steps 3-7.", "🔁"), flush=True)
-            if not _wait_for_enter(task, "Press Enter to start the next cycle, or 'c' to cancel..."):
-                break
+            # if not _wait_for_enter(task, "Press Enter to start the next cycle, or 'c' to cancel..."):
+            #     break
 
         print(_fmt("Exiting task.", "👋"), flush=True)
     except KeyboardInterrupt:
