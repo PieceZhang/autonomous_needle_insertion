@@ -443,9 +443,9 @@ def move_tip_z_to_zero_known(
     robot, arm, tip_link, planning_frame,
     to_in_base, to_in_ee,
     tracker_in_base, tip_in_tracker,
-    max_step_mm=2.0,
+    max_step_mm=3.0,
     tol=5e-4,          # 1 mm
-    max_iter=20,
+    max_iter=50,
 ):
     """
     Let the needle tip approach to z = 0 in the tracker frame.
@@ -487,14 +487,14 @@ def move_tip_to_x_over_2_known(robot, arm, tip_link, planning_frame, to_in_base,
     return to_in_base
 
 def rotate_base_z_to_zero_known(robot, arm, tip_link, planning_frame, to_in_base, to_in_ee, tracker_in_base, needle_pose_tracker,
-                                ry_step_deg=0.5, tol_z=5e-4, max_iter=20):
+                                ry_step_deg=0.4, tol_z=5e-4, max_iter=50):
     for _ in range(max_iter):
         base_in_to = base_in_to_frame(to_in_base, tracker_in_base, needle_pose_tracker)
         err_z = float(base_in_to[2])
         if abs(err_z) < tol_z:
             break
-        delta_deg = ry_step_deg
-        T_step = transducer_motions("sweep", delta_deg)
+        delta_deg = -ry_step_deg
+        T_step = transducer_motions("rotation", delta_deg)
         to_target = to_in_base @ T_step
         ee_target = to_target @ np.linalg.inv(to_in_ee)
 
