@@ -17,6 +17,7 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /dev:/dev
       - /dev/shm:/dev/shm
+      - ./bridge.yaml:/bridge.yaml:ro
 
     gpus: all
 

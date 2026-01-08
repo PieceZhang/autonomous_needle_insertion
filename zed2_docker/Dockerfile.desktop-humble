@@ -93,6 +93,7 @@ ENV PIP_BREAK_SYSTEM_PACKAGES=1
 RUN apt-get update || true && \
   apt-get install --no-install-recommends -y \
   ros-${ROS2_DIST}-rmw-cyclonedds-cpp \
+  ros-${ROS2_DIST}-domain-bridge \
   ros-${ROS2_DIST}-ros-base \
   python3-flake8-docstrings \
   python3-pip \
