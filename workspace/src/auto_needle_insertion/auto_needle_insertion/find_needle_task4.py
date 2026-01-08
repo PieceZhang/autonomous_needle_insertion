@@ -87,8 +87,6 @@ STEP5_SWEEP_MM = 20.0    # sweep amplitude for z sweep (positive, mm)
 STEP6_SLIDE_MM = 20.0    # total slide length used to compute x/2 target (mm)
 STEP7_ROTATE_DEG = 10.0   # rotation amplitude for ry sweep (deg)
 
-TIP_TARGET_X = (STEP6_SLIDE_MM / 1000.0) * 0.5  # meters (x/2 target for step6)
-
 # Task 4.1 standard action parameters
 TASK41_TILT_DEG = 10.0        # tilt/fan about X
 TASK41_ROCK_DEG = 10.0        # rock about Z
@@ -220,13 +218,6 @@ def get_current_ee_transform(robot: MoveItPy, tip_link: str) -> np.ndarray:
     with robot.get_planning_scene_monitor().read_only() as scene:
         scene.current_state.update()
         return scene.current_state.get_global_link_transform(tip_link)
-
-
-def apply_local_step(to_in_base: np.ndarray, to_in_ee: np.ndarray, step: Tuple[str, float]) -> Tuple[np.ndarray, np.ndarray]:
-    T_step = transducer_motions(step[0], step[1])
-    to_in_base_new = to_in_base @ T_step
-    ee_target = to_in_base_new @ np.linalg.inv(to_in_ee)
-    return to_in_base_new, ee_target
 
 
 def point_in_local(T_local_in_base: np.ndarray, p_in_base: np.ndarray) -> np.ndarray:
@@ -483,8 +474,6 @@ def main() -> None:
         rosbag_active = False
 
     task_mode = "two"
-    if len(sys.argv) > 1:
-        task_mode = sys.argv[1].strip().lower()
     logger.info(f"Selected task mode: {task_mode} ('one' -> Subtask 1, 'two' -> Subtask 2)")
 
     try:
@@ -550,107 +539,107 @@ def main() -> None:
         image_width_m = IMAGE_WIDTH_PX * pixel_spacing_x
         image_height_m = IMAGE_HEIGHT_PX * pixel_spacing_y
 
-        # Frames
-        tracker_in_base = current_ee_transform @ probe_in_ee @ np.linalg.inv(quat_to_T(probe_pose))
-        to_in_tracker = quat_to_T(probe_pose) @ to_in_probe
+        while True:
+            # Frames
+            tracker_in_base = current_ee_transform @ probe_in_ee @ np.linalg.inv(quat_to_T(probe_pose))
+            to_in_tracker = quat_to_T(probe_pose) @ to_in_probe
 
-        # Align and center image frame
-        image_in_tracker_after_alignment = align_image_to_needle_axis(
-            to_in_tracker, needle_pose[0:3], needle_tip_position
-        )
-        image_in_tracker_after_centering = center_needle_in_image(
-            image_in_tracker_after_alignment, needle_pose[0:3], needle_tip_position,
-            x_center_in_plane=0.0, y_target_in_plane=0.07
-        )
-
-        # Apply small random perturbations to get candidate image pose (p2)
-        candidate_image_in_tracker = None
-        rng = np.random.default_rng()
-        for attempt in range(1, MAX_PERTURBATION_TRIALS + 1):
-            seed = int(rng.integers(0, 2**32 - 1))
-            poses, _ = apply_random_small_perturbation(
-                image_in_tracker_after_centering,
-                rot_range_deg=(-10.0, 10.0),
-                sweep_range_mm=(-20.0, 20.0),
-                slide_range_mm=(-20.0, 20.0),
-                rng=np.random.default_rng(seed),
+            # Align and center image frame
+            image_in_tracker_after_alignment = align_image_to_needle_axis(
+                to_in_tracker, needle_pose[0:3], needle_tip_position
             )
-            if not poses:
-                logger.warning("No perturbation poses generated; retrying.")
-                continue
-            candidate_image_in_tracker = poses[-1]
-            needle_visible = needle_segment_in_image(
-                candidate_image_in_tracker,
-                needle_pose[0:3],
-                needle_tip_position,
-                image_width=image_width_m,
-                image_height=image_height_m,
-                position_unit="m",
-            )
-            if needle_visible:
-                logger.info(f"Accepted perturbation sequence")
-                break
-            logger.info(f"Rejected perturbation sequence")
-
-        if candidate_image_in_tracker is None:
-            raise RuntimeError("Failed to find a valid perturbation with the needle in view.")
-
-        # p1
-        ee_target_pose_in_base = tracker_in_base @ image_in_tracker_after_centering @ np.linalg.inv(to_in_ee)
-        logger.info(f"GT pose p1 (EE in base):\n{ee_target_pose_in_base}")
-
-        # p2
-        ee_target_pose_in_base_p2 = tracker_in_base @ candidate_image_in_tracker @ np.linalg.inv(to_in_ee)
-        logger.info(f"Random pose p2 (EE in base):\n{ee_target_pose_in_base_p2}")
-
-        task_proc_pub.publish_step("move_p1")
-        start_rosbag_recording()
-        # Plan and execute to p1
-        ok = plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target_pose_in_base)
-        if not ok:
-            logger.error("Execution to p1 failed; aborting")
-            stop_rosbag_recording(success=False)
-            return
-        logger.info("Reached target pose p1")
-        task_proc_pub.publish_step("p1_reached")
-        to_in_base_p1 = ee_target_pose_in_base @ to_in_ee
-
-        task_proc_pub.publish_step("move_p2")
-        # Plan and execute to p2
-        ok = plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target_pose_in_base_p2)
-        if not ok:
-            logger.error("Execution to p2 failed; aborting")
-            stop_rosbag_recording(success=False)
-            return
-        logger.info("Reached target pose p2")
-        task_proc_pub.publish_step("p2_reached")
-
-        if task_mode == "one":
-            logger.info('start task 4.1')
-            run_subtask_1(
-                robot, arm, tip_link, planning_frame,
-                to_in_ee,
-                ee_target_pose_in_base,
-                task_proc_pub,
+            image_in_tracker_after_centering = center_needle_in_image(
+                image_in_tracker_after_alignment, needle_pose[0:3], needle_tip_position,
+                x_center_in_plane=0.0, y_target_in_plane=0.07
             )
 
-        if task_mode == "two":
-            logger.info('start task 4.2')
-            run_subtask_2(
-                robot=robot,
-                arm=arm,
-                tip_link=tip_link,
-                planning_frame=planning_frame,
-                to_in_ee=to_in_ee,
-                to_in_base_p1=to_in_base_p1,
-                tracker_in_base=tracker_in_base,
-                needle_tip_position=needle_tip_position,
-                needle_pose=needle_pose,
-                task_proc_pub=task_proc_pub,
-            )
+            # Apply small random perturbations to get candidate image pose (p2)
+            candidate_image_in_tracker = None
+            rng = np.random.default_rng()
+            for attempt in range(1, MAX_PERTURBATION_TRIALS + 1):
+                seed = int(rng.integers(0, 2**32 - 1))
+                poses, _ = apply_random_small_perturbation(
+                    image_in_tracker_after_centering,
+                    rot_range_deg=(-10.0, 10.0),
+                    sweep_range_mm=(-20.0, 20.0),
+                    slide_range_mm=(-20.0, 20.0),
+                    rng=np.random.default_rng(seed),
+                )
+                if not poses:
+                    logger.warning("No perturbation poses generated; retrying.")
+                    continue
+                candidate_image_in_tracker = poses[-1]
+                needle_visible = needle_segment_in_image(
+                    candidate_image_in_tracker,
+                    needle_pose[0:3],
+                    needle_tip_position,
+                    image_width=image_width_m,
+                    image_height=image_height_m,
+                    position_unit="m",
+                )
+                if needle_visible:
+                    logger.info(f"Accepted perturbation sequence")
+                    break
+                logger.info(f"Rejected perturbation sequence")
 
-        stop_rosbag_recording(success=True)
-        task_info_pub.set_state("Success")
+            if candidate_image_in_tracker is None:
+                raise RuntimeError("Failed to find a valid perturbation with the needle in view.")
+
+            # p1
+            ee_target_pose_in_base = tracker_in_base @ image_in_tracker_after_centering @ np.linalg.inv(to_in_ee)
+            logger.info(f"GT pose p1 (EE in base):\n{ee_target_pose_in_base}")
+
+            # p2
+            ee_target_pose_in_base_p2 = tracker_in_base @ candidate_image_in_tracker @ np.linalg.inv(to_in_ee)
+            logger.info(f"Random pose p2 (EE in base):\n{ee_target_pose_in_base_p2}")
+
+            task_proc_pub.publish_step("move_p1")
+            start_rosbag_recording()
+            # Plan and execute to p1
+            ok = plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target_pose_in_base)
+            if not ok:
+                logger.error("Execution to p1 failed; aborting")
+                stop_rosbag_recording(success=False)
+                return
+            logger.info("Reached target pose p1")
+            task_proc_pub.publish_step("p1_reached")
+            to_in_base_p1 = ee_target_pose_in_base @ to_in_ee
+
+            task_proc_pub.publish_step("move_p2")
+            # Plan and execute to p2
+            ok = plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target_pose_in_base_p2)
+            if not ok:
+                logger.error("Execution to p2 failed; aborting")
+                stop_rosbag_recording(success=False)
+                return
+            logger.info("Reached target pose p2")
+            task_proc_pub.publish_step("p2_reached")
+
+            if task_mode == "one":
+                logger.info('start task 4.1')
+                run_subtask_1(
+                    robot, arm, tip_link, planning_frame,
+                    to_in_ee,
+                    ee_target_pose_in_base,
+                    task_proc_pub,
+                )
+            elif task_mode == "two":
+                logger.info('start task 4.2')
+                run_subtask_2(
+                    robot=robot,
+                    arm=arm,
+                    tip_link=tip_link,
+                    planning_frame=planning_frame,
+                    to_in_ee=to_in_ee,
+                    to_in_base_p1=to_in_base_p1,
+                    tracker_in_base=tracker_in_base,
+                    needle_tip_position=needle_tip_position,
+                    needle_pose=needle_pose,
+                    task_proc_pub=task_proc_pub,
+                )
+
+            stop_rosbag_recording(success=True)
+            task_info_pub.set_state("Success")
 
     except Exception as e:
         logger.error(f"Trajectory execution failed: {e}")
