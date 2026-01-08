@@ -93,8 +93,8 @@ TASK41_ROCK_DEG = 10.0        # rock about Z
 TASK41_SWEEP_MM = 4.0        # sweep along Z (mm)
 TASK41_COMPRESSION_MM = 1.0  # compression along Y (mm)
 
-DELAY_AFTER_ROSBAG_SEC = 0.3
-ROSBAG_STOP_WAIT_SEC = 0.3
+DELAY_AFTER_ROSBAG_SEC = 0.5
+ROSBAG_STOP_WAIT_SEC = 0.5
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -605,8 +605,6 @@ def main() -> None:
             logger.info(f"Random pose p2 (EE in base):\n{ee_target_pose_in_base_p2}")
 
             task_proc_pub.publish_step("move_p1")
-            print('Starting rosbag and moving to p1...')
-            start_rosbag_recording()
             # Plan and execute to p1
             ok = plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target_pose_in_base)
             if not ok:
@@ -626,6 +624,10 @@ def main() -> None:
                 return
             logger.info("Reached target pose p2")
             task_proc_pub.publish_step("p2_reached")
+
+            # Start rosbag recording after reaching p2
+            print('Starting rosbag')
+            start_rosbag_recording()
 
             if task_subtask == 1:
                 logger.info("start task 4.1")
