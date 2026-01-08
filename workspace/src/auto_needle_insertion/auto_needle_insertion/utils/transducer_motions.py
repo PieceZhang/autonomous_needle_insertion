@@ -226,21 +226,6 @@ def sweep_z_waypoints(
     return poses
 
 
-def slide_x_waypoints(
-    T_probe: np.ndarray,
-    slide_mm: float,  
-) -> List[np.ndarray]:
-    """
-    Generate waypoints for sliding motion along x axis (0 -> slide)
-    """
-    if T_probe.shape != (4, 4):
-        raise ValueError("T_probe must be 4x4")
-    slide_abs = abs(float(slide_mm))
-    T_step = transducer_motions("slide", slide_abs)
-    to_target = T_probe @ T_step
-    return [T_probe, to_target]
-
-
 def rotate_waypoints(
     T_probe: np.ndarray,
     rotate_deg: float,
