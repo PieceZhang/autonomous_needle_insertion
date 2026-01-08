@@ -463,8 +463,8 @@ class ProbePlacementTask:
         self.task_proc_pub.publish_step("4")
         print(_fmt("Step 4: Starting rosbag recording.", "⏺️"), flush=True)
         self.task_info_pub.set_state("started")
-        sleep_with_spin(self.executor, DELAY_AFTER_ROSBAG_MS / 1000.0)
         self.rosbag.start_recording()
+        sleep_with_spin(self.executor, DELAY_AFTER_ROSBAG_MS / 1000.0)
 
     def stop_recording(self) -> None:
         self.task_proc_pub.publish_step("7")
