@@ -31,10 +31,18 @@ from rclpy.node import Node
 
 from auto_needle_insertion.utils.needle import Needle
 from auto_needle_insertion.utils.optical_tracking import read_instrument_pose
-from auto_needle_insertion.utils.find_needle import align_image_to_needle_axis, center_needle_in_image
+from auto_needle_insertion.utils.find_needle import (
+    align_image_to_needle_axis,
+    center_needle_in_image,
+    needle_segment_in_image,
+)
 from auto_needle_insertion.utils.pose_representations import (
     homogeneous_to_pose_stamped,
     quat_to_T,
+)
+from auto_needle_insertion.utils.transducer_motions import (
+    apply_random_small_perturbation,
+    random_small_perturbation_sequence,
 )
 from auto_needle_insertion.utils.us_probe import USProbe
 
@@ -44,6 +52,9 @@ SQUARE_EDGE_LENGTH = 0.2  # meters
 MAX_VELOCITY_SCALING = 0.2
 MAX_ACCELERATION_SCALING = 0.2
 PLANNING_SCENE_SYNC_DELAY = 0.5  # seconds
+MAX_PERTURBATION_TRIALS = 20
+IMAGE_WIDTH_PX = 1920
+IMAGE_HEIGHT_PX = 1080
 
 # Controller fallback order
 CONTROLLER_NAMES = [
@@ -116,63 +127,6 @@ def get_tip_link_name(robot: MoveItPy, group_name: str) -> str:
             return preferred_link
 
     return link_names[-1]  # Fallback to last link
-
-
-def generate_square_waypoints(edge_length: float) -> List[Tuple[float, float]]:
-    """Generate waypoints for a square path in local coordinates.
-
-    Args:
-        edge_length: Length of square edge in meters
-
-    Returns:
-        List of (dx, dy) waypoints in local frame
-    """
-    half_edge = edge_length / 2.0
-
-    # Square path: bottom-left -> CCW -> close -> return to center
-    return [
-        (-half_edge, -half_edge),  # Bottom-left
-        (half_edge, -half_edge),   # Bottom-right
-        (half_edge, half_edge),    # Top-right
-        (-half_edge, half_edge),   # Top-left
-        (-half_edge, -half_edge),  # Close the square
-        (0.0, 0.0),               # Return to center
-    ]
-
-
-def create_pose_stamped(
-    origin: np.ndarray,
-    x_axis: np.ndarray,
-    y_axis: np.ndarray,
-    dx: float,
-    dy: float,
-    orientation,
-    planning_frame: str
-) -> PoseStamped:
-    """Create PoseStamped message for waypoint in local frame.
-
-    Args:
-        origin: Origin position in global frame
-        x_axis: Normalized X-axis of local frame
-        y_axis: Normalized Y-axis of local frame
-        dx: Displacement along local X-axis
-        dy: Displacement along local Y-axis
-        orientation: Original orientation to maintain
-        planning_frame: Planning frame ID
-
-    Returns:
-        PoseStamped message for the waypoint
-    """
-    position = origin + dx * x_axis + dy * y_axis
-
-    pose_stamped = PoseStamped()
-    pose_stamped.header.frame_id = planning_frame
-    pose_stamped.pose.position.x = float(position[0])
-    pose_stamped.pose.position.y = float(position[1])
-    pose_stamped.pose.position.z = float(position[2])
-    pose_stamped.pose.orientation = orientation
-
-    return pose_stamped
 
 
 def execute_trajectory_with_fallback(
@@ -252,12 +206,18 @@ def main() -> None:
         probe_in_ee = us_probe.probe_in_ee
         if to_in_probe is None or to_in_ee is None or probe_in_ee is None:
             raise RuntimeError("US probe calibration failed to compute TO transforms.")
+        if us_probe.top_in_to is None:
+            raise RuntimeError("US probe calibration missing TransducerOriginPixel calibration.")
         probe_pose = us_probe.report_pose(timeout_sec=2.0)
 
         needle = Needle()
         needle.load_tip_offset("./calibration/needle_1_tip_offset.json")
         needle_pose = needle.report_pose(timeout_sec=2.0)
         needle_tip_position = needle.tip_position_in_tracker(needle_pose)
+        pixel_spacing_x = abs(float(us_probe.top_in_to[0, 0])) / 1000.0
+        pixel_spacing_y = abs(float(us_probe.top_in_to[1, 1])) / 1000.0
+        image_width_m = IMAGE_WIDTH_PX * pixel_spacing_x
+        image_height_m = IMAGE_HEIGHT_PX * pixel_spacing_y
 
         # Calculate tracker frame and robot base frame
         tracker_in_base = current_ee_transform @ probe_in_ee @ np.linalg.inv(quat_to_T(probe_pose))
@@ -267,8 +227,73 @@ def main() -> None:
         image_in_tracker_after_centering = center_needle_in_image(
             image_in_tracker_after_alignment, needle_pose[0:3], needle_tip_position,
             x_center_in_plane=0.0, y_target_in_plane=0.080)
-
         ee_target_pose_in_base = tracker_in_base @ image_in_tracker_after_centering @ np.linalg.inv(to_in_ee)
+
+        pose_goal = homogeneous_to_pose_stamped(ee_target_pose_in_base, planning_frame)
+        arm.set_start_state_to_current_state()
+        pos = pose_goal.pose.position
+        ori = pose_goal.pose.orientation
+        goal_c = construct_link_constraint(
+            link_name=tip_link,
+            source_frame=planning_frame,
+            cartesian_position=[pos.x, pos.y, pos.z],
+            cartesian_position_tolerance=1e-4,  # meters (start here)
+            orientation=[ori.x, ori.y, ori.z, ori.w],
+            orientation_tolerance=1e-4,  # radians (~0.057°) (start here)
+        )
+        arm.set_goal_state(motion_plan_constraints=[goal_c])
+
+        # Setup conservative planning parameters
+        plan_params = PlanRequestParameters(robot, "")
+        plan_params.max_velocity_scaling_factor = MAX_VELOCITY_SCALING
+        plan_params.max_acceleration_scaling_factor = MAX_ACCELERATION_SCALING
+
+        # Plan trajectory
+        plan_result = arm.plan(single_plan_parameters=plan_params)
+        if not plan_result:
+            logger.error(f"Planning to waypoint failed; aborting")
+
+        # Execute with fallback
+        if not execute_trajectory_with_fallback(robot, plan_result.trajectory):
+            logger.error(f"Execution to waypoint failed; aborting")
+
+        logger.info(f"P1 reached ...")
+
+        # Apply small random perturbations.
+        # If needle is not visible after a perturbation, retry up to MAX_PERTURBATION_TRIALS times.
+        candidate_image_in_tracker = None
+        rng = np.random.default_rng()
+        for attempt in range(1, MAX_PERTURBATION_TRIALS + 1):
+            seed = int(rng.integers(0, 2**32 - 1))
+            poses, _ = apply_random_small_perturbation(
+                image_in_tracker_after_centering,
+                rot_range_deg = (-10.0, 10.0),
+                sweep_range_mm = (-50.0, 50.0),
+                slide_range_mm = (-50.0, 50.0),
+                rng=np.random.default_rng(seed),
+            )
+            if not poses:
+                logger.warning("No perturbation poses generated; retrying.")
+                continue
+            candidate_image_in_tracker = poses[-1]
+            needle_visible = needle_segment_in_image(
+                candidate_image_in_tracker,
+                needle_pose[0:3],
+                needle_tip_position,
+                image_width=image_width_m,
+                image_height=image_height_m,
+                position_unit="m",
+            )
+            if needle_visible:
+                logger.info(f"Accepted perturbation sequence")
+                break
+            logger.info(f"Rejected perturbation sequence")
+
+        if candidate_image_in_tracker is None:
+            raise RuntimeError("Failed to find a valid perturbation with the needle in view.")
+
+        ee_target_pose_in_base = tracker_in_base @ candidate_image_in_tracker @ np.linalg.inv(to_in_ee)
+        logger.info(f"candidate image in tracker: {candidate_image_in_tracker}")
         logger.info(f"Target pose of EE in base: {ee_target_pose_in_base}")
 
         pose_goal = homogeneous_to_pose_stamped(ee_target_pose_in_base, planning_frame)
@@ -299,7 +324,7 @@ def main() -> None:
         if not execute_trajectory_with_fallback(robot, plan_result.trajectory):
             logger.error(f"Execution to waypoint failed; aborting")
 
-        logger.info(f"Reached target pose")
+        logger.info(f"P2 Reached target pose")
 
 
     except Exception as e:

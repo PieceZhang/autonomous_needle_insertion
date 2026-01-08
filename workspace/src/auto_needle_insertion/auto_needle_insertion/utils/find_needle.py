@@ -154,3 +154,97 @@ def center_needle_in_image(
         raise RuntimeError("Computed target pose contains NaN/Inf")
 
     return T_tgt
+
+
+def needle_segment_in_image(
+    T_image_in_tracker: np.ndarray,
+    needle_marker_origin_in_tracker: np.ndarray,
+    needle_tip_pos_in_tracker: np.ndarray,
+    image_width: float,
+    image_height: float,
+    position_unit: str = "m",
+    plane_tolerance: float | None = None,
+    margin: float = 0.0,
+) -> bool:
+    """Check if any portion of the needle segment intersects the image plane bounds.
+
+    Args:
+        T_image_in_tracker: 4x4 pose of the image plane in tracker frame.
+        needle_marker_origin_in_tracker: 3D point on the needle axis (tracker frame).
+        needle_tip_pos_in_tracker: 3D needle tip position (tracker frame).
+        image_width: Image width in the plane frame (same units as points).
+        image_height: Image height in the plane frame (same units as points).
+        position_unit: "m" or "mm", used only for default plane tolerance.
+        plane_tolerance: Allowed distance from plane (same unit as points). Defaults
+            to 2e-3 m or 2.0 mm, matching center_needle_in_image.
+        margin: Optional margin to shrink the visible bounds (same unit as points).
+
+    Returns:
+        True if any part of the needle segment lies within the image bounds on
+        the plane, otherwise False.
+    """
+    if position_unit not in ("m", "mm"):
+        raise ValueError("position_unit must be 'm' or 'mm'")
+    if image_width <= 0.0 or image_height <= 0.0:
+        raise ValueError("image_width and image_height must be > 0")
+    if margin < 0.0:
+        raise ValueError("margin must be >= 0")
+
+    T = np.asarray(T_image_in_tracker, dtype=float)
+    if T.shape != (4, 4):
+        raise RuntimeError(f"T_image_in_tracker must be shape (4,4), got {T.shape}")
+    if not np.all(np.isfinite(T)):
+        raise RuntimeError("T_image_in_tracker contains NaN/Inf")
+    if not np.allclose(T[3, :], np.array([0.0, 0.0, 0.0, 1.0]), atol=1e-8):
+        raise RuntimeError("T_image_in_tracker last row must be [0, 0, 0, 1]")
+
+    R = T[:3, :3]
+    p = T[:3, 3]
+
+    if not np.allclose(R.T @ R, np.eye(3), atol=1e-6):
+        raise RuntimeError("Rotation part of T_image_in_tracker is not orthonormal")
+
+    P0 = np.asarray(needle_marker_origin_in_tracker, dtype=float).reshape(-1)
+    P1 = np.asarray(needle_tip_pos_in_tracker, dtype=float).reshape(-1)
+    if P0.shape != (3,) or P1.shape != (3,):
+        raise RuntimeError("Needle points must be shape (3,)")
+    if not (np.all(np.isfinite(P0)) and np.all(np.isfinite(P1))):
+        raise RuntimeError("Needle points contain NaN/Inf")
+
+    tol = plane_tolerance
+    if tol is None:
+        tol = 2e-3 if position_unit == "m" else 2.0
+    tol = float(tol)
+    if tol < 0.0:
+        raise ValueError("plane_tolerance must be >= 0")
+
+    P0_plane = R.T @ (P0 - p)
+    P1_plane = R.T @ (P1 - p)
+
+    def _within_bounds(x: float, y: float) -> bool:
+        half_w = image_width * 0.5 - margin
+        half_h = image_height * 0.5 - margin
+        if half_w < 0.0 or half_h < 0.0:
+            return False
+        return (-half_w <= x <= half_w) and (-half_h <= y <= half_h)
+
+    z0 = float(P0_plane[2])
+    z1 = float(P1_plane[2])
+
+    # Endpoint visibility (near plane and within bounds).
+    if abs(z0) <= tol and _within_bounds(float(P0_plane[0]), float(P0_plane[1])):
+        return True
+    if abs(z1) <= tol and _within_bounds(float(P1_plane[0]), float(P1_plane[1])):
+        return True
+
+    # If the segment crosses the plane (z=0), check intersection point.
+    if (z0 == 0.0 and z1 == 0.0) or (z0 * z1 < 0.0):
+        denom = z0 - z1
+        if abs(denom) > 1e-12:
+            t = z0 / (z0 - z1)
+            x_int = float(P0_plane[0] + t * (P1_plane[0] - P0_plane[0]))
+            y_int = float(P0_plane[1] + t * (P1_plane[1] - P0_plane[1]))
+            if _within_bounds(x_int, y_int):
+                return True
+
+    return False

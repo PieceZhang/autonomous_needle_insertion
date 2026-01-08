@@ -1,4 +1,6 @@
 import math
+from typing import List, Tuple
+
 import numpy as np
 
 _MOTION_MAP = {
@@ -84,9 +86,172 @@ def compose_transducer_motions(sequence) -> np.ndarray:
     return T
 
 
-# @dataclass
-class LocalDelta:
-    """Pose delta in the *current EE local frame*."""
-    dx: float; dy: float; dz: float      # meters
-    droll: float; dpitch: float; dyaw: float  # radians
+def random_small_perturbation_sequence(
+    rot_range_deg: Tuple[float, float] = (-3.0, 3.0),
+    sweep_range_mm: Tuple[float, float] = (-4.0, 4.0),
+    slide_range_mm: Tuple[float, float] = (-4.0, 4.0),
+    rng: np.random.Generator | None = None,
+) -> List[Tuple[str, float]]:
+    """Return a small perturbation sequence: rotation -> sweep -> slide.
+
+    Defaults are intentionally conservative so the needle remains in view.
+
+    Args:
+        rot_range_deg: Inclusive min/max rotation about probe Y (degrees).
+        sweep_range_mm: Inclusive min/max sweep translation along Z (mm).
+        slide_range_mm: Inclusive min/max slide translation along X (mm).
+        rng: Optional NumPy random generator for reproducible sampling.
+
+    Returns:
+        List of (motion, value) pairs ordered as rotation, sweep, slide.
+    """
+    rng = np.random.default_rng() if rng is None else rng
+    rot = float(rng.uniform(*rot_range_deg))
+    sweep = float(rng.uniform(*sweep_range_mm))
+    slide = float(rng.uniform(*slide_range_mm))
+    return [("rotation", rot), ("sweep", sweep), ("slide", slide)]
+
+
+def apply_random_small_perturbation(
+    T_probe: np.ndarray,
+    rot_range_deg: Tuple[float, float] = (-3.0, 3.0),
+    sweep_range_mm: Tuple[float, float] = (-4.0, 4.0),
+    slide_range_mm: Tuple[float, float] = (-4.0, 4.0),
+    rng: np.random.Generator | None = None,
+) -> Tuple[List[np.ndarray], List[Tuple[str, float]]]:
+    """Apply a small random rotation->sweep->slide perturbation to a probe pose.
+
+    Args:
+        T_probe: 4x4 homogeneous pose of the probe.
+        rot_range_deg: Inclusive min/max rotation about probe Y (degrees).
+        sweep_range_mm: Inclusive min/max sweep translation along Z (mm).
+        slide_range_mm: Inclusive min/max slide translation along X (mm).
+        rng: Optional NumPy random generator for reproducible sampling.
+
+    Returns:
+        (poses, sequence) where poses are the incremental probe poses after each
+        step in the sampled motion list.
+    """
+    if T_probe.shape != (4, 4):
+        raise ValueError("T_probe must be a 4x4 homogeneous matrix")
+    seq = random_small_perturbation_sequence(
+        rot_range_deg=rot_range_deg,
+        sweep_range_mm=sweep_range_mm,
+        slide_range_mm=slide_range_mm,
+        rng=rng,
+    )
+    poses: List[np.ndarray] = []
+    T_running = np.array(T_probe, dtype=float, copy=True)
+    for motion, value in seq:
+        T_step = transducer_motions(motion, value)
+        T_running = T_running @ T_step
+        poses.append(T_running)
+    return poses, seq
+
+
+def standard_action_pose_sequence(
+    T_probe: np.ndarray,
+    tilt_deg: float,
+    rock_deg: float,
+    sweep_mm: float,
+    compression_mm: float,
+) -> List[np.ndarray]:
+    """Return pose sequence for standard action with center -> opposite -> center for each motion.
+
+    Args:
+        T_probe: 4x4 homogeneous pose of the probe.
+        tilt_deg: Rotation about probe X (degrees) for tilt/fan.
+        rock_deg: Rotation about probe Z (degrees) for rock.
+        sweep_mm: Translation along Z (mm) for sweep.
+        compression_mm: Translation along Y (mm) for compression.
+
+    Returns:
+        List of poses including the start pose, each action step, and return to start.
+    """
+    if T_probe.shape != (4, 4):
+        raise ValueError("T_probe must be a 4x4 homogeneous matrix")
+    if not np.all(np.isfinite(T_probe)):
+        raise ValueError("T_probe must contain finite values")
+
+    motions = [
+        ("tilt", tilt_deg),
+        ("tilt", -2.0 * tilt_deg),
+        ("tilt", tilt_deg),
+        ("rock", rock_deg),
+        ("rock", -2.0 * rock_deg),
+        ("rock", rock_deg),
+        ("sweep", sweep_mm),
+        ("sweep", -2.0 * sweep_mm),
+        ("sweep", sweep_mm),
+        ("compression", -compression_mm),
+    ]
+
+    poses: List[np.ndarray] = [np.array(T_probe, dtype=float, copy=True)]
+    T_running = poses[0]
+    for motion, value in motions:
+        T_step = transducer_motions(motion, value)
+        T_running = T_running @ T_step
+        poses.append(T_running)
+
+    return poses
+
+
+def sweep_z_waypoints(
+    T_probe: np.ndarray,
+    sweep_mm: float,
+) -> List[np.ndarray]:
+    """
+    Generate waypoints for sweeping motion along z axis (0 -> -sweep -> +sweep -> 0)
+    using explicit motion steps.
+    """
+    if T_probe.shape != (4, 4):
+        raise ValueError("T_probe must be 4x4")
+    sweep_abs = abs(float(sweep_mm))
+    if sweep_abs == 0.0:
+        raise ValueError("sweep_mm must be non-zero")
+    motions: list[tuple[str, float]] = [
+        ("sweep", -sweep_abs),          # 0 -> -sweep
+        ("sweep",  2.0 * sweep_abs),    # -sweep -> +sweep
+        # ("sweep", -sweep_abs),          # +sweep -> 0
+    ]
+
+    poses: list[np.ndarray] = [np.array(T_probe, dtype=float, copy=True)]
+    T_running = poses[0]
+
+    for motion, value in motions:
+        T_step = transducer_motions(motion, value)
+        T_running = T_running @ T_step
+        poses.append(T_running)
+
+    return poses
+
+
+def rotate_waypoints(
+    T_probe: np.ndarray,
+    rotate_deg: float,
+) -> List[np.ndarray]:
+    """
+    Generate waypoints by rotating around y axis (0 -> -rotate_deg -> +rotate_deg -> 0)
+    using explicit motion steps.
+    """
+    if T_probe.shape != (4, 4):
+        raise ValueError("T_probe must be 4x4")
+    rot_abs = abs(float(rotate_deg))
+    if rot_abs == 0.0:
+        raise ValueError("rotate_deg must be non-zero")
+    motions: list[tuple[str, float]] = [
+        ("rotation", -rot_abs),          # 0 -> -theta
+        ("rotation",  2.0 * rot_abs),    # -theta -> +theta
+        # ("rotation", -rot_abs),          # +theta -> 0
+    ]
+
+    poses: list[np.ndarray] = [np.array(T_probe, dtype=float, copy=True)]
+    T_running = poses[0]
+
+    for motion, value in motions:
+        T_step = transducer_motions(motion, value)
+        T_running = T_running @ T_step
+        poses.append(T_running)
+
+    return poses
 
