@@ -57,7 +57,11 @@ from auto_needle_insertion.utils.transducer_motions import (
 from auto_needle_insertion.utils.us_probe import USProbe
 from std_msgs.msg import String
 from rclpy.executors import SingleThreadedExecutor
-from auto_needle_insertion.rosbag_recorder_control import TaskInfoPublisher
+from auto_needle_insertion.rosbag_recorder_control import (
+    TaskInfoPublisher,
+    RosbagController,
+    sleep_with_spin,
+)
 
 # Module constants
 NODE_NAME = "auto_needle_insertion"
@@ -90,6 +94,9 @@ TASK41_TILT_DEG = 10.0        # tilt/fan about X
 TASK41_ROCK_DEG = 10.0        # rock about Z
 TASK41_SWEEP_MM = 4.0        # sweep along Z (mm)
 TASK41_COMPRESSION_MM = 1.0  # compression along Y (mm)
+
+DELAY_AFTER_ROSBAG_SEC = 0.3
+ROSBAG_STOP_WAIT_SEC = 0.3
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -263,8 +270,6 @@ def run_subtask_1(
     current_ee_transform = get_current_ee_transform(robot, tip_link)
     to_in_base = current_ee_transform @ to_in_ee  # transducer pose in base
 
-    logger.info("[Subtask 1] Start rosbag recording (placeholder, integrate actual rosbag separately)")
-
     task_proc_pub.publish_step("subtask1_standard_action")
     # Step 5: execute standard action sequence (tilt/fan + rock + sweep + compression)
     probe_poses = standard_action_pose_sequence(
@@ -288,8 +293,6 @@ def run_subtask_1(
         task_proc_pub.publish_step("subtask1_failed")
         return
     logger.info("[Subtask 1] Returned to p1")
-
-    logger.info("[Subtask 1] Stop rosbag recording (placeholder, integrate actual rosbag separately)")
     task_proc_pub.publish_step("subtask1_done")
 
 
@@ -455,6 +458,30 @@ def main() -> None:
     spinner = _SpinThread(executor)
     spinner.start()
 
+    rosbag_controller = RosbagController()
+    rosbag_active = False
+
+    def start_rosbag_recording() -> None:
+        nonlocal rosbag_active
+        if rosbag_active:
+            return
+        logger.info("Starting rosbag recording before move to p1")
+        task_info_pub.set_state("started")
+        rosbag_controller.start_recording()
+        sleep_with_spin(executor, DELAY_AFTER_ROSBAG_SEC)
+        rosbag_active = True
+
+    def stop_rosbag_recording(success: bool) -> None:
+        nonlocal rosbag_active
+        if not rosbag_active:
+            return
+        state = "stopped_success" if success else "stopped_failure"
+        reason = "Success" if success else "Failure"
+        task_info_pub.set_state(state)
+        sleep_with_spin(executor, ROSBAG_STOP_WAIT_SEC)
+        rosbag_controller.stop_recording(reason)
+        rosbag_active = False
+
     task_mode = "two"
     if len(sys.argv) > 1:
         task_mode = sys.argv[1].strip().lower()
@@ -577,10 +604,12 @@ def main() -> None:
         logger.info(f"Random pose p2 (EE in base):\n{ee_target_pose_in_base_p2}")
 
         task_proc_pub.publish_step("move_p1")
+        start_rosbag_recording()
         # Plan and execute to p1
         ok = plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target_pose_in_base)
         if not ok:
             logger.error("Execution to p1 failed; aborting")
+            stop_rosbag_recording(success=False)
             return
         logger.info("Reached target pose p1")
         task_proc_pub.publish_step("p1_reached")
@@ -591,6 +620,7 @@ def main() -> None:
         ok = plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target_pose_in_base_p2)
         if not ok:
             logger.error("Execution to p2 failed; aborting")
+            stop_rosbag_recording(success=False)
             return
         logger.info("Reached target pose p2")
         task_proc_pub.publish_step("p2_reached")
@@ -619,10 +649,12 @@ def main() -> None:
                 task_proc_pub=task_proc_pub,
             )
 
+        stop_rosbag_recording(success=True)
         task_info_pub.set_state("Success")
 
     except Exception as e:
         logger.error(f"Trajectory execution failed: {e}")
+        stop_rosbag_recording(success=False)
         task_info_pub.set_state("Failure")
         raise
     finally:
