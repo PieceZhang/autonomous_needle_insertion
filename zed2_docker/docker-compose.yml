@@ -1,7 +1,7 @@
 services:
   zed_ros2_neural:
-    image: zed_ros2_desktop_u22.04_sdk_4.2.3_cuda_12.6.3:latest
-    container_name: zed_ros2_neural
+    image: zed_ros2_desktop_u24.04_sdk_5.1.0_cuda_12.6.3:latest
+    container_name: zed_ros2_neural_jazzy
     privileged: true
     network_mode: host
     ipc: host
@@ -11,12 +11,13 @@ services:
       - DISPLAY=${DISPLAY}
       - NVIDIA_DRIVER_CAPABILITIES=all
       - ROS_DOMAIN_ID=0
-      - RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /dev:/dev
       - /dev/shm:/dev/shm
+      - ./bridge.yaml:/bridge.yaml:ro
 
     gpus: all
 
@@ -26,7 +27,7 @@ services:
 
     command: >
       bash -c "
-        source /opt/ros/humble/setup.bash &&
+        source /opt/ros/jazzy/setup.bash &&
         source /root/ros2_ws/install/local_setup.bash &&
         ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zed2 depth_quality:=NEURAL
       "

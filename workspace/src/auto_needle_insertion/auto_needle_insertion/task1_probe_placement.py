@@ -35,19 +35,37 @@ os.environ.setdefault("RCUTILS_LOGGING_SEVERITY_THRESHOLD", "FATAL")
 NODE_NAME = "task1_probe_placement"
 PLANNING_SCENE_SYNC_DELAY = 0.5
 MAX_VELOCITY_SCALING = 0.2
-MAX_ACCELERATION_SCALING = 0.2
-CONTROLLER_NAMES = ["scaled_joint_trajectory_controller", "", "joint_trajectory_controller"]
+MAX_ACCELERATION_SCALING = 0.1
+# Planning robustness tweaks
+PLANNING_TIME = 10.0              # seconds
+PLANNING_ATTEMPTS = 5
+GOAL_POSITION_TOLERANCE = 5e-4    # meters
+GOAL_ORIENTATION_TOLERANCE = 5e-3 # radians (~0.29 deg)
+# Controller preference: try the non-scaled controller first, then scaled, then default
+CONTROLLER_NAMES = ["scaled_joint_trajectory_controller", "joint_trajectory_controller", ""]
 PREFERRED_TIP_LINKS = ["tool0", "ee_link"]
 
 # Random ranges (editable):
-RAND_ROT_DEG = 8.0              # rotation jitter for P2 (roll/pitch/yaw, deg)
-STANDARD_ROT_Y_MAX_DEG = 6.0    # rotation motion amplitude about +/−Y
-STANDARD_ROCK_Z_MAX_DEG = 6.0   # rock motion amplitude about +/−Z
-STANDARD_TILT_X_MAX_DEG = 6.0   # tilt motion amplitude about +/−X
+INITIAL_AREA_DIAMETER = 0.12     # meters, diameter of circular area around C0 for P2 sampling
+RAND_ROT_DEG = 10.0              # rotation jitter for P2 (roll/pitch/yaw, deg)
+STANDARD_ROT_Y_MAX_DEG = 20.0    # rotation motion amplitude about +/−Y
+STANDARD_ROCK_Z_MAX_DEG = 5.0   # rock motion amplitude about +/−Z
+STANDARD_TILT_X_MAX_DEG = 5.0   # tilt motion amplitude about +/−X
+DELAY_AFTER_ROSBAG_MS = 300      # milliseconds to wait before starting rosbag recording
+MAXIMUM_TRACKER_LOST = 5
 
 # ----------------- Logging -----------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def _controller_order_from_env() -> List[str]:
+    env_val = os.getenv("TASK1_CONTROLLER_ORDER", "").strip()
+    if not env_val:
+        return CONTROLLER_NAMES
+    # comma-separated controller names
+    order = [c.strip() for c in env_val.split(",") if c.strip()]
+    return order or CONTROLLER_NAMES
+
 
 def _auto_continue_enabled() -> bool:
     auto_env = os.getenv("TASK1_AUTO_CONTINUE", "").strip().lower()
@@ -69,7 +87,7 @@ def _is_cancel_key(token: Optional[str]) -> bool:
 
 def _await_user(prompt: str) -> None:
     if _auto_continue_enabled():
-        logger.info("Auto-continue enabled via TASK1_AUTO_CONTINUE; skipping prompt: %s", prompt)
+        print(f"Auto-continue enabled via TASK1_AUTO_CONTINUE; skipping prompt: {prompt}", flush=True)
         return
     if not sys.stdin or not sys.stdin.isatty():
         raise SystemExit(
@@ -202,15 +220,20 @@ def get_tip_link_name(robot: MoveItPy, group_name: str) -> str:
 
 
 def execute_trajectory_with_fallback(robot: MoveItPy, trajectory, controllers: List[str] = CONTROLLER_NAMES) -> bool:
+    print(f"Attempting execution with controllers: {controllers}", flush=True)
     for controller in controllers:
+        if controller is None:
+            continue
         try:
+            print(f"Sending trajectory to controller '{controller or 'default'}'", flush=True)
             if controller:
                 robot.execute(trajectory, controllers=[controller])
             else:
                 robot.execute(trajectory)
+            print(f"Controller '{controller or 'default'}' accepted trajectory", flush=True)
             return True
         except Exception as e:
-            logger.warning(f"Controller '{controller}' failed: {e}")
+            logger.warning(f"Controller '{controller or 'default'}' failed: {e}")
     logger.error("All controllers failed")
     return False
 
@@ -219,12 +242,7 @@ def execute_trajectory_with_fallback(robot: MoveItPy, trajectory, controllers: L
 @dataclass
 class CaptureState:
     gt_to_in_tracker: Optional[np.ndarray] = None
-    corners: List[np.ndarray] = None
-
-    def __post_init__(self):
-        if self.corners is None:
-            self.corners = []
-
+    center_to_in_tracker: Optional[np.ndarray] = None
 
 # ----------------- Core logic -----------------
 class ProbePlacementTask:
@@ -253,6 +271,7 @@ class ProbePlacementTask:
         self.planning_frame = None
         self.tip_link = None
         self.arm_group_name = None
+        self.controller_order = list(dict.fromkeys(_controller_order_from_env()))
 
         # Calibration
         self.us_probe = USProbe()
@@ -267,12 +286,17 @@ class ProbePlacementTask:
 
         self.capture_state = CaptureState()
         self.rosbag = RosbagController()
+        self._last_probe_pose: Optional[Tuple[float, ...]] = None
+        self._last_probe_pose_time: Optional[float] = None
+
+        # Cache tracker->base transform once (tracker assumed static in base frame)
+        self._tracker_in_base_cached: Optional[np.ndarray] = None
 
     def initialize_moveit(self) -> None:
         if self.robot is not None:
             return
 
-        logger.info("Initializing MoveIt (requires URCap running)...")
+        print("Initializing MoveIt (requires URCap running)...", flush=True)
         self.robot = MoveItPy(node_name=NODE_NAME)
         time.sleep(PLANNING_SCENE_SYNC_DELAY)
 
@@ -286,12 +310,14 @@ class ProbePlacementTask:
         self.tip_link = get_tip_link_name(self.robot, self.arm_group_name)
         self.arm = self.robot.get_planning_component(self.arm_group_name)
 
-        logger.info(f"Planning frame: {self.planning_frame}")
-        logger.info(f"Using group: {self.arm_group_name}, tip link: {self.tip_link}")
+        print(f"Planning frame: {self.planning_frame}", flush=True)
+        print(f"Using group: {self.arm_group_name}, tip link: {self.tip_link}", flush=True)
 
         self.plan_params = PlanRequestParameters(self.robot, "")
         self.plan_params.max_velocity_scaling_factor = MAX_VELOCITY_SCALING
         self.plan_params.max_acceleration_scaling_factor = MAX_ACCELERATION_SCALING
+        self.plan_params.planning_time = PLANNING_TIME
+        self.plan_params.planning_attempts = PLANNING_ATTEMPTS
 
     def _spin_executor(self) -> None:
         while rclpy.ok() and self._spin_running:
@@ -308,10 +334,15 @@ class ProbePlacementTask:
             return scene.current_state.get_global_link_transform(self.tip_link)
 
     def _tracker_in_base(self) -> np.ndarray:
-        current_ee_transform = self._current_ee_transform()
-        probe_pose = self.us_probe.report_pose(timeout_sec=2.0)
-        tracker_in_base = current_ee_transform @ self.us_probe.probe_in_ee @ np.linalg.inv(quat_to_T(probe_pose))
-        return tracker_in_base
+        if self._tracker_in_base_cached is None:
+            current_ee_transform = self._current_ee_transform()
+            probe_pose = self._safe_probe_pose(timeout_sec=2.0)
+            self._tracker_in_base_cached = current_ee_transform @ self.us_probe.probe_in_ee @ np.linalg.inv(
+                quat_to_T(probe_pose)
+            )
+            _check_hmat(self._tracker_in_base_cached, "tracker_in_base_cached")
+            print("Computed tracker_in_base once (assuming static tracker/base).", flush=True)
+        return self._tracker_in_base_cached
 
     def _plan_and_execute_to_to_frame(self, to_in_tracker: np.ndarray, label: str = "") -> None:
         self.initialize_moveit()
@@ -322,23 +353,62 @@ class ProbePlacementTask:
         self.arm.set_start_state_to_current_state()
         pos = pose_goal.pose.position
         ori = pose_goal.pose.orientation
+        print(
+            f"Planning for {label or 'target'} | pos=({pos.x:.4f},{pos.y:.4f},{pos.z:.4f}) "
+            f"ori=({ori.x:.4f},{ori.y:.4f},{ori.z:.4f},{ori.w:.4f})",
+            flush=True,
+        )
         goal_c = construct_link_constraint(
             link_name=self.tip_link,
             source_frame=self.planning_frame,
             cartesian_position=[pos.x, pos.y, pos.z],
-            cartesian_position_tolerance=1e-4,
+            cartesian_position_tolerance=GOAL_POSITION_TOLERANCE,
             orientation=[ori.x, ori.y, ori.z, ori.w],
-            orientation_tolerance=1e-4,
+            orientation_tolerance=GOAL_ORIENTATION_TOLERANCE,
         )
         self.arm.set_goal_state(motion_plan_constraints=[goal_c])
         plan_result = self.arm.plan(single_plan_parameters=self.plan_params)
         if not plan_result:
+            logger.error(f"Planning failed for {label or 'target'}")
             raise RuntimeError(f"Planning failed for {label or 'target'}")
-        if not execute_trajectory_with_fallback(self.robot, plan_result.trajectory):
+        print(f"Planning success for {label or 'target'}; executing with controllers {self.controller_order}", flush=True)
+        if not execute_trajectory_with_fallback(self.robot, plan_result.trajectory, controllers=self.controller_order):
+            logger.error(f"Execution failed for {label or 'target'}")
             raise RuntimeError(f"Execution failed for {label or 'target'}")
+        print(f"Execution succeeded for {label or 'target'}", flush=True)
+
+    def _validate_probe_pose(self, pose: Tuple[float, ...]) -> Tuple[float, ...]:
+        arr = np.asarray(pose, dtype=float).reshape(-1)
+        if arr.size != 7 or not np.all(np.isfinite(arr)):
+            raise RuntimeError(f"Tracker pose invalid: {arr.tolist()}")
+        return pose
+
+    def _safe_probe_pose(self, timeout_sec: float = 2.0) -> Tuple[float, ...]:
+        now = time.monotonic()
+        try:
+            pose = self.us_probe.report_pose(timeout_sec=timeout_sec)
+            pose = self._validate_probe_pose(pose)
+            self._last_probe_pose = pose
+            self._last_probe_pose_time = now
+            return pose
+        except Exception as exc:
+            if (
+                self._last_probe_pose is not None
+                and self._last_probe_pose_time is not None
+                and (now - self._last_probe_pose_time) <= MAXIMUM_TRACKER_LOST
+            ):
+                age = now - self._last_probe_pose_time
+                logger.warning(
+                    "Tracker pose unavailable (%s); reusing cached pose (age=%.2fs <= %.2fs).",
+                    exc,
+                    age,
+                    MAXIMUM_TRACKER_LOST,
+                )
+                return self._last_probe_pose
+            raise RuntimeError("Tracker pose unavailable and cache expired.") from exc
 
     def _capture_to_in_tracker(self) -> np.ndarray:
-        probe_pose = self.us_probe.report_pose(timeout_sec=2.0)
+        probe_pose = self._safe_probe_pose(timeout_sec=2.0)
         to_in_tracker = quat_to_T(probe_pose) @ self.us_probe.to_in_probe
         _check_hmat(to_in_tracker, "to_in_tracker")
         return to_in_tracker
@@ -346,25 +416,29 @@ class ProbePlacementTask:
     def capture_gt(self) -> None:
         self.task_proc_pub.publish_step("1")
         self.capture_state.gt_to_in_tracker = self._capture_to_in_tracker()
-        logger.info("Captured GT point P1 (to_in_tracker).")
+        print("Captured GT point P1 (to_in_tracker).", flush=True)
         print(_fmt("Step 1: GT captured.", "🧭"), flush=True)
 
-    def capture_corner(self) -> None:
+    def capture_center(self) -> None:
         if self.capture_state.gt_to_in_tracker is None:
             raise RuntimeError("Capture GT (step 1) first.")
         self.task_proc_pub.publish_step("2")
-        T_corner = self._capture_to_in_tracker()
-        self.capture_state.corners.append(T_corner)
-        logger.info(f"Captured corner C{len(self.capture_state.corners)}.")
-        print(_fmt(f"Step 2: Corner C{len(self.capture_state.corners)} captured.", "📐"), flush=True)
+        self.capture_state.center_to_in_tracker = self._capture_to_in_tracker()
+        print("Captured center C0.", flush=True)
+        print(_fmt("Step 2: Center C0 captured.", "📍"), flush=True)
 
     def _sample_random_pose_in_area(self) -> np.ndarray:
-        if self.capture_state.gt_to_in_tracker is None or len(self.capture_state.corners) < 4:
-            raise RuntimeError("Need GT and 4 corners captured before sampling P2.")
-        corners = self.capture_state.corners[:4]
-        weights = np.random.dirichlet([1.0, 1.0, 1.0, 1.0])
-        positions = np.stack([c[:3, 3] for c in corners], axis=0)
-        p = weights @ positions
+        if self.capture_state.gt_to_in_tracker is None or self.capture_state.center_to_in_tracker is None:
+            raise RuntimeError("Need GT and center C0 captured before sampling P2.")
+        center = self.capture_state.center_to_in_tracker
+        radius = INITIAL_AREA_DIAMETER * 0.5
+        r = radius * math.sqrt(random.random())
+        theta = random.uniform(0.0, 2.0 * math.pi)
+        dx = r * math.cos(theta)
+        dy = r * math.sin(theta)
+        p = center[:3, 3].copy()
+        p[0] += dx
+        p[1] += dy
         R_gt = self.capture_state.gt_to_in_tracker[:3, :3]
         jitter_seq = [
             ("rx", random.uniform(-RAND_ROT_DEG, RAND_ROT_DEG)),
@@ -389,6 +463,7 @@ class ProbePlacementTask:
         self.task_proc_pub.publish_step("4")
         print(_fmt("Step 4: Starting rosbag recording.", "⏺️"), flush=True)
         self.task_info_pub.set_state("started")
+        sleep_with_spin(self.executor, DELAY_AFTER_ROSBAG_MS / 1000.0)
         self.rosbag.start_recording()
 
     def stop_recording(self) -> None:
@@ -408,11 +483,12 @@ class ProbePlacementTask:
         print(_fmt("Step 5: Performing standard motion sequence.", "🔄"), flush=True)
         sequences = [
             ("rotation", self._standard_motion_sequence(STANDARD_ROT_Y_MAX_DEG)),
-            ("rock", self._standard_motion_sequence(STANDARD_ROCK_Z_MAX_DEG)),
-            ("tilt", self._standard_motion_sequence(STANDARD_TILT_X_MAX_DEG)),
+            # ("rock", self._standard_motion_sequence(STANDARD_ROCK_Z_MAX_DEG)),
+            # ("tilt", self._standard_motion_sequence(STANDARD_TILT_X_MAX_DEG)),
         ]
         for motion, values in sequences:
             for val in values:
+                print(f"Standard action: {motion} {val:.2f} deg from home", flush=True)
                 T_delta = transducer_motions(motion, val)
                 T_target = T_home @ T_delta
                 self._plan_and_execute_to_to_frame(T_target, label=f"{motion}:{val:.2f}")
@@ -499,7 +575,7 @@ def main() -> None:
 
     print(
         _fmt(
-            "Task 1 probe placement: press Enter to capture GT (step1), then Enter 4x to capture corners (step2).\n"
+            "Task 1 probe placement: press Enter to capture GT (step1), then Enter to capture center C0 (step2).\n"
             "Afterward, steps 3-7 will auto-repeat (home->record->standard action->GT->stop) until you press 'c'.",
             "🛰️",
         ),
@@ -511,13 +587,12 @@ def main() -> None:
         task.capture_gt()
         print(_fmt("GT captured ✅", "📍"), flush=True)
 
-        for i in range(4):
-            if not _wait_for_enter(task, f"[Step 2] Press Enter to capture corner C{i+1}..."):
-                print(_fmt("Cancel requested, exiting.", "🛑"), flush=True)
-                return
-            task.capture_corner()
-            print(_fmt(f"Corner C{i+1} captured", "📐"), flush=True)
-        print(_fmt("GT and 4 corners captured.", "✅"), flush=True)
+        if not _wait_for_enter(task, "[Step 2] Press Enter to capture center C0 for the initial area..."):
+            print(_fmt("Cancel requested, exiting.", "🛑"), flush=True)
+            return
+        task.capture_center()
+        print(_fmt("Center C0 captured", "📍"), flush=True)
+        print(_fmt("GT and center captured.", "✅"), flush=True)
 
         if not _wait_for_enter(task, "Now START the URCap program on the UR control panel, then press Enter to continue to motions...", allow_cancel=False):
             return
@@ -533,6 +608,8 @@ def main() -> None:
             task.move_to_gt()
             task.stop_recording()
             print(_fmt("Completed one full cycle of steps 3-7.", "🔁"), flush=True)
+            # if not _wait_for_enter(task, "Press Enter to start the next cycle, or 'c' to cancel..."):
+            #     break
 
         print(_fmt("Exiting task.", "👋"), flush=True)
     except KeyboardInterrupt:
@@ -547,6 +624,7 @@ if __name__ == "__main__":
 '''
 # run with:
 source ./install/setup.bash 
+ros2 control list_controllers | grep trajectory
 ros2 launch auto_needle_insertion dataset.launch.py mode:=task1_probe_placement
 '''
 

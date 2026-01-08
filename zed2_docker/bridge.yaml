@@ -1,0 +1,15 @@
+name: my_domain_bridge
+from_domain: 0
+to_domain: 42
+topics:
+  /zed/zed_node/depth/camera_info:
+    type: sensor_msgs/msg/CameraInfo
+  /zed/zed_node/depth/depth_registered/compressedDepth:
+    type: sensor_msgs/msg/CompressedImage
+  /zed/zed_node/rgb/color/rect/camera_info:
+    type: sensor_msgs/msg/CameraInfo
+  /zed/zed_node/rgb/color/rect/image/compressed:
+    type: sensor_msgs/msg/CompressedImage
+  # /zed/zed_node/point_cloud/cloud_registered:
+  #  type: sensor_msgs/msg/PointCloud2
+

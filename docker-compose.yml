@@ -1,5 +1,5 @@
 x-ros-base-env: &ros_base_env
-  ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+  ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-42}  # ani-workstation: 42; Zed2: 0
   RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}
   DISPLAY: ${DISPLAY}
   QT_X11_NO_MITSHM: 1
@@ -139,22 +139,22 @@ services:
       start_period: 15s
     restart: unless-stopped
 
-  realsense_driver:
-    <<: *ros_common
-    container_name: "${COMPOSE_PROJECT_NAME:-ros2}-realsense-driver"
-    profiles: ["default", "dev"]
-    command: >
-      bash -lc "
-        echo 'Starting RealSense driver';
-        ros2 launch realsense2_camera rs_launch.py
-      "
-    healthcheck:
-      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q '/camera/color/image_raw'"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-      start_period: 15s
-    restart: unless-stopped
+#  realsense_driver:
+#    <<: *ros_common
+#    container_name: "${COMPOSE_PROJECT_NAME:-ros2}-realsense-driver"
+#    profiles: ["default", "dev"]
+#    command: >
+#      bash -lc "
+#        echo 'Starting RealSense driver';
+#        ros2 launch realsense2_camera rs_launch.py
+#      "
+#    healthcheck:
+#      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q '/camera/color/image_raw'"]
+#      interval: 5s
+#      timeout: 3s
+#      retries: 5
+#      start_period: 15s
+#    restart: unless-stopped
 
   ati_ft_driver:
     <<: *ros_common
