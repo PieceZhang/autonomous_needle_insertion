@@ -45,6 +45,7 @@ import atexit
 from array import array
 from datetime import datetime, timezone
 from pathlib import Path
+import tempfile
 from typing import (
     Any,
     Callable,
@@ -755,8 +756,9 @@ class VideoTopicWriter:
         self.info_path = self.output_dir / "video_info.json"
         self.overwrite = overwrite
         self._prepare_outputs()
-        self.buffer_frames: List["tnp.ndarray"] = []
-        self.frame_timestamps: List[int] = []
+        self.writer = None
+        self.first_timestamp_ns: Optional[int] = None
+        self.last_timestamp_ns: Optional[int] = None
         self.height: Optional[int] = None
         self.width: Optional[int] = None
         self.frame_count = 0
@@ -780,15 +782,26 @@ class VideoTopicWriter:
                 f"Frame size mismatch for {self.topic}: expected {self.width}x{self.height}, got {w}x{h}"
             )
 
-        self.frame_count += 1        # count messages
-        self.frame_timestamps.append(int(timestamp_ns))
+        # Lazily create writer on the first frame to avoid buffering all frames in memory.
+        if self.writer is None:
+            if cv2 is None:
+                require_video_dependencies()
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            self.writer = cv2.VideoWriter(str(self.video_path), fourcc, self.DEFAULT_FPS, (self.width, self.height))
+            if not self.writer.isOpened():
+                self.writer = None
+                raise RuntimeError(f"Failed to open video writer for {self.video_path}")
+
+        self.writer.write(frame)
+        self.frame_count += 1
+        self.first_timestamp_ns = timestamp_ns if self.first_timestamp_ns is None else self.first_timestamp_ns
+        self.last_timestamp_ns = timestamp_ns
         self.bag_files.add(bag_file)
-        self.buffer_frames.append(frame)
 
     def _compute_measured_fps(self) -> float:
-        if len(self.frame_timestamps) < 2:
+        if self.frame_count < 2 or self.first_timestamp_ns is None or self.last_timestamp_ns is None:
             return self.DEFAULT_FPS
-        duration_ns = self.frame_timestamps[-1] - self.frame_timestamps[0]
+        duration_ns = self.last_timestamp_ns - self.first_timestamp_ns
         if duration_ns <= 0:
             return self.DEFAULT_FPS
         fps = (self.frame_count - 1) / (duration_ns / 1e9)
@@ -805,18 +818,19 @@ class VideoTopicWriter:
 
         measured_fps = self._compute_measured_fps()
 
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(str(self.video_path), fourcc, measured_fps, (self.width, self.height))
-        if not writer.isOpened():
-            raise RuntimeError(f"Failed to open video writer for {self.video_path}")
+        # Ensure writer exists; if not, create a fallback writer (should not happen in normal flow).
+        if self.writer is None:
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            self.writer = cv2.VideoWriter(str(self.video_path), fourcc, measured_fps, (self.width, self.height))
+            if not self.writer.isOpened():
+                raise RuntimeError(f"Failed to open video writer for {self.video_path}")
 
-        for frame in self.buffer_frames:
-            writer.write(frame)
-        writer.release()
+        # OpenCV does not allow changing FPS after creation; measured_fps is recorded for metadata only.
+        self.writer.release()
 
         duration_ns = 0
-        if len(self.frame_timestamps) >= 2:
-            duration_ns = self.frame_timestamps[-1] - self.frame_timestamps[0]
+        if self.first_timestamp_ns is not None and self.last_timestamp_ns is not None:
+            duration_ns = self.last_timestamp_ns - self.first_timestamp_ns
         duration_seconds = max(duration_ns / 1e9, 0.0)
 
         info = {
@@ -826,8 +840,8 @@ class VideoTopicWriter:
             "duration_seconds": duration_seconds,
             "measured_fps": measured_fps,
             "resolution": {"width": self.width, "height": self.height},
-            "start_time_ns": self.frame_timestamps[0],
-            "end_time_ns": self.frame_timestamps[-1],
+            "start_time_ns": self.first_timestamp_ns,
+            "end_time_ns": self.last_timestamp_ns,
             "bag_files": sorted(self.bag_files),
         }
         with self.info_path.open("w", encoding="utf-8") as f:
@@ -1099,128 +1113,133 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace, l
     total_messages = 0
     seen_topics: Set[str] = set()
 
-    try:
-        for mcap_path in iter_mcap_files(bag_dir):
-            logger.info(f"Decoding {bag_name} -> {mcap_path.name} (out: {bag_output_name}) ...")
-            is_zstd = mcap_path.suffix == ".zstd"
+    for mcap_path in iter_mcap_files(bag_dir):
+        logger.info(f"Decoding {bag_name} -> {mcap_path.name} (out: {bag_output_name}) ...")
+        is_zstd = mcap_path.suffix == ".zstd"
+        uncompressed_tmp: Optional[Path] = None
 
-            if is_zstd:
-                if zstd is None:
-                    logger.error(f"File {mcap_path.name} requires zstandard. Install via: pip install zstandard")
-                    return True
-                from io import BytesIO
-                try:
-                    with mcap_path.open("rb") as compressed_file:
-                        dctx = zstd.ZstdDecompressor()
-                        decompressed_chunks = []
+        if is_zstd:
+            if zstd is None:
+                logger.error(f"File {mcap_path.name} requires zstandard. Install via: pip install zstandard")
+                return True
+            try:
+                dctx = zstd.ZstdDecompressor()
+                with mcap_path.open("rb") as compressed_file:
+                    with tempfile.NamedTemporaryFile(suffix=".mcap", delete=False) as tmp:
+                        uncompressed_tmp = Path(tmp.name)
                         with dctx.stream_reader(compressed_file) as reader:
                             while True:
-                                chunk = reader.read(16384)
+                                chunk = reader.read(1 << 20)  # 1 MiB chunks to cap memory
                                 if not chunk:
                                     break
-                                decompressed_chunks.append(chunk)
-                        decompressed_data = b"".join(decompressed_chunks)
-                except Exception as exc:
-                    logger.error(f"Failed to decompress {mcap_path.name}: {exc}")
-                    return True
-                stream = BytesIO(decompressed_data)
-            else:
-                stream = mcap_path.open("rb")
-
-            try:
-                reader = make_reader(stream)
-                for schema, channel, message in reader.iter_messages():
-                    topic = channel.topic
-                    if topic not in topic_specs:
-                        continue
-
-                    seen_topics.add(topic)
-
+                                tmp.write(chunk)
+                stream = uncompressed_tmp.open("rb")
+            except Exception as exc:
+                if uncompressed_tmp and uncompressed_tmp.exists():
                     try:
-                        decoder = get_decoder(schema, channel)
-                        decoded_msg = decoder(message.data)
+                        uncompressed_tmp.unlink()
+                    except Exception:
+                        pass
+                logger.error(f"Failed to decompress {mcap_path.name}: {exc}")
+                return True
+        else:
+            stream = mcap_path.open("rb")
+
+        try:
+            reader = make_reader(stream)
+            for schema, channel, message in reader.iter_messages():
+                topic = channel.topic
+                if topic not in topic_specs:
+                    continue
+
+                seen_topics.add(topic)
+
+                try:
+                    decoder = get_decoder(schema, channel)
+                    decoded_msg = decoder(message.data)
+                except Exception as exc:  # pragma: no cover
+                    logger.warn(f"Failed to decode {topic} in {mcap_path.name}: {exc}")
+                    continue
+
+                if topic in selected_video_topics:
+                    if topic not in video_writers:
+                        video_writers[topic] = VideoTopicWriter(topic, out_bag_dir, args.overwrite)
+                    video_writer = video_writers[topic]
+                    try:
+                        frame = image_msg_to_bgr(decoded_msg, topic_specs.get(topic))
                     except Exception as exc:  # pragma: no cover
-                        logger.warn(f"Failed to decode {topic} in {mcap_path.name}: {exc}")
+                        logger.warn(f"Skipping frame for {topic} in {mcap_path.name}: {exc}")
                         continue
-
-                    if topic in selected_video_topics:
-                        if topic not in video_writers:
-                            video_writers[topic] = VideoTopicWriter(topic, out_bag_dir, args.overwrite)
-                        video_writer = video_writers[topic]
-                        try:
-                            frame = image_msg_to_bgr(decoded_msg, topic_specs.get(topic))
-                        except Exception as exc:  # pragma: no cover
-                            logger.warn(f"Skipping frame for {topic} in {mcap_path.name}: {exc}")
-                            continue
-                        timestamp_ns = message.publish_time or message.log_time or 0
-                        video_writer.add_frame(frame, timestamp_ns, mcap_path.name)
-                        total_messages += 1
-                        continue
-
-                    if topic in selected_pointcloud_topics:
-                        if topic not in pointcloud_writers:
-                            pointcloud_writers[topic] = PointCloudTopicWriter(topic, out_bag_dir, args.overwrite)
-                        pc_writer = pointcloud_writers[topic]
-                        try:
-                            cloud, cloud_meta = pointcloud_msg_to_array(decoded_msg)
-                        except Exception as exc:  # pragma: no cover
-                            logger.warn(f"Skipping pointcloud for {topic} in {mcap_path.name}: {exc}")
-                            continue
-                        timestamp_ns = message.publish_time or message.log_time or 0
-                        pc_writer.add_cloud(cloud, timestamp_ns, mcap_path.name, cloud_meta)
-                        total_messages += 1
-                        continue
-
-                    if topic not in ndjson_files:
-                        sanitized = sanitize_topic_name(topic)
-                        topic_dir = out_bag_dir / sanitized
-                        output_file = topic_dir / "messages.ndjson"
-                        ensure_parent(output_file, args.overwrite)
-                        info_file = topic_dir / "messages_info.json"
-                        if info_file.exists():
-                            if not args.overwrite:
-                                raise FileExistsError(
-                                    f"{info_file} already exists. Use --overwrite to replace it."
-                                )
-                            info_file.unlink()
-                        fh = output_file.open("w", encoding="utf-8")
-                        ndjson_files[topic] = fh
-                        ndjson_paths[topic] = output_file
-                        ndjson_info_paths[topic] = info_file
-                        ndjson_stats[topic] = {
-                            "frame_count": 0,
-                            "start_time_ns": None,
-                            "end_time_ns": None,
-                            "bag_files": set(),
-                            "type": topic_specs[topic],
-                        }
-
                     timestamp_ns = message.publish_time or message.log_time or 0
-                    record = {
-                        "bag_file": mcap_path.name,
-                        "topic": topic,
-                        "type": topic_specs[topic],
-                        "log_time_ns": message.log_time,
-                        "publish_time_ns": message.publish_time,
-                        "data": to_jsonable(decoded_msg),
-                    }
-                    ndjson_files[topic].write(json.dumps(record))
-                    ndjson_files[topic].write("\n")
-
-                    stats = ndjson_stats[topic]
-                    stats["frame_count"] += 1
-                    stats["bag_files"].add(mcap_path.name)
-                    if stats["start_time_ns"] is None or timestamp_ns < stats["start_time_ns"]:
-                        stats["start_time_ns"] = timestamp_ns
-                    if stats["end_time_ns"] is None or timestamp_ns > stats["end_time_ns"]:
-                        stats["end_time_ns"] = timestamp_ns
+                    video_writer.add_frame(frame, timestamp_ns, mcap_path.name)
                     total_messages += 1
-            finally:
-                if not is_zstd:
-                    stream.close()
-    finally:
-        for fh in ndjson_files.values():
-            fh.close()
+                    continue
+
+                if topic in selected_pointcloud_topics:
+                    if topic not in pointcloud_writers:
+                        pointcloud_writers[topic] = PointCloudTopicWriter(topic, out_bag_dir, args.overwrite)
+                    pc_writer = pointcloud_writers[topic]
+                    try:
+                        cloud, cloud_meta = pointcloud_msg_to_array(decoded_msg)
+                    except Exception as exc:  # pragma: no cover
+                        logger.warn(f"Skipping pointcloud for {topic} in {mcap_path.name}: {exc}")
+                        continue
+                    timestamp_ns = message.publish_time or message.log_time or 0
+                    pc_writer.add_cloud(cloud, timestamp_ns, mcap_path.name, cloud_meta)
+                    total_messages += 1
+                    continue
+
+                if topic not in ndjson_files:
+                    sanitized = sanitize_topic_name(topic)
+                    topic_dir = out_bag_dir / sanitized
+                    output_file = topic_dir / "messages.ndjson"
+                    ensure_parent(output_file, args.overwrite)
+                    info_file = topic_dir / "messages_info.json"
+                    if info_file.exists():
+                        if not args.overwrite:
+                            raise FileExistsError(
+                                f"{info_file} already exists. Use --overwrite to replace it."
+                            )
+                        info_file.unlink()
+                    fh = output_file.open("w", encoding="utf-8")
+                    ndjson_files[topic] = fh
+                    ndjson_paths[topic] = output_file
+                    ndjson_info_paths[topic] = info_file
+                    ndjson_stats[topic] = {
+                        "frame_count": 0,
+                        "start_time_ns": None,
+                        "end_time_ns": None,
+                        "bag_files": set(),
+                        "type": topic_specs[topic],
+                    }
+
+                timestamp_ns = message.publish_time or message.log_time or 0
+                record = {
+                    "bag_file": mcap_path.name,
+                    "topic": topic,
+                    "type": topic_specs[topic],
+                    "log_time_ns": message.log_time,
+                    "publish_time_ns": message.publish_time,
+                    "data": to_jsonable(decoded_msg),
+                }
+                ndjson_files[topic].write(json.dumps(record))
+                ndjson_files[topic].write("\n")
+
+                stats = ndjson_stats[topic]
+                stats["frame_count"] += 1
+                stats["bag_files"].add(mcap_path.name)
+                if stats["start_time_ns"] is None or timestamp_ns < stats["start_time_ns"]:
+                    stats["start_time_ns"] = timestamp_ns
+                if stats["end_time_ns"] is None or timestamp_ns > stats["end_time_ns"]:
+                    stats["end_time_ns"] = timestamp_ns
+                total_messages += 1
+        finally:
+            stream.close()
+            if uncompressed_tmp:
+                try:
+                    uncompressed_tmp.unlink()
+                except:
+                    pass
 
     missing_topics = sorted(list(expected_topics - seen_topics))
     if missing_topics:
