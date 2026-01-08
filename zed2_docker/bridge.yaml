@@ -10,6 +10,8 @@ topics:
     type: sensor_msgs/msg/CameraInfo
   /zed/zed_node/rgb/color/rect/image/compressed:
     type: sensor_msgs/msg/CompressedImage
+  /zed/zed_node/pose:
+    type: geometry_msgs/msg/PoseStamped
   # /zed/zed_node/point_cloud/cloud_registered:
   #  type: sensor_msgs/msg/PointCloud2
 
