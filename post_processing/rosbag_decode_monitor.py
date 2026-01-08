@@ -196,12 +196,10 @@ def sanitize_topic_name(topic: str) -> str:
 
 
 def sanitize_label(value: str) -> str:
-    v = value.strip()
-    if not v:
-        return "unknown"
-    v = re.sub(r"\s+", "_", v)
-    v = re.sub(r"[^A-Za-z0-9_\-]", "-", v)
-    return v
+    v = value.strip().lower()
+    # Keep only a–z and 0–9; drop everything else (spaces, dots, punctuation)
+    v = re.sub(r"[^a-z0-9]+", "", v)
+    return v or "unknown"
 
 
 def sanitize_outcome(value: str) -> str:
@@ -212,22 +210,68 @@ def sanitize_outcome(value: str) -> str:
 
 
 def _extract_task_label_from_msg(msg: Any) -> Optional[str]:
+    """
+    Extract task label from various message shapes, including:
+      - objects with .task_label or .label
+      - dicts with keys "task_label" / "label"
+      - std_msgs/String-like objects where .data is a JSON string containing {"task_label": "..."}.
+    """
     if msg is None:
         return None
-    for attr in ("task_label", "label"):
-        if hasattr(msg, attr):
-            val = getattr(msg, attr)
-            if isinstance(val, str) and val.strip():
-                return val.strip()
-    try:
-        obj = to_jsonable(msg)
+
+    def _pick_label(obj: Any) -> Optional[str]:
         if isinstance(obj, dict):
             for key in ("task_label", "label"):
                 val = obj.get(key)
                 if isinstance(val, str) and val.strip():
                     return val.strip()
+        return None
+
+    # 1) Direct attributes on decoded object
+    for attr in ("task_label", "label"):
+        if hasattr(msg, attr):
+            val = getattr(msg, attr)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+
+    # 2) Convert to jsonable (dict/primitive) and check directly
+    try:
+        obj = to_jsonable(msg)
     except Exception:
-        pass
+        obj = None
+
+    if isinstance(obj, dict):
+        direct = _pick_label(obj)
+        if direct:
+            return direct
+
+        # 3) std_msgs/String pattern: {"data": "<json string>"}
+        inner = obj.get("data")
+        if isinstance(inner, str):
+            s = inner.strip()
+            if s:
+                # Try to parse JSON contained in the string
+                try:
+                    parsed = json.loads(s)
+                except Exception:
+                    parsed = None
+
+                if isinstance(parsed, dict):
+                    inside = _pick_label(parsed)
+                    if inside:
+                        return inside
+
+                    # Optional: one more level if task_label itself is nested strangely
+                    nested = parsed.get("data")
+                    if isinstance(nested, str) and nested.strip():
+                        try:
+                            parsed2 = json.loads(nested)
+                        except Exception:
+                            parsed2 = None
+                        if isinstance(parsed2, dict):
+                            inside2 = _pick_label(parsed2)
+                            if inside2:
+                                return inside2
     return None
 
 
