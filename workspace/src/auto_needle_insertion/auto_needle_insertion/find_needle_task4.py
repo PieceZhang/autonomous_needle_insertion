@@ -25,7 +25,8 @@ import logging
 import os
 import sys
 import time
-from typing import List, Tuple
+import threading
+from typing import List, Tuple, Optional
 
 import numpy as np
 import rclpy
@@ -54,6 +55,9 @@ from auto_needle_insertion.utils.transducer_motions import (
     standard_action_pose_sequence,
 )
 from auto_needle_insertion.utils.us_probe import USProbe
+from std_msgs.msg import String
+from rclpy.executors import SingleThreadedExecutor
+from auto_needle_insertion.rosbag_recorder_control import TaskInfoPublisher
 
 # Module constants
 NODE_NAME = "auto_needle_insertion"
@@ -90,6 +94,40 @@ TASK41_COMPRESSION_MM = 1.0  # compression along Y (mm)
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+class TaskProcedurePublisher(rclpy.node.Node):
+    """Publish step changes on 'task_procedure'."""
+    def __init__(self, topic_name: str = "task_procedure") -> None:
+        super().__init__("task_procedure_publisher")
+        self._pub = self.create_publisher(String, topic_name, 10)
+        self._last: Optional[str] = None
+
+    def publish_step(self, step: str) -> None:
+        if step != self._last:
+            self._last = step
+            msg = String()
+            msg.data = step
+            self._pub.publish(msg)
+
+
+class _SpinThread:
+    """Background spinner for rclpy executor."""
+    def __init__(self, executor: SingleThreadedExecutor) -> None:
+        self._exec = executor
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=2.0)
+
+    def _run(self) -> None:
+        while not self._stop.is_set() and rclpy.ok():
+            self._exec.spin_once(timeout_sec=0.1)
 
 
 # ---------------------- Planning helpers ----------------------
@@ -217,7 +255,9 @@ def run_subtask_1(
     planning_frame: str,
     to_in_ee: np.ndarray,
     ee_target_pose_in_base: np.ndarray,
+    task_proc_pub: TaskProcedurePublisher,
 ):
+    task_proc_pub.publish_step("subtask1_start")
     """Subtask 1: standard action sequence then return to p1."""
     # Currently at p2
     current_ee_transform = get_current_ee_transform(robot, tip_link)
@@ -225,6 +265,7 @@ def run_subtask_1(
 
     logger.info("[Subtask 1] Start rosbag recording (placeholder, integrate actual rosbag separately)")
 
+    task_proc_pub.publish_step("subtask1_standard_action")
     # Step 5: execute standard action sequence (tilt/fan + rock + sweep + compression)
     probe_poses = standard_action_pose_sequence(
         to_in_base,
@@ -236,16 +277,20 @@ def run_subtask_1(
     ok = execute_probe_pose_sequence(robot, arm, tip_link, planning_frame, to_in_ee, probe_poses[1:])
     if not ok:
         logger.error("[Subtask 1] Standard action sequence failed")
+        task_proc_pub.publish_step("subtask1_failed")
         return
 
     # Step 6: return to p1
+    task_proc_pub.publish_step("subtask1_return_p1")
     ok = plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target_pose_in_base)
     if not ok:
         logger.error("[Subtask 1] Return to p1 failed")
+        task_proc_pub.publish_step("subtask1_failed")
         return
     logger.info("[Subtask 1] Returned to p1")
 
     logger.info("[Subtask 1] Stop rosbag recording (placeholder, integrate actual rosbag separately)")
+    task_proc_pub.publish_step("subtask1_done")
 
 
 def tip_in_to_frame(to_in_base: np.ndarray, tracker_in_base: np.ndarray, tip_in_tracker: np.ndarray) -> np.ndarray:
@@ -331,23 +376,28 @@ def run_subtask_2(
     tracker_in_base: np.ndarray,
     needle_tip_position: np.ndarray,
     needle_pose: np.ndarray,
+    task_proc_pub: TaskProcedurePublisher,
     sweep_mm: float = STEP5_SWEEP_MM,
     rotate_deg: float = STEP7_ROTATE_DEG,
 ):
     # Current transducer pose in base
     current_ee_transfrorm = get_current_ee_transform(robot, tip_link)
     to_in_base = current_ee_transfrorm @ to_in_ee
+    task_proc_pub.publish_step("subtask2_start")
+    task_proc_pub.publish_step("subtask2_step5-1")
     logger.info("----------Step 5-1: sweep along local z axis-------------")
     # Sweep -z to +z
     poses_sweep = sweep_z_waypoints(to_in_base, sweep_mm=sweep_mm)
     ok = execute_probe_pose_sequence(robot, arm, tip_link, planning_frame, to_in_ee, poses_sweep[1:])
     if not ok:
         logger.error("[known] z sweep failed")
+        task_proc_pub.publish_step("subtask2_failed")
         return to_in_base
     to_in_base = poses_sweep[-1]
     logger.info("Step 5-1 finished")
 
     # Tip to ( *, *, 0 )
+    task_proc_pub.publish_step("subtask2_step5-2")
     logger.info("-------- Step 5-2: sweep to let tip z to 0--------")
     to_in_base = move_tip_z_to_zero_known(
         robot, arm, tip_link, planning_frame,
@@ -358,6 +408,7 @@ def run_subtask_2(
     logger.info("Step 5-2 finished")
 
     # Tip to ( x/2, *, 0 )
+    task_proc_pub.publish_step("subtask2_step6")
     logger.info("-------- Step 6: slide to (x/2, *, 0)) -----------")
     to_in_base = move_tip_x_to_image_center(
         robot, arm, tip_link, planning_frame,
@@ -368,16 +419,19 @@ def run_subtask_2(
     logger.info("Step 6 finished")
 
     # Rotate -theta to +theta
+    task_proc_pub.publish_step("subtask2_step7-1")
     logger.info("--------- Step 7-1: rotate around y axis---------")
     poses_rotate = rotate_waypoints(to_in_base, rotate_deg=rotate_deg)
     ok = execute_probe_pose_sequence(robot, arm, tip_link, planning_frame, to_in_ee, poses_rotate[1:])
     if not ok:
         logger.error("[known] ry sweep failed")
+        task_proc_pub.publish_step("subtask2_failed")
         return to_in_base
     to_in_base = poses_rotate[-1]
     logger.info("Step 7-1 finished")
 
     # Adjust needle origin z to 0 via ry
+    task_proc_pub.publish_step("subtask2_step7-2")
     logger.info("--------- Step 7-2: rotate to let base z to 0--------")
     to_in_base = rotate_base_z_to_zero_known(
         robot, arm, tip_link, planning_frame,
@@ -386,16 +440,30 @@ def run_subtask_2(
         needle_pose,
     )
     logger.info("Step 7-2 finished")
+    task_proc_pub.publish_step("subtask2_done")
+
 
 # ---------------------- Main ----------------------
 def main() -> None:
     rclpy.init()
 
+    executor = SingleThreadedExecutor()
+    task_info_pub = TaskInfoPublisher(topic_name="task_info_collection_states")
+    task_proc_pub = TaskProcedurePublisher(topic_name="task_procedure")
+    executor.add_node(task_info_pub)
+    executor.add_node(task_proc_pub)
+    spinner = _SpinThread(executor)
+    spinner.start()
+
+    task_mode = "two"
     if len(sys.argv) > 1:
         task_mode = sys.argv[1].strip().lower()
     logger.info(f"Selected task mode: {task_mode} ('one' -> Subtask 1, 'two' -> Subtask 2)")
 
     try:
+        task_info_pub.set_state("started")
+        task_proc_pub.publish_step("task4_init")
+
         robot = MoveItPy(node_name=NODE_NAME)
 
         # Allow time for joint states to populate the planning scene
@@ -508,46 +576,60 @@ def main() -> None:
         ee_target_pose_in_base_p2 = tracker_in_base @ candidate_image_in_tracker @ np.linalg.inv(to_in_ee)
         logger.info(f"Random pose p2 (EE in base):\n{ee_target_pose_in_base_p2}")
 
+        task_proc_pub.publish_step("move_p1")
         # Plan and execute to p1
         ok = plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target_pose_in_base)
         if not ok:
             logger.error("Execution to p1 failed; aborting")
             return
         logger.info("Reached target pose p1")
+        task_proc_pub.publish_step("p1_reached")
         to_in_base_p1 = ee_target_pose_in_base @ to_in_ee
 
+        task_proc_pub.publish_step("move_p2")
         # Plan and execute to p2
         ok = plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target_pose_in_base_p2)
         if not ok:
             logger.error("Execution to p2 failed; aborting")
             return
         logger.info("Reached target pose p2")
+        task_proc_pub.publish_step("p2_reached")
 
-        # run_subtask_1(
-        #         robot, arm, tip_link, planning_frame,
-        #         to_in_ee,
-        #         ee_target_pose_in_base,
-        #         ee_target_pose_in_base_p2,
-        # )
+        if task_mode == "one":
+            logger.info('start task 4.1')
+            run_subtask_1(
+                robot, arm, tip_link, planning_frame,
+                to_in_ee,
+                ee_target_pose_in_base,
+                task_proc_pub,
+            )
 
-        logger.info('start task 4.2')
+        if task_mode == "two":
+            logger.info('start task 4.2')
+            run_subtask_2(
+                robot=robot,
+                arm=arm,
+                tip_link=tip_link,
+                planning_frame=planning_frame,
+                to_in_ee=to_in_ee,
+                to_in_base_p1=to_in_base_p1,
+                tracker_in_base=tracker_in_base,
+                needle_tip_position=needle_tip_position,
+                needle_pose=needle_pose,
+                task_proc_pub=task_proc_pub,
+            )
 
-        run_subtask_2(
-            robot=robot,
-            arm=arm,
-            tip_link=tip_link,
-            planning_frame=planning_frame,
-            to_in_ee=to_in_ee,
-            to_in_base_p1=to_in_base_p1,
-            tracker_in_base=tracker_in_base,
-            needle_tip_position=needle_tip_position,
-            needle_pose=needle_pose,
-        )
+        task_info_pub.set_state("Success")
 
     except Exception as e:
         logger.error(f"Trajectory execution failed: {e}")
+        task_info_pub.set_state("Failure")
         raise
     finally:
+        spinner.stop()
+        executor.shutdown()
+        task_info_pub.destroy_node()
+        task_proc_pub.destroy_node()
         rclpy.shutdown()
 
 
