@@ -50,6 +50,11 @@ class TaskPanel(Plugin):
         self.operator_edit.setPlaceholderText('Enter operator name')
         form.addRow('Operator Name:', self.operator_edit)
 
+        # Patient Name
+        self.patient_edit = QtWidgets.QLineEdit()
+        self.patient_edit.setPlaceholderText('Enter patient name')
+        form.addRow('Patient Name:', self.patient_edit)
+
         # Operator Skill Level
         self.skill_combo = QtWidgets.QComboBox()
         self.skill_combo.setEditable(True)
@@ -159,6 +164,7 @@ class TaskPanel(Plugin):
         data = {
             'task_label': self.task_combo.currentText().strip(),
             'operator_name': self.operator_edit.text().strip(),
+            'patient_name': self.patient_edit.text().strip(),
             'operator_skill_level': self.skill_combo.currentText().strip(),
             'phantom_info': self.phantom_combo.currentText().strip(),
             'probe_type': self.probe_type_combo.currentText().strip(),
@@ -194,6 +200,7 @@ class TaskPanel(Plugin):
     def save_settings(self, plugin_settings, instance_settings):
         instance_settings.set_value('task_label', self.task_combo.currentText())
         instance_settings.set_value('operator_name', self.operator_edit.text())
+        instance_settings.set_value('patient_name', self.patient_edit.text())
         instance_settings.set_value('operator_skill_level', self.skill_combo.currentText())
         instance_settings.set_value('phantom_info', self.phantom_combo.currentText())
         instance_settings.set_value('probe_type', self.probe_type_combo.currentText())
@@ -205,10 +212,11 @@ class TaskPanel(Plugin):
     def restore_settings(self, plugin_settings, instance_settings):
         self.task_combo.setCurrentText(instance_settings.value('task_label', ''))
         self.operator_edit.setText(instance_settings.value('operator_name', ''))
+        self.patient_edit.setText(instance_settings.value('patient_name', ''))
         self.skill_combo.setCurrentText(instance_settings.value('operator_skill_level', ''))
         self.phantom_combo.setCurrentText(instance_settings.value('phantom_info', ''))
         self.probe_type_combo.setCurrentText(instance_settings.value('probe_type', 'Wisonic_Clover60_C5-1_convex'))
         self.probe_setup_combo.setCurrentText(instance_settings.value('probe_setup', 'Robotic'))
         self.needle_setup_combo.setCurrentText(instance_settings.value('needle_setup', 'Free-hand'))
-        self.needle_gauge_combo.setCurrentText(instance_settings.value('needle_gauge', '18G'))
+        self.needle_gauge_combo.setCurrentText(instance_settings.value('needle_gauge', ''))
         self.comments_edit.setPlainText(instance_settings.value('comments', ''))
