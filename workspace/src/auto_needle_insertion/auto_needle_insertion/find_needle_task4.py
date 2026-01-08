@@ -473,8 +473,19 @@ def main() -> None:
         rosbag_controller.stop_recording(reason)
         rosbag_active = False
 
-    task_mode = "two"
-    logger.info(f"Selected task mode: {task_mode} ('one' -> Subtask 1, 'two' -> Subtask 2)")
+    # Replace task_mode selection with TASK4_SUBTASK env var
+    _subtask_raw = (os.getenv("TASK4_SUBTASK", "") or "").strip()
+    if _subtask_raw == "":
+        task_subtask = 1
+    else:
+        try:
+            task_subtask = int(_subtask_raw)
+        except ValueError as e:
+            raise ValueError(f"TASK4_SUBTASK must be '1' or '2' (got {_subtask_raw!r})") from e
+    if task_subtask not in (1, 2):
+        raise ValueError(f"TASK4_SUBTASK must be '1' or '2' (got {task_subtask})")
+
+    logger.info(f"Selected TASK4_SUBTASK={task_subtask} (1 -> Subtask 1, 2 -> Subtask 2)")
 
     try:
         task_info_pub.set_state("started")
@@ -594,6 +605,7 @@ def main() -> None:
             logger.info(f"Random pose p2 (EE in base):\n{ee_target_pose_in_base_p2}")
 
             task_proc_pub.publish_step("move_p1")
+            print('Starting rosbag and moving to p1...')
             start_rosbag_recording()
             # Plan and execute to p1
             ok = plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target_pose_in_base)
@@ -615,16 +627,18 @@ def main() -> None:
             logger.info("Reached target pose p2")
             task_proc_pub.publish_step("p2_reached")
 
-            if task_mode == "one":
-                logger.info('start task 4.1')
+            if task_subtask == 1:
+                logger.info("start task 4.1")
+                print("start task 4.1")
                 run_subtask_1(
                     robot, arm, tip_link, planning_frame,
                     to_in_ee,
                     ee_target_pose_in_base,
                     task_proc_pub,
                 )
-            elif task_mode == "two":
-                logger.info('start task 4.2')
+            elif task_subtask == 2:
+                logger.info("start task 4.2")
+                print("start task 4.2")
                 run_subtask_2(
                     robot=robot,
                     arm=arm,
