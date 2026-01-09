@@ -60,6 +60,5 @@ services:
     command: >
       bash -c "
         source /opt/ros/jazzy/setup.bash &&
-        source /root/ros2_ws/install/local_setup.bash &&
         python3 /work/rosbag_control_service.py
       "
