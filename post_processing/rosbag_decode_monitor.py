@@ -107,6 +107,9 @@ KNOWN_ENCODINGS = {
     "y16",
 }
 
+DEPTH_NORM_MIN: Optional[float] = 0
+DEPTH_NORM_MAX: Optional[float] = 65535
+
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 JPEG_SIGNATURE = b"\xff\xd8\xff"
 MAGIC_SIGNATURES = (PNG_SIGNATURE, JPEG_SIGNATURE)
@@ -601,20 +604,26 @@ def _decode_compressed_depth(data: bytes) -> "tnp.ndarray":
     if img is None:
         raise RuntimeError("cv2.imdecode failed for compressedDepth frame")
 
+    # Ensure uint16 depth
     if img.dtype == np.uint16:
         depth_image = img
     else:
         depth_image = img.astype(np.uint16)
 
-    min_val = np.min(depth_image)
-    max_val = np.max(depth_image)
-    if max_val > min_val:
-        normalized = ((depth_image - min_val) / (max_val - min_val) * 255).astype(np.uint8)
-    else:
+    # Determine normalization bounds
+    dmin = DEPTH_NORM_MIN if DEPTH_NORM_MIN is not None else float(np.min(depth_image))
+    dmax = DEPTH_NORM_MAX if DEPTH_NORM_MAX is not None else float(np.max(depth_image))
+
+    if dmax <= dmin:
         normalized = np.zeros_like(depth_image, dtype=np.uint8)
+    else:
+        depth_f = depth_image.astype(np.float32)
+        depth_clipped = np.clip(depth_f, dmin, dmax)
+        normalized = ((depth_clipped - dmin) / (dmax - dmin) * 255.0).astype(np.uint8)
 
     grayscale_bgr = cv2.cvtColor(normalized, cv2.COLOR_GRAY2BGR)
     return grayscale_bgr
+
 
 
 def _ensure_bgr(image: "tnp.ndarray") -> "tnp.ndarray":
