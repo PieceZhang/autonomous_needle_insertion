@@ -24,6 +24,21 @@ detect_docker_gid() {
   printf '%s' "$gid"
 }
 
+# Resolve project root (directory containing this script).
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="${PROJECT_ROOT}/.env"
+
+USE_DIR_OWNER=0
+DIR_PATH=""
+if [[ "${1:-}" == "--from-dir-owner" ]]; then
+  USE_DIR_OWNER=1
+  DIR_PATH="${2:-}"
+  if [[ -z "${DIR_PATH}" ]]; then
+    echo "Error: missing directory after --from-dir-owner" >&2
+    exit 1
+  fi
+fi
+
 uid=""
 gid=""
 
