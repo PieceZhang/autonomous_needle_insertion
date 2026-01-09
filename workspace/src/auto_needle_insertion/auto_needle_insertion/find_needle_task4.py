@@ -30,7 +30,7 @@ from typing import List, Tuple, Optional
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Float32MultiArray
 from moveit.core.kinematic_constraints import construct_link_constraint
 from moveit.planning import MoveItPy, PlanRequestParameters
 from rclpy.node import Node
@@ -89,7 +89,8 @@ P2_SWEEP_RANGE_MM = (-20.0, 20.0)  # mm
 P2_SLIDE_RANGE_MM = (-20.0, 20.0)  # mm
 
 # Target position in image plane for needle centering (in meters)
-Y_TARGET_IN_PLANE_M = 0.07
+PIXEL_LOWER_BOUND = 50
+PIXEL_UPPER_BOUND = 1080
 
 STEP5_SWEEP_MM = 20.0    # sweep amplitude for z sweep (positive, mm)
 STEP6_SLIDE_MM = 20.0    # total slide length used to compute x/2 target (mm)
@@ -122,6 +123,24 @@ class TaskProcedurePublisher(rclpy.node.Node):
             msg = String()
             msg.data = step
             self._pub.publish(msg)
+
+class NeedleTipYSubscriber(rclpy.node.Node):
+    """Subscribe needle_tip topic"""
+    def __init__(self, topic_name: str) -> None:
+        super().__init__("needle_tip_y_subscriber")
+        self._y = None
+        self._lock = threading.Lock()
+        self._sub = self.create_subscription(Float32MultiArray, topic_name, self._cb, 10)
+
+    def _cb(self, msg: Float32MultiArray) -> None:
+        if not msg.data or len(msg.data) < 2:
+            return
+        with self._lock:
+            self._y = float(msg.data[1])
+
+    def get_latest_y(self) -> float:
+        with self._lock:
+            return self._y
 
 
 class _SpinThread:
@@ -452,8 +471,10 @@ def main() -> None:
     executor = SingleThreadedExecutor()
     task_info_pub = TaskInfoPublisher(topic_name="task_info_collection_states")
     task_proc_pub = TaskProcedurePublisher(topic_name="task_procedure")
+    tip_y_sub = NeedleTipYSubscriber(topic_name="/decoded_coor_image/needle_tip")
     executor.add_node(task_info_pub)
     executor.add_node(task_proc_pub)
+    executor.add_node(tip_y_sub)
     spinner = _SpinThread(executor)
     spinner.start()
 
@@ -562,6 +583,12 @@ def main() -> None:
             # Frames
             tracker_in_base = current_ee_transform @ probe_in_ee @ np.linalg.inv(quat_to_T(probe_pose))
             to_in_tracker = quat_to_T(probe_pose) @ to_in_probe
+            y_target_in_top = tip_y_sub.get_latest_y()
+            if y_target_in_top < PIXEL_LOWER_BOUND:
+                y_target_in_top = PIXEL_LOWER_BOUND
+            elif y_target_in_top > PIXEL_UPPER_BOUND:
+                y_target_in_top = PIXEL_UPPER_BOUND
+            y_target_in_to = y_target_in_top * pixel_spacing_y
 
             # Align and center image frame
             image_in_tracker_after_alignment = align_image_to_needle_axis(
@@ -569,7 +596,7 @@ def main() -> None:
             )
             image_in_tracker_after_centering = center_needle_in_image(
                 image_in_tracker_after_alignment, needle_pose[0:3], needle_tip_position,
-                x_center_in_plane=0.0, y_target_in_plane=Y_TARGET_IN_PLANE_M
+                x_center_in_plane=0.0, y_target_in_plane=y_target_in_to
             )
 
             # Apply small random perturbations to get candidate image pose (p2)
