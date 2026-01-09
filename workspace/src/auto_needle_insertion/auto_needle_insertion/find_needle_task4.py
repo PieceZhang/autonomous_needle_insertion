@@ -30,7 +30,8 @@ from typing import List, Tuple, Optional
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PoseStamped, Float32MultiArray
+from geometry_msgs.msg import PoseStamped
+from std_msgs.msg import Float32MultiArray
 from moveit.core.kinematic_constraints import construct_link_constraint
 from moveit.planning import MoveItPy, PlanRequestParameters
 from rclpy.node import Node
@@ -89,7 +90,7 @@ P2_SWEEP_RANGE_MM = (-20.0, 20.0)  # mm
 P2_SLIDE_RANGE_MM = (-20.0, 20.0)  # mm
 
 # Target position in image plane for needle centering (in meters)
-PIXEL_LOWER_BOUND = 50
+PIXEL_LOWER_BOUND = 0
 PIXEL_UPPER_BOUND = 1080
 
 STEP5_SWEEP_MM = 20.0    # sweep amplitude for z sweep (positive, mm)
@@ -579,26 +580,26 @@ def main() -> None:
         image_width_m = IMAGE_WIDTH_PX * pixel_spacing_x
         image_height_m = IMAGE_HEIGHT_PX * pixel_spacing_y
 
+        # Frames
+        tracker_in_base = current_ee_transform @ probe_in_ee @ np.linalg.inv(quat_to_T(probe_pose))
+        to_in_tracker = quat_to_T(probe_pose) @ to_in_probe
+        y_target_in_top = tip_y_sub.get_latest_y()
+        if y_target_in_top < PIXEL_LOWER_BOUND:
+            y_target_in_top = PIXEL_LOWER_BOUND
+        elif y_target_in_top > PIXEL_UPPER_BOUND:
+            y_target_in_top = PIXEL_UPPER_BOUND
+        y_target_in_to = y_target_in_top * pixel_spacing_y
+
+        # Align and center image frame
+        image_in_tracker_after_alignment = align_image_to_needle_axis(
+            to_in_tracker, needle_pose[0:3], needle_tip_position
+        )
+        image_in_tracker_after_centering = center_needle_in_image(
+            image_in_tracker_after_alignment, needle_pose[0:3], needle_tip_position,
+            x_center_in_plane=0.0, y_target_in_plane=y_target_in_to
+        )
+
         while True:
-            # Frames
-            tracker_in_base = current_ee_transform @ probe_in_ee @ np.linalg.inv(quat_to_T(probe_pose))
-            to_in_tracker = quat_to_T(probe_pose) @ to_in_probe
-            y_target_in_top = tip_y_sub.get_latest_y()
-            if y_target_in_top < PIXEL_LOWER_BOUND:
-                y_target_in_top = PIXEL_LOWER_BOUND
-            elif y_target_in_top > PIXEL_UPPER_BOUND:
-                y_target_in_top = PIXEL_UPPER_BOUND
-            y_target_in_to = y_target_in_top * pixel_spacing_y
-
-            # Align and center image frame
-            image_in_tracker_after_alignment = align_image_to_needle_axis(
-                to_in_tracker, needle_pose[0:3], needle_tip_position
-            )
-            image_in_tracker_after_centering = center_needle_in_image(
-                image_in_tracker_after_alignment, needle_pose[0:3], needle_tip_position,
-                x_center_in_plane=0.0, y_target_in_plane=y_target_in_to
-            )
-
             # Apply small random perturbations to get candidate image pose (p2)
             candidate_image_in_tracker = None
             rng = np.random.default_rng()
