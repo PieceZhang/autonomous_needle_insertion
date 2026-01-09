@@ -154,7 +154,7 @@ def standard_action_pose_sequence(
     tilt_deg: float,
     rock_deg: float,
     sweep_mm: float,
-    compression_mm: float,
+    # compression_mm: float,
 ) -> List[np.ndarray]:
     """Return pose sequence for standard action with center -> opposite -> center for each motion.
 
@@ -183,7 +183,7 @@ def standard_action_pose_sequence(
         ("sweep", sweep_mm),
         ("sweep", -2.0 * sweep_mm),
         ("sweep", sweep_mm),
-        ("compression", -compression_mm),
+        # ("compression", -compression_mm),
     ]
 
     poses: List[np.ndarray] = [np.array(T_probe, dtype=float, copy=True)]
