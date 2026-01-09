@@ -108,7 +108,7 @@ KNOWN_ENCODINGS = {
 }
 
 DEPTH_NORM_MIN: Optional[float] = 0
-DEPTH_NORM_MAX: Optional[float] = 65535
+DEPTH_NORM_MAX: Optional[float] = 65535  # set to None to auto-scale per image
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 JPEG_SIGNATURE = b"\xff\xd8\xff"
@@ -809,7 +809,12 @@ class VideoTopicWriter:
         self.info_path = self.output_dir / "video_info.json"
         self.overwrite = overwrite
         self._prepare_outputs()
-        self.writer = None
+
+        # Frame buffering to allow correct FPS writing at finalize
+        self._temp_dir = tempfile.TemporaryDirectory(prefix="video_frames_")
+        self._temp_dir_path = Path(self._temp_dir.name)
+        self._frame_paths: List[Path] = []
+
         self.first_timestamp_ns: Optional[int] = None
         self.last_timestamp_ns: Optional[int] = None
         self.height: Optional[int] = None
@@ -835,17 +840,11 @@ class VideoTopicWriter:
                 f"Frame size mismatch for {self.topic}: expected {self.width}x{self.height}, got {w}x{h}"
             )
 
-        # Lazily create writer on the first frame to avoid buffering all frames in memory.
-        if self.writer is None:
-            if cv2 is None:
-                require_video_dependencies()
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            self.writer = cv2.VideoWriter(str(self.video_path), fourcc, self.DEFAULT_FPS, (self.width, self.height))
-            if not self.writer.isOpened():
-                self.writer = None
-                raise RuntimeError(f"Failed to open video writer for {self.video_path}")
+        # Persist frame to temp storage to avoid holding all frames in RAM
+        frame_path = self._temp_dir_path / f"frame_{self.frame_count:06d}.npy"
+        np.save(frame_path, frame)
+        self._frame_paths.append(frame_path)
 
-        self.writer.write(frame)
         self.frame_count += 1
         self.first_timestamp_ns = timestamp_ns if self.first_timestamp_ns is None else self.first_timestamp_ns
         self.last_timestamp_ns = timestamp_ns
@@ -863,23 +862,30 @@ class VideoTopicWriter:
 
     def finalize(self) -> Optional[Tuple[Path, Path]]:
         if self.frame_count == 0:
+            self._temp_dir.cleanup()
             return None
         if cv2 is None:
             require_video_dependencies()
         if self.width is None or self.height is None:
+            self._temp_dir.cleanup()
             raise RuntimeError("Cannot write video without frame dimensions.")
 
         measured_fps = self._compute_measured_fps()
 
-        # Ensure writer exists; if not, create a fallback writer (should not happen in normal flow).
-        if self.writer is None:
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            self.writer = cv2.VideoWriter(str(self.video_path), fourcc, measured_fps, (self.width, self.height))
-            if not self.writer.isOpened():
-                raise RuntimeError(f"Failed to open video writer for {self.video_path}")
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(str(self.video_path), fourcc, measured_fps, (self.width, self.height))
+        if not writer.isOpened():
+            self._temp_dir.cleanup()
+            raise RuntimeError(f"Failed to open video writer for {self.video_path}")
 
-        # OpenCV does not allow changing FPS after creation; measured_fps is recorded for metadata only.
-        self.writer.release()
+        try:
+            for frame_path in self._frame_paths:
+                frame = np.load(frame_path, mmap_mode="r")
+                writer.write(frame)
+        finally:
+            writer.release()
+            # Always clean up temp frames
+            self._temp_dir.cleanup()
 
         duration_ns = 0
         if self.first_timestamp_ns is not None and self.last_timestamp_ns is not None:
