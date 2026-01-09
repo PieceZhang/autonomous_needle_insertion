@@ -83,6 +83,14 @@ CONTROLLER_NAMES = [
 # Preferred tip link names in order of preference
 PREFERRED_TIP_LINKS = ["tool0", "ee_link"]
 
+# Random perturbation parameters
+P2_ROT_RANGE_DEG = (-10.0, 10.0)  # deg
+P2_SWEEP_RANGE_MM = (-20.0, 20.0)  # mm
+P2_SLIDE_RANGE_MM = (-20.0, 20.0)  # mm
+
+# Target position in image plane for needle centering (in meters)
+Y_TARGET_IN_PLANE_M = 0.07
+
 STEP5_SWEEP_MM = 20.0    # sweep amplitude for z sweep (positive, mm)
 STEP6_SLIDE_MM = 20.0    # total slide length used to compute x/2 target (mm)
 STEP7_ROTATE_DEG = 10.0   # rotation amplitude for ry sweep (deg)
@@ -90,8 +98,8 @@ STEP7_ROTATE_DEG = 10.0   # rotation amplitude for ry sweep (deg)
 # Task 4.1 standard action parameters
 TASK41_TILT_DEG = 10.0        # tilt/fan about X
 TASK41_ROCK_DEG = 10.0        # rock about Z
-TASK41_SWEEP_MM = 4.0        # sweep along Z (mm)
-TASK41_COMPRESSION_MM = 1.0  # compression along Y (mm)
+TASK41_SWEEP_MM = 25.0        # sweep along Z (mm)
+# TASK41_COMPRESSION_MM = 5.0  # compression along Y (mm)
 
 DELAY_AFTER_ROSBAG_SEC = 0.5
 ROSBAG_STOP_WAIT_SEC = 0.5
@@ -268,7 +276,7 @@ def run_subtask_1(
         tilt_deg=TASK41_TILT_DEG,
         rock_deg=TASK41_ROCK_DEG,
         sweep_mm=TASK41_SWEEP_MM,
-        compression_mm=TASK41_COMPRESSION_MM,
+        # compression_mm=TASK41_COMPRESSION_MM,
     )
     ok = execute_probe_pose_sequence(robot, arm, tip_link, planning_frame, to_in_ee, probe_poses[1:])
     if not ok:
@@ -561,7 +569,7 @@ def main() -> None:
             )
             image_in_tracker_after_centering = center_needle_in_image(
                 image_in_tracker_after_alignment, needle_pose[0:3], needle_tip_position,
-                x_center_in_plane=0.0, y_target_in_plane=0.07
+                x_center_in_plane=0.0, y_target_in_plane=Y_TARGET_IN_PLANE_M
             )
 
             # Apply small random perturbations to get candidate image pose (p2)
@@ -571,9 +579,9 @@ def main() -> None:
                 seed = int(rng.integers(0, 2**32 - 1))
                 poses, _ = apply_random_small_perturbation(
                     image_in_tracker_after_centering,
-                    rot_range_deg=(-10.0, 10.0),
-                    sweep_range_mm=(-20.0, 20.0),
-                    slide_range_mm=(-20.0, 20.0),
+                    rot_range_deg=P2_ROT_RANGE_DEG,
+                    sweep_range_mm=P2_SWEEP_RANGE_MM,
+                    slide_range_mm=P2_SLIDE_RANGE_MM,
                     rng=np.random.default_rng(seed),
                 )
                 if not poses:
