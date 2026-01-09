@@ -14,7 +14,7 @@ RECORD_SCRIPT = "/opt/rosbag_control/run_openh_rosbag_record.sh"
 
 # 可按需改成你的环境；留空则不额外 source
 ROS_SETUP = "/opt/ros/jazzy/setup.bash"
-# WS_SETUP = "/root/ros2_ws/install/local_setup.bash"
+WS_SETUP = "/root/ros2_ws/install/local_setup.bash"
 
 
 class RosbagControlService(Node):
@@ -49,8 +49,8 @@ class RosbagControlService(Node):
         source_parts = []
         if os.path.exists(ROS_SETUP):
             source_parts.append(f"source {ROS_SETUP}")
-        # if os.path.exists(WS_SETUP):
-        #     source_parts.append(f"source {WS_SETUP}")
+        if os.path.exists(WS_SETUP):
+            source_parts.append(f"source {WS_SETUP}")
 
         cmd = " && ".join(source_parts + [f"exec bash {RECORD_SCRIPT}"]) if source_parts else f"exec bash {RECORD_SCRIPT}"
 

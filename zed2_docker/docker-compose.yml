@@ -36,10 +36,10 @@ services:
   rosbag_control_service:
     image: zed_ros2_desktop_u24.04_sdk_5.1.0_cuda_12.6.3:latest
     container_name: rosbag_control_service_jazzy
-    user: "${uid:-1001}:${gid:-1001}"
-    group_add:
-      - "${docker_gid:-999}"
-#    privileged: true
+#    user: "${uid:-1001}:${gid:-1001}"
+#    group_add:
+#      - "${docker_gid:-999}"
+    privileged: true
     network_mode: host
     ipc: host
     pid: host
