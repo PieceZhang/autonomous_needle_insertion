@@ -151,7 +151,7 @@ RUN chmod o+x /root && \
   chmod -R a+rX /root/ros2_ws/install
 
 # Setup environment variables
-COPY ros_entrypoint.sh /sbin/ros_entrypoint.sh
+# COPY ros_entrypoint.sh /sbin/ros_entrypoint.sh
 RUN sudo chmod 755 /sbin/ros_entrypoint.sh
 
 ENTRYPOINT ["/sbin/ros_entrypoint.sh"]
