@@ -1,17 +1,16 @@
 #!/bin/bash
 set -e
 
-OUT_DIR="/ani_ws/rosbag_recording"
+WORK_DIR="${WORK_DIR:-/work}"
+
+OUT_DIR="$WORK_DIR/rosbag_recording"
 mkdir -p "$OUT_DIR"
 
 BAG_NAME="rosbag2_$(date +%Y%m%d_%H%M%S)"
 
 echo "Start recording rosbag..."
 echo "Output: $OUT_DIR/$BAG_NAME"
-echo "Output: $OUT_DIR"
 echo "Use Ctrl+C to stop recording."
-
-#sleep 0.25s
 
 ros2 bag record --output "$OUT_DIR/$BAG_NAME" --topics \
                 /vega_vt/image_raw/compressed /vega_vt/camera_info \
@@ -31,10 +30,3 @@ ros2 bag record --output "$OUT_DIR/$BAG_NAME" --topics \
                 /zed/zed_node/rgb/color/rect/image/compressed
 #                --compression-mode file \
 #                --compression-format zstd
-
-
-# most of the size comes from /vega_vt/image_raw
-
-#                /camera/camera/color/image_raw/compressed /camera/camera/color/camera_info /camera/camera/color/metadata \
-#                /camera/camera/depth/image_rect_raw/compressedDepth /camera/camera/depth/camera_info /camera/camera/depth/metadata \
-#                /camera/camera/extrinsics/depth_to_color \
