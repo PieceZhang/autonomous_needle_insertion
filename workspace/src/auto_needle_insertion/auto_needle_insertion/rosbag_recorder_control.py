@@ -120,7 +120,7 @@ class KeystrokeTopicInput(Node):
 # Previously: SCRIPT_PATH = "/ani_ws/scripts/run_openh_rosbag_record.sh"
 # Use send_rosbag_start_command.sh for both start and stop as requested
 START_SCRIPT = "/ani_ws/scripts/send_rosbag_start_command.sh"
-STOP_SCRIPT = "/ani_ws/scripts/send_rosbag_start_command.sh"
+STOP_SCRIPT = "/ani_ws/scripts/send_rosbag_stop_command.sh"
 STOP_WAIT_SEC = 0.2  # 200 ms
 
 class RosbagController:
