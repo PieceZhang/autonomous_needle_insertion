@@ -146,6 +146,10 @@ RUN /bin/bash -c "source /opt/ros/$ROS_DISTRO/setup.bash && \
 
 WORKDIR /root/ros2_ws
 
+# Allow non-root users to traverse /root and read the ROS2 workspace setup.
+RUN chmod o+x /root && \
+  chmod -R a+rX /root/ros2_ws/install
+
 # Setup environment variables
 COPY ros_entrypoint.sh /sbin/ros_entrypoint.sh
 RUN sudo chmod 755 /sbin/ros_entrypoint.sh
