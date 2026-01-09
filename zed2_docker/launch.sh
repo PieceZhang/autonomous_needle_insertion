@@ -1,41 +1,53 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 1) Host user IDs
-UID_VAL="$(id -u)"
-GID_VAL="$(id -g)"
-
-# 2) Docker socket group ID (best-effort; useful when mounting /var/run/docker.sock)
-DOCKER_GID_VAL=""
-
-# Prefer reading the group ID directly from the docker socket (works even if group isn't named "docker")
-if [[ -S /var/run/docker.sock ]]; then
-  # Linux (GNU coreutils): stat -c
-  if DOCKER_GID_VAL="$(stat -c '%g' /var/run/docker.sock 2>/dev/null)"; then
-    :
-  # macOS / BSD: stat -f
-  elif DOCKER_GID_VAL="$(stat -f '%g' /var/run/docker.sock 2>/dev/null)"; then
-    :
-  else
-    DOCKER_GID_VAL=""
+detect_docker_gid() {
+  # Allow override: DOCKER_GID=984 ./gen-dotenv.sh
+  if [[ -n "${DOCKER_GID:-}" ]]; then
+    printf '%s' "${DOCKER_GID}"
+    return 0
   fi
+
+  local gid=""
+  if command -v getent >/dev/null 2>&1; then
+    # Format: group:password:GID:user(s)
+    gid="$(getent group docker 2>/dev/null | cut -d: -f3 || true)"
+  elif [[ -r /etc/group ]]; then
+    gid="$(awk -F: '$1=="docker"{print $3}' /etc/group || true)"
+  fi
+
+  # Non-fatal: some hosts (e.g., macOS) may not have a docker group
+  if [[ -z "$gid" ]]; then
+    echo "Warning: could not determine docker group GID (group 'docker' not found). DOCKER_GID will be empty." >&2
+  fi
+
+  printf '%s' "$gid"
+}
+
+uid=""
+gid=""
+
+if [[ "${USE_DIR_OWNER}" -eq 1 ]]; then
+  # Try GNU stat (-c) first, then BSD/macOS stat (-f).
+  if stat -c '%u' "$DIR_PATH" >/dev/null 2>&1; then
+    uid="$(stat -c '%u' "$DIR_PATH")"
+    gid="$(stat -c '%g' "$DIR_PATH")"
+  elif stat -f '%u' "$DIR_PATH" >/dev/null 2>&1; then
+    uid="$(stat -f '%u' "$DIR_PATH")"
+    gid="$(stat -f '%g' "$DIR_PATH")"
+  else
+    echo "Error: cannot determine owner of '$DIR_PATH' with stat." >&2
+    exit 1
+  fi
+else
+  # Current host user's ids.
+  uid="$(id -u)"
+  gid="$(id -g)"
 fi
 
-# Fallback: look up "docker" group GID (common on Linux)
-if [[ -z "${DOCKER_GID_VAL}" ]] && command -v getent >/dev/null 2>&1; then
-  DOCKER_GID_VAL="$(getent group docker | awk -F: '{print $3}' | head -n1 || true)"
-fi
+docker_gid="$(detect_docker_gid)"
 
-# Last resort: avoid empty interpolation (empty group_add entry can break compose parsing on some setups)
-if [[ -z "${DOCKER_GID_VAL}" ]]; then
-  DOCKER_GID_VAL="${GID_VAL}"
-fi
-
-export UID="${UID_VAL}"
-export GID="${GID_VAL}"
-export DOCKER_GID="${DOCKER_GID_VAL}"
-
-echo "[run-compose] UID=${UID} GID=${GID} DOCKER_GID=${DOCKER_GID}"
+echo "Using UID=${uid} GID=${gid} DOCKER_GID=${docker_gid} for docker compose"
 
 # 3) Run docker compose with the computed environment
 docker compose up -d
