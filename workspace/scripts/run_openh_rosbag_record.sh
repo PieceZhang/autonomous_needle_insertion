@@ -11,7 +11,7 @@ echo "Output: $OUT_DIR/$BAG_NAME"
 echo "Output: $OUT_DIR"
 echo "Use Ctrl+C to stop recording."
 
-sleep 0.25s
+#sleep 0.25s
 
 ros2 bag record --output "$OUT_DIR/$BAG_NAME" --topics \
                 /vega_vt/image_raw/compressed /vega_vt/camera_info \
@@ -24,10 +24,11 @@ ros2 bag record --output "$OUT_DIR/$BAG_NAME" --topics \
                 /task_info /task_info_collection_states /task_procedure \
                 /keyboard_listener/glyphkey_pressed /keyboard_listener/key_pressed \
                 /visualize/us_imaging/compressed /visualize/us_imaging_sync/compressed \
-                /zed/zed_node/rgb/color/rect/image/compressed \
+                /zed/zed_node/depth/camera_info \
                 /zed/zed_node/depth/depth_registered/compressedDepth \
-                /zed/zed_node/point_cloud/cloud_registered \
-                /zed/zed_node/pose
+                /zed/zed_node/pose \
+                /zed/zed_node/rgb/color/rect/camera_info \
+                /zed/zed_node/rgb/color/rect/image/compressed
 #                --compression-mode file \
 #                --compression-format zstd
 
