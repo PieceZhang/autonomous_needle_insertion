@@ -36,7 +36,10 @@ services:
   rosbag_control_service:
     image: zed_ros2_desktop_u24.04_sdk_5.1.0_cuda_12.6.3:latest
     container_name: rosbag_control_service_jazzy
-    privileged: true
+    user: "${UID:-1000}:${GID:-1000}"
+    group_add:
+      - "${DOCKER_GID}"
+#    privileged: true
     network_mode: host
     ipc: host
     pid: host
@@ -50,6 +53,7 @@ services:
       - ./rosbag_control_service.py:/opt/rosbag_control/rosbag_control_service.py:ro
       - ./run_openh_rosbag_record.sh:/opt/rosbag_control/run_openh_rosbag_record.sh:ro
       - ./:/work:rw
+      - /mnt/dataset:/work/rosbag_recording:rw
 
     restart: unless-stopped
 
