@@ -16,7 +16,7 @@ import queue
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 import rclpy
 from rclpy.node import Node
@@ -117,102 +117,124 @@ class KeystrokeTopicInput(Node):
 
 
 # ----------------- 录制控制 -----------------
-SCRIPT_PATH = "/ani_ws/scripts/run_openh_rosbag_record.sh"
+# Previously: SCRIPT_PATH = "/ani_ws/scripts/run_openh_rosbag_record.sh"
+# Use send_rosbag_start_command.sh for both start and stop as requested
+START_SCRIPT = "/ani_ws/scripts/send_rosbag_start_command.sh"
+STOP_SCRIPT = "/ani_ws/scripts/send_rosbag_stop_command.sh"
 STOP_WAIT_SEC = 0.2  # 200 ms
 
 class RosbagController:
+    """
+    Spawn start/stop scripts asynchronously (do not wait for exit).
+    Keep a small list of spawned processes for cleanup.
+    """
     def __init__(self):
-        self._proc: Optional[subprocess.Popen] = None
+        self._is_recording = False
+        self._procs: List[subprocess.Popen] = []
+
+    def _cleanup_finished_procs(self) -> None:
+        # drop processes that have already exited
+        alive: List[subprocess.Popen] = []
+        for p in self._procs:
+            try:
+                if p.poll() is None:
+                    alive.append(p)
+                else:
+                    # ensure file descriptors closed if we opened them via Popen
+                    try:
+                        p.stdout and p.stdout.close()
+                    except Exception:
+                        pass
+                    try:
+                        p.stderr and p.stderr.close()
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        self._procs = alive
+
+    def _spawn_script_async(self, script_path: str) -> Optional[subprocess.Popen]:
+        if not os.path.isfile(script_path):
+            msg = f"The script does not exist: {script_path}"
+            logger.error(msg)
+            print(msg, flush=True)
+            return None
+        if not os.access(script_path, os.X_OK):
+            msg = f"The script is not executable, run: chmod +x {script_path}"
+            logger.error(msg)
+            print(msg, flush=True)
+            return None
+        try:
+            # Append stdout/stderr to the same logfile configured at module load
+            # Open the logfile in append mode so child processes can write there.
+            logf = open(logfile, "a")
+            proc = subprocess.Popen(
+                [script_path],
+                stdout=logf,
+                stderr=logf,
+                start_new_session=True,
+            )
+            self._procs.append(proc)
+            msg = f"Spawned script asynchronously: {script_path} (pid={proc.pid})"
+            logger.info(msg)
+            print(msg, flush=True)
+            return proc
+        except Exception as e:
+            msg = f"Failed to spawn script {script_path}: {e}"
+            logger.error(msg)
+            print(msg, flush=True)
+            return None
 
     def start_recording(self) -> None:
-        if self._proc and self._proc.poll() is None:
-            msg = "Recording in progress, ignored new start command."
+        # cleanup any finished child procs
+        self._cleanup_finished_procs()
+
+        if self._is_recording:
+            msg = "Recording already in progress, ignored new start command."
             logger.warning(msg)
             print(msg, flush=True)
             return
 
-        if not os.path.isfile(SCRIPT_PATH):
-            msg = f"The record script does not exist: {SCRIPT_PATH}"
-            logger.error(msg)
-            print(msg, flush=True)
-            return
-        if not os.access(SCRIPT_PATH, os.X_OK):
-            msg = f"The record script is not executable, run: chmod +x {SCRIPT_PATH}"
-            logger.error(msg)
-            print(msg, flush=True)
-            return
-
-        try:
-            # 启动新进程组，便于后续发送 Ctrl+C (SIGINT)
-            self._proc = subprocess.Popen(
-                [SCRIPT_PATH],
-                stdout=sys.stdout,
-                stderr=sys.stderr,
-                preexec_fn=os.setsid,
-            )
-            msg = f"Start recording, running script: {SCRIPT_PATH} (pid={self._proc.pid})"
-            logger.info(msg)
-            print(msg, flush=True)
-        except Exception as e:
-            msg = f"Start recording failed: {e}"
-            logger.error(msg)
-            print(msg, flush=True)
+        msg = f"Invoking start script asynchronously: {START_SCRIPT}"
+        logger.info(msg)
+        print(msg, flush=True)
+        proc = self._spawn_script_async(START_SCRIPT)
+        if proc:
+            # consider start successful if script was spawned
+            self._is_recording = True
+            msg2 = f"Start script spawned (pid={proc.pid}), recording marked as started."
+            logger.info(msg2)
+            print(msg2, flush=True)
+        else:
+            msg2 = "Failed to spawn start script; recording not started."
+            logger.error(msg2)
+            print(msg2, flush=True)
 
     def stop_recording(self, reason: str) -> None:
-        if not self._proc or self._proc.poll() is not None:
+        # cleanup any finished child procs
+        self._cleanup_finished_procs()
+
+        if not self._is_recording:
             msg = f"Recording not in progress, ignored stop command (reason: {reason})."
             logger.info(msg)
             print(msg, flush=True)
             return
 
-        msg = f"Stop recording (reason: {reason}), sending SIGINT..."
+        msg = f"Invoking stop script asynchronously (reason: {reason}): {STOP_SCRIPT}"
         logger.info(msg)
         print(msg, flush=True)
+        proc = self._spawn_script_async(STOP_SCRIPT)
+        if proc:
+            msg2 = f"Stop script spawned (pid={proc.pid}), recording marked as stopped."
+            logger.info(msg2)
+            print(msg2, flush=True)
+        else:
+            msg2 = "Failed to spawn stop script; recording state will be cleared anyway."
+            logger.warning(msg2)
+            print(msg2, flush=True)
 
-        try:
-            pgid = os.getpgid(self._proc.pid)
-        except Exception:
-            pgid = None
-
-        try:
-            if pgid is not None:
-                os.killpg(pgid, signal.SIGINT)
-            else:
-                self._proc.send_signal(signal.SIGINT)
-        except Exception as e:
-            logger.warning(f"Sending SIGINT failed: {e}")
-
-        try:
-            ret = self._proc.wait(timeout=5.0)
-            msg = f"The record script has exited, code: {ret}"
-            logger.info(msg)
-            print(msg, flush=True)
-        except subprocess.TimeoutExpired:
-            msg = "Timeout encountered when trying to stop recording, send SIGTERM..."
-            logger.warning(msg)
-            print(msg, flush=True)
-            try:
-                if pgid is not None:
-                    os.killpg(pgid, signal.SIGTERM)
-                else:
-                    self._proc.terminate()
-                ret = self._proc.wait(timeout=3.0)
-                msg2 = f"The record script has exited, code: {ret}"
-                logger.info(msg2)
-                print(msg2, flush=True)
-            except subprocess.TimeoutExpired:
-                msg3 = "Timeout encountered when trying to stop recording, send SIGKILL..."
-                logger.error(msg3)
-                print(msg3, flush=True)
-                try:
-                    if pgid is not None:
-                        os.killpg(pgid, signal.SIGKILL)
-                    else:
-                        self._proc.kill()
-                except Exception as e:
-                    logger.error(f"Send SIGKILL failed: {e}")
-        finally:
-            self._proc = None
+        # Clear state immediately (we do not wait for the stop script to finish)
+        self._is_recording = False
 
 
 # ----------------- 状态发布（10 Hz） -----------------

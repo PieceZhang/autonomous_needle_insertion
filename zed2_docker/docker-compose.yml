@@ -18,6 +18,7 @@ services:
       - /dev:/dev
       - /dev/shm:/dev/shm
       - ./bridge.yaml:/bridge.yaml:ro
+      - ./:/work:rw
 
     gpus: all
 
@@ -30,4 +31,31 @@ services:
         source /opt/ros/jazzy/setup.bash &&
         source /root/ros2_ws/install/local_setup.bash &&
         ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zed2 depth_quality:=NEURAL
+      "
+
+  rosbag_control_service:
+    image: zed_ros2_desktop_u24.04_sdk_5.1.0_cuda_12.6.3:latest
+    container_name: rosbag_control_service_jazzy
+    privileged: true
+    network_mode: host
+    ipc: host
+    pid: host
+
+    environment:
+      - ROS_DOMAIN_ID=0
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - WORK_DIR=/work
+
+    volumes:
+      - ./rosbag_control_service.py:/opt/rosbag_control/rosbag_control_service.py:ro
+      - ./run_openh_rosbag_record.sh:/opt/rosbag_control/run_openh_rosbag_record.sh:ro
+      - ./:/work:rw
+
+    restart: unless-stopped
+
+    command: >
+      bash -c "
+        source /opt/ros/jazzy/setup.bash &&
+        source /root/ros2_ws/install/local_setup.bash &&
+        python3 /work/rosbag_control_service.py
       "

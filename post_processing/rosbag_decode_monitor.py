@@ -45,6 +45,7 @@ import atexit
 from array import array
 from datetime import datetime, timezone
 from pathlib import Path
+import tempfile
 from typing import (
     Any,
     Callable,
@@ -105,6 +106,9 @@ KNOWN_ENCODINGS = {
     "16uc1",
     "y16",
 }
+
+DEPTH_NORM_MIN: Optional[float] = 0
+DEPTH_NORM_MAX: Optional[float] = 65535  # set to None to auto-scale per image
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 JPEG_SIGNATURE = b"\xff\xd8\xff"
@@ -195,12 +199,10 @@ def sanitize_topic_name(topic: str) -> str:
 
 
 def sanitize_label(value: str) -> str:
-    v = value.strip()
-    if not v:
-        return "unknown"
-    v = re.sub(r"\s+", "_", v)
-    v = re.sub(r"[^A-Za-z0-9_\-]", "-", v)
-    return v
+    v = value.strip().lower()
+    # Keep only a–z and 0–9; drop everything else (spaces, dots, punctuation)
+    v = re.sub(r"[^a-z0-9]+", "", v)
+    return v or "unknown"
 
 
 def sanitize_outcome(value: str) -> str:
@@ -211,22 +213,68 @@ def sanitize_outcome(value: str) -> str:
 
 
 def _extract_task_label_from_msg(msg: Any) -> Optional[str]:
+    """
+    Extract task label from various message shapes, including:
+      - objects with .task_label or .label
+      - dicts with keys "task_label" / "label"
+      - std_msgs/String-like objects where .data is a JSON string containing {"task_label": "..."}.
+    """
     if msg is None:
         return None
-    for attr in ("task_label", "label"):
-        if hasattr(msg, attr):
-            val = getattr(msg, attr)
-            if isinstance(val, str) and val.strip():
-                return val.strip()
-    try:
-        obj = to_jsonable(msg)
+
+    def _pick_label(obj: Any) -> Optional[str]:
         if isinstance(obj, dict):
             for key in ("task_label", "label"):
                 val = obj.get(key)
                 if isinstance(val, str) and val.strip():
                     return val.strip()
+        return None
+
+    # 1) Direct attributes on decoded object
+    for attr in ("task_label", "label"):
+        if hasattr(msg, attr):
+            val = getattr(msg, attr)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+
+    # 2) Convert to jsonable (dict/primitive) and check directly
+    try:
+        obj = to_jsonable(msg)
     except Exception:
-        pass
+        obj = None
+
+    if isinstance(obj, dict):
+        direct = _pick_label(obj)
+        if direct:
+            return direct
+
+        # 3) std_msgs/String pattern: {"data": "<json string>"}
+        inner = obj.get("data")
+        if isinstance(inner, str):
+            s = inner.strip()
+            if s:
+                # Try to parse JSON contained in the string
+                try:
+                    parsed = json.loads(s)
+                except Exception:
+                    parsed = None
+
+                if isinstance(parsed, dict):
+                    inside = _pick_label(parsed)
+                    if inside:
+                        return inside
+
+                    # Optional: one more level if task_label itself is nested strangely
+                    nested = parsed.get("data")
+                    if isinstance(nested, str) and nested.strip():
+                        try:
+                            parsed2 = json.loads(nested)
+                        except Exception:
+                            parsed2 = None
+                        if isinstance(parsed2, dict):
+                            inside2 = _pick_label(parsed2)
+                            if inside2:
+                                return inside2
     return None
 
 
@@ -556,20 +604,26 @@ def _decode_compressed_depth(data: bytes) -> "tnp.ndarray":
     if img is None:
         raise RuntimeError("cv2.imdecode failed for compressedDepth frame")
 
+    # Ensure uint16 depth
     if img.dtype == np.uint16:
         depth_image = img
     else:
         depth_image = img.astype(np.uint16)
 
-    min_val = np.min(depth_image)
-    max_val = np.max(depth_image)
-    if max_val > min_val:
-        normalized = ((depth_image - min_val) / (max_val - min_val) * 255).astype(np.uint8)
-    else:
+    # Determine normalization bounds
+    dmin = DEPTH_NORM_MIN if DEPTH_NORM_MIN is not None else float(np.min(depth_image))
+    dmax = DEPTH_NORM_MAX if DEPTH_NORM_MAX is not None else float(np.max(depth_image))
+
+    if dmax <= dmin:
         normalized = np.zeros_like(depth_image, dtype=np.uint8)
+    else:
+        depth_f = depth_image.astype(np.float32)
+        depth_clipped = np.clip(depth_f, dmin, dmax)
+        normalized = ((depth_clipped - dmin) / (dmax - dmin) * 255.0).astype(np.uint8)
 
     grayscale_bgr = cv2.cvtColor(normalized, cv2.COLOR_GRAY2BGR)
     return grayscale_bgr
+
 
 
 def _ensure_bgr(image: "tnp.ndarray") -> "tnp.ndarray":
@@ -755,8 +809,14 @@ class VideoTopicWriter:
         self.info_path = self.output_dir / "video_info.json"
         self.overwrite = overwrite
         self._prepare_outputs()
-        self.buffer_frames: List["tnp.ndarray"] = []
-        self.frame_timestamps: List[int] = []
+
+        # Frame buffering to allow correct FPS writing at finalize
+        self._temp_dir = tempfile.TemporaryDirectory(prefix="video_frames_")
+        self._temp_dir_path = Path(self._temp_dir.name)
+        self._frame_paths: List[Path] = []
+
+        self.first_timestamp_ns: Optional[int] = None
+        self.last_timestamp_ns: Optional[int] = None
         self.height: Optional[int] = None
         self.width: Optional[int] = None
         self.frame_count = 0
@@ -780,15 +840,20 @@ class VideoTopicWriter:
                 f"Frame size mismatch for {self.topic}: expected {self.width}x{self.height}, got {w}x{h}"
             )
 
-        self.frame_count += 1        # count messages
-        self.frame_timestamps.append(int(timestamp_ns))
+        # Persist frame to temp storage to avoid holding all frames in RAM
+        frame_path = self._temp_dir_path / f"frame_{self.frame_count:06d}.npy"
+        np.save(frame_path, frame)
+        self._frame_paths.append(frame_path)
+
+        self.frame_count += 1
+        self.first_timestamp_ns = timestamp_ns if self.first_timestamp_ns is None else self.first_timestamp_ns
+        self.last_timestamp_ns = timestamp_ns
         self.bag_files.add(bag_file)
-        self.buffer_frames.append(frame)
 
     def _compute_measured_fps(self) -> float:
-        if len(self.frame_timestamps) < 2:
+        if self.frame_count < 2 or self.first_timestamp_ns is None or self.last_timestamp_ns is None:
             return self.DEFAULT_FPS
-        duration_ns = self.frame_timestamps[-1] - self.frame_timestamps[0]
+        duration_ns = self.last_timestamp_ns - self.first_timestamp_ns
         if duration_ns <= 0:
             return self.DEFAULT_FPS
         fps = (self.frame_count - 1) / (duration_ns / 1e9)
@@ -797,10 +862,12 @@ class VideoTopicWriter:
 
     def finalize(self) -> Optional[Tuple[Path, Path]]:
         if self.frame_count == 0:
+            self._temp_dir.cleanup()
             return None
         if cv2 is None:
             require_video_dependencies()
         if self.width is None or self.height is None:
+            self._temp_dir.cleanup()
             raise RuntimeError("Cannot write video without frame dimensions.")
 
         measured_fps = self._compute_measured_fps()
@@ -808,15 +875,21 @@ class VideoTopicWriter:
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         writer = cv2.VideoWriter(str(self.video_path), fourcc, measured_fps, (self.width, self.height))
         if not writer.isOpened():
+            self._temp_dir.cleanup()
             raise RuntimeError(f"Failed to open video writer for {self.video_path}")
 
-        for frame in self.buffer_frames:
-            writer.write(frame)
-        writer.release()
+        try:
+            for frame_path in self._frame_paths:
+                frame = np.load(frame_path, mmap_mode="r")
+                writer.write(frame)
+        finally:
+            writer.release()
+            # Always clean up temp frames
+            self._temp_dir.cleanup()
 
         duration_ns = 0
-        if len(self.frame_timestamps) >= 2:
-            duration_ns = self.frame_timestamps[-1] - self.frame_timestamps[0]
+        if self.first_timestamp_ns is not None and self.last_timestamp_ns is not None:
+            duration_ns = self.last_timestamp_ns - self.first_timestamp_ns
         duration_seconds = max(duration_ns / 1e9, 0.0)
 
         info = {
@@ -826,8 +899,8 @@ class VideoTopicWriter:
             "duration_seconds": duration_seconds,
             "measured_fps": measured_fps,
             "resolution": {"width": self.width, "height": self.height},
-            "start_time_ns": self.frame_timestamps[0],
-            "end_time_ns": self.frame_timestamps[-1],
+            "start_time_ns": self.first_timestamp_ns,
+            "end_time_ns": self.last_timestamp_ns,
             "bag_files": sorted(self.bag_files),
         }
         with self.info_path.open("w", encoding="utf-8") as f:
@@ -1099,128 +1172,133 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace, l
     total_messages = 0
     seen_topics: Set[str] = set()
 
-    try:
-        for mcap_path in iter_mcap_files(bag_dir):
-            logger.info(f"Decoding {bag_name} -> {mcap_path.name} (out: {bag_output_name}) ...")
-            is_zstd = mcap_path.suffix == ".zstd"
+    for mcap_path in iter_mcap_files(bag_dir):
+        logger.info(f"Decoding {bag_name} -> {mcap_path.name} (out: {bag_output_name}) ...")
+        is_zstd = mcap_path.suffix == ".zstd"
+        uncompressed_tmp: Optional[Path] = None
 
-            if is_zstd:
-                if zstd is None:
-                    logger.error(f"File {mcap_path.name} requires zstandard. Install via: pip install zstandard")
-                    return True
-                from io import BytesIO
-                try:
-                    with mcap_path.open("rb") as compressed_file:
-                        dctx = zstd.ZstdDecompressor()
-                        decompressed_chunks = []
+        if is_zstd:
+            if zstd is None:
+                logger.error(f"File {mcap_path.name} requires zstandard. Install via: pip install zstandard")
+                return True
+            try:
+                dctx = zstd.ZstdDecompressor()
+                with mcap_path.open("rb") as compressed_file:
+                    with tempfile.NamedTemporaryFile(suffix=".mcap", delete=False) as tmp:
+                        uncompressed_tmp = Path(tmp.name)
                         with dctx.stream_reader(compressed_file) as reader:
                             while True:
-                                chunk = reader.read(16384)
+                                chunk = reader.read(1 << 20)  # 1 MiB chunks to cap memory
                                 if not chunk:
                                     break
-                                decompressed_chunks.append(chunk)
-                        decompressed_data = b"".join(decompressed_chunks)
-                except Exception as exc:
-                    logger.error(f"Failed to decompress {mcap_path.name}: {exc}")
-                    return True
-                stream = BytesIO(decompressed_data)
-            else:
-                stream = mcap_path.open("rb")
-
-            try:
-                reader = make_reader(stream)
-                for schema, channel, message in reader.iter_messages():
-                    topic = channel.topic
-                    if topic not in topic_specs:
-                        continue
-
-                    seen_topics.add(topic)
-
+                                tmp.write(chunk)
+                stream = uncompressed_tmp.open("rb")
+            except Exception as exc:
+                if uncompressed_tmp and uncompressed_tmp.exists():
                     try:
-                        decoder = get_decoder(schema, channel)
-                        decoded_msg = decoder(message.data)
+                        uncompressed_tmp.unlink()
+                    except Exception:
+                        pass
+                logger.error(f"Failed to decompress {mcap_path.name}: {exc}")
+                return True
+        else:
+            stream = mcap_path.open("rb")
+
+        try:
+            reader = make_reader(stream)
+            for schema, channel, message in reader.iter_messages():
+                topic = channel.topic
+                if topic not in topic_specs:
+                    continue
+
+                seen_topics.add(topic)
+
+                try:
+                    decoder = get_decoder(schema, channel)
+                    decoded_msg = decoder(message.data)
+                except Exception as exc:  # pragma: no cover
+                    logger.warn(f"Failed to decode {topic} in {mcap_path.name}: {exc}")
+                    continue
+
+                if topic in selected_video_topics:
+                    if topic not in video_writers:
+                        video_writers[topic] = VideoTopicWriter(topic, out_bag_dir, args.overwrite)
+                    video_writer = video_writers[topic]
+                    try:
+                        frame = image_msg_to_bgr(decoded_msg, topic_specs.get(topic))
                     except Exception as exc:  # pragma: no cover
-                        logger.warn(f"Failed to decode {topic} in {mcap_path.name}: {exc}")
+                        logger.warn(f"Skipping frame for {topic} in {mcap_path.name}: {exc}")
                         continue
-
-                    if topic in selected_video_topics:
-                        if topic not in video_writers:
-                            video_writers[topic] = VideoTopicWriter(topic, out_bag_dir, args.overwrite)
-                        video_writer = video_writers[topic]
-                        try:
-                            frame = image_msg_to_bgr(decoded_msg, topic_specs.get(topic))
-                        except Exception as exc:  # pragma: no cover
-                            logger.warn(f"Skipping frame for {topic} in {mcap_path.name}: {exc}")
-                            continue
-                        timestamp_ns = message.publish_time or message.log_time or 0
-                        video_writer.add_frame(frame, timestamp_ns, mcap_path.name)
-                        total_messages += 1
-                        continue
-
-                    if topic in selected_pointcloud_topics:
-                        if topic not in pointcloud_writers:
-                            pointcloud_writers[topic] = PointCloudTopicWriter(topic, out_bag_dir, args.overwrite)
-                        pc_writer = pointcloud_writers[topic]
-                        try:
-                            cloud, cloud_meta = pointcloud_msg_to_array(decoded_msg)
-                        except Exception as exc:  # pragma: no cover
-                            logger.warn(f"Skipping pointcloud for {topic} in {mcap_path.name}: {exc}")
-                            continue
-                        timestamp_ns = message.publish_time or message.log_time or 0
-                        pc_writer.add_cloud(cloud, timestamp_ns, mcap_path.name, cloud_meta)
-                        total_messages += 1
-                        continue
-
-                    if topic not in ndjson_files:
-                        sanitized = sanitize_topic_name(topic)
-                        topic_dir = out_bag_dir / sanitized
-                        output_file = topic_dir / "messages.ndjson"
-                        ensure_parent(output_file, args.overwrite)
-                        info_file = topic_dir / "messages_info.json"
-                        if info_file.exists():
-                            if not args.overwrite:
-                                raise FileExistsError(
-                                    f"{info_file} already exists. Use --overwrite to replace it."
-                                )
-                            info_file.unlink()
-                        fh = output_file.open("w", encoding="utf-8")
-                        ndjson_files[topic] = fh
-                        ndjson_paths[topic] = output_file
-                        ndjson_info_paths[topic] = info_file
-                        ndjson_stats[topic] = {
-                            "frame_count": 0,
-                            "start_time_ns": None,
-                            "end_time_ns": None,
-                            "bag_files": set(),
-                            "type": topic_specs[topic],
-                        }
-
                     timestamp_ns = message.publish_time or message.log_time or 0
-                    record = {
-                        "bag_file": mcap_path.name,
-                        "topic": topic,
-                        "type": topic_specs[topic],
-                        "log_time_ns": message.log_time,
-                        "publish_time_ns": message.publish_time,
-                        "data": to_jsonable(decoded_msg),
-                    }
-                    ndjson_files[topic].write(json.dumps(record))
-                    ndjson_files[topic].write("\n")
-
-                    stats = ndjson_stats[topic]
-                    stats["frame_count"] += 1
-                    stats["bag_files"].add(mcap_path.name)
-                    if stats["start_time_ns"] is None or timestamp_ns < stats["start_time_ns"]:
-                        stats["start_time_ns"] = timestamp_ns
-                    if stats["end_time_ns"] is None or timestamp_ns > stats["end_time_ns"]:
-                        stats["end_time_ns"] = timestamp_ns
+                    video_writer.add_frame(frame, timestamp_ns, mcap_path.name)
                     total_messages += 1
-            finally:
-                if not is_zstd:
-                    stream.close()
-    finally:
-        for fh in ndjson_files.values():
-            fh.close()
+                    continue
+
+                if topic in selected_pointcloud_topics:
+                    if topic not in pointcloud_writers:
+                        pointcloud_writers[topic] = PointCloudTopicWriter(topic, out_bag_dir, args.overwrite)
+                    pc_writer = pointcloud_writers[topic]
+                    try:
+                        cloud, cloud_meta = pointcloud_msg_to_array(decoded_msg)
+                    except Exception as exc:  # pragma: no cover
+                        logger.warn(f"Skipping pointcloud for {topic} in {mcap_path.name}: {exc}")
+                        continue
+                    timestamp_ns = message.publish_time or message.log_time or 0
+                    pc_writer.add_cloud(cloud, timestamp_ns, mcap_path.name, cloud_meta)
+                    total_messages += 1
+                    continue
+
+                if topic not in ndjson_files:
+                    sanitized = sanitize_topic_name(topic)
+                    topic_dir = out_bag_dir / sanitized
+                    output_file = topic_dir / "messages.ndjson"
+                    ensure_parent(output_file, args.overwrite)
+                    info_file = topic_dir / "messages_info.json"
+                    if info_file.exists():
+                        if not args.overwrite:
+                            raise FileExistsError(
+                                f"{info_file} already exists. Use --overwrite to replace it."
+                            )
+                        info_file.unlink()
+                    fh = output_file.open("w", encoding="utf-8")
+                    ndjson_files[topic] = fh
+                    ndjson_paths[topic] = output_file
+                    ndjson_info_paths[topic] = info_file
+                    ndjson_stats[topic] = {
+                        "frame_count": 0,
+                        "start_time_ns": None,
+                        "end_time_ns": None,
+                        "bag_files": set(),
+                        "type": topic_specs[topic],
+                    }
+
+                timestamp_ns = message.publish_time or message.log_time or 0
+                record = {
+                    "bag_file": mcap_path.name,
+                    "topic": topic,
+                    "type": topic_specs[topic],
+                    "log_time_ns": message.log_time,
+                    "publish_time_ns": message.publish_time,
+                    "data": to_jsonable(decoded_msg),
+                }
+                ndjson_files[topic].write(json.dumps(record))
+                ndjson_files[topic].write("\n")
+
+                stats = ndjson_stats[topic]
+                stats["frame_count"] += 1
+                stats["bag_files"].add(mcap_path.name)
+                if stats["start_time_ns"] is None or timestamp_ns < stats["start_time_ns"]:
+                    stats["start_time_ns"] = timestamp_ns
+                if stats["end_time_ns"] is None or timestamp_ns > stats["end_time_ns"]:
+                    stats["end_time_ns"] = timestamp_ns
+                total_messages += 1
+        finally:
+            stream.close()
+            if uncompressed_tmp:
+                try:
+                    uncompressed_tmp.unlink()
+                except:
+                    pass
 
     missing_topics = sorted(list(expected_topics - seen_topics))
     if missing_topics:
