@@ -93,18 +93,19 @@ P2_SLIDE_RANGE_MM = (-20.0, 20.0)  # mm
 PIXEL_LOWER_BOUND = 0
 PIXEL_UPPER_BOUND = 1080
 
-STEP5_SWEEP_MM = 20.0    # sweep amplitude for z sweep (positive, mm)
-STEP6_SLIDE_MM = 20.0    # total slide length used to compute x/2 target (mm)
+# Task 4.2 param
+STEP5_SWEEP_MM = 25.0    # sweep amplitude for z sweep (positive, mm)
+STEP6_SLIDE_MM = 25.0    # total slide length used to compute x/2 target (mm)
 STEP7_ROTATE_DEG = 10.0   # rotation amplitude for ry sweep (deg)
 
 # Task 4.1 standard action parameters
-TASK41_TILT_DEG = 10.0        # tilt/fan about X
-TASK41_ROCK_DEG = 10.0        # rock about Z
+TASK41_TILT_DEG = 6.0        # tilt/fan about X
+TASK41_ROCK_DEG = 6.0        # rock about Z
 TASK41_SWEEP_MM = 25.0        # sweep along Z (mm)
 # TASK41_COMPRESSION_MM = 5.0  # compression along Y (mm)
 
-DELAY_AFTER_ROSBAG_SEC = 0.5
-ROSBAG_STOP_WAIT_SEC = 0.5
+DELAY_AFTER_ROSBAG_SEC = 0.7
+ROSBAG_STOP_WAIT_SEC = 0.1
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
