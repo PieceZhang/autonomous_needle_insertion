@@ -85,27 +85,27 @@ CONTROLLER_NAMES = [
 PREFERRED_TIP_LINKS = ["tool0", "ee_link"]
 
 # Random perturbation parameters
-P2_ROT_RANGE_DEG = (-10.0, 10.0)  # deg
-P2_SWEEP_RANGE_MM = (-20.0, 20.0)  # mm
-P2_SLIDE_RANGE_MM = (-20.0, 20.0)  # mm
+P2_ROT_RANGE_DEG = (-8.0, 8.0)  # deg
+P2_SWEEP_RANGE_MM = (-10.0, 10.0)  # mm
+P2_SLIDE_RANGE_MM = (-10.0, 10.0)  # mm
 
 # Target position in image plane for needle centering (in meters)
 PIXEL_LOWER_BOUND = 0
 PIXEL_UPPER_BOUND = 1080
 
 # Task 4.2 param
-STEP5_SWEEP_MM = 25.0    # sweep amplitude for z sweep (positive, mm)
-STEP6_SLIDE_MM = 25.0    # total slide length used to compute x/2 target (mm)
-STEP7_ROTATE_DEG = 10.0   # rotation amplitude for ry sweep (deg)
+STEP5_SWEEP_MM = 13.0    # sweep amplitude for z sweep (positive, mm)
+STEP6_SLIDE_MM = 13.0    # total slide length used to compute x/2 target (mm)
+STEP7_ROTATE_DEG = 6.0   # rotation amplitude for ry sweep (deg)
 
 # Task 4.1 standard action parameters
 TASK41_TILT_DEG = 6.0        # tilt/fan about X
 TASK41_ROCK_DEG = 6.0        # rock about Z
-TASK41_SWEEP_MM = 25.0        # sweep along Z (mm)
+TASK41_SWEEP_MM = 13.0        # sweep along Z (mm)
 # TASK41_COMPRESSION_MM = 5.0  # compression along Y (mm)
 
 DELAY_AFTER_ROSBAG_SEC = 0.7
-ROSBAG_STOP_WAIT_SEC = 0.1
+ROSBAG_STOP_WAIT_SEC = 0.5
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
