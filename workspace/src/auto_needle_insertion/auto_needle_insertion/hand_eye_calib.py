@@ -37,7 +37,7 @@ Frames & units
 
 Inputs & topics
 ---------------
-- Subscribes: /ndi/us_tracker_pose (geometry_msgs/PoseStamped).
+- Subscribes: /ndi/us_probe_pose or /zed/zed_node/pose (geometry_msgs/PoseStamped).
 - Observes status: /execute_trajectory/_action/status and
   */follow_joint_trajectory/_action/status.
 - Requires a running UR ROS 2 driver/controller and MoveIt 2 planning scene.
@@ -57,7 +57,7 @@ Usage
 -----
 Run with the auto_needle_insertion package with the UR driver and MoveIt running, i.eg.:
 
-    ros2 launch auto_needle_insertion move_robot.launch.py mode:=hand_eye_calib
+    ros2 launch auto_needle_insertion move_robot.launch.py mode:=hand_eye_calib target:=us_probe
 
 Notes
 -----
@@ -116,10 +116,24 @@ PREFERRED_TIP_LINKS = ["tool0", "ee_link"]
 
 # PoseStamped topic from ndi_ros2_driver pose_broadcaster for the tracker
 US_TRACKER_TOPIC = "/ndi/us_probe_pose"
+ZED2_TRACKER_TOPIC = "/zed/zed_node/pose"
 
 # ---------------------- Logging ----------------------
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def _resolve_tracker_topic(calibration_target: str) -> str:
+    target = calibration_target.strip().lower()
+    if target == "us_probe":
+        return US_TRACKER_TOPIC
+    if target == "zed2":
+        return ZED2_TRACKER_TOPIC
+    logger.warning(
+        "Unknown calibration_target '%s'; defaulting to '%s'.",
+        calibration_target,
+        CALIBRATION_TARGET,
+    )
+    return US_TRACKER_TOPIC
 
 # ---------------------- Tracker subscriber helper ----------------------
 class _LatestPose:
@@ -703,9 +717,16 @@ def _square_local_deltas(
 def main() -> None:
     rclpy.init()
 
-    # Subscribe to the Polaris PoseStamped
     sub_node = rclpy.create_node("us_tracker_listener")
-    # Spin the subscription node in the background so /ndi/us_tracker_pose
+    calibration_target = (
+        sub_node.declare_parameter("calibration_target", CALIBRATION_TARGET)
+        .get_parameter_value()
+        .string_value
+    )
+    tracker_topic = _resolve_tracker_topic(calibration_target)
+    logger.info("Calibration target: %s (tracker topic: %s)", calibration_target, tracker_topic)
+    # Subscribe to the tracker PoseStamped
+    # Spin the subscription node in the background so tracker pose callbacks
     # callbacks are processed continuously while we plan/execute motions.
     executor = SingleThreadedExecutor()
     executor.add_node(sub_node)
@@ -713,7 +734,7 @@ def main() -> None:
     _spin_thread.start()
     qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST)
     latest_tracker = _LatestPose()
-    sub_node.create_subscription(PoseStamped, US_TRACKER_TOPIC, latest_tracker.cb, qos)
+    sub_node.create_subscription(PoseStamped, tracker_topic, latest_tracker.cb, qos)
 
     # Subscribe to controller state to know when execution has *actually* finished
     latest_jtc = _LatestJtcState()
@@ -1002,6 +1023,7 @@ def main() -> None:
 
                     payload = {
                         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                        "calibration_target": calibration_target,
                         "T_c2g": T_c2g.tolist(),
                         "axxb_residuals": res_for_save,
                     }
