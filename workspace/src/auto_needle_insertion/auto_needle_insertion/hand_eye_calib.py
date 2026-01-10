@@ -91,6 +91,7 @@ import threading
 # ---------------------- Module constants ----------------------
 
 NODE_NAME = "hand_eye_calib"
+CALIBRATION_TARGET = "us_probe"
 
 # Robot base frame used for TF lookup of the EE pose
 BASE_FRAME = "base"
