@@ -66,7 +66,7 @@ class TaskPanel(Plugin):
         # Phantom Info
         self.phantom_combo = QtWidgets.QComboBox()
         self.phantom_combo.setEditable(True)
-        self.phantom_combo.addItems(['Abdominal Phantom', 'Lambar Phantom', 'Silicone Phantom', 'Pork'])
+        self.phantom_combo.addItems(['Abdominal Phantom', 'Lambar Phantom', 'Silicone Phantom', 'Pig Liver', 'Water'])
         self.phantom_combo.setCurrentIndex(-1)
         self.phantom_combo.lineEdit().setPlaceholderText('Select or type...')
         form.addRow('Phantom Info:', self.phantom_combo)
@@ -106,6 +106,15 @@ class TaskPanel(Plugin):
         self.needle_gauge_combo.setCurrentText('18G')
         self.needle_gauge_combo.lineEdit().setPlaceholderText('Select or type...')
         form.addRow('Needle Gauge:', self.needle_gauge_combo)
+
+        # Speed (NEW)
+        self.speed_combo = QtWidgets.QComboBox()
+        self.speed_combo.setEditable(True)
+        speed_options = ['10', '20', '30', '40', '50', '60', '70', '80', '90', '100']
+        self.speed_combo.addItems(speed_options)
+        self.speed_combo.setCurrentText('50')
+        self.speed_combo.lineEdit().setPlaceholderText('Select or type...')
+        form.addRow('Speed:', self.speed_combo)
 
         # Comments
         self.comments_edit = QtWidgets.QTextEdit()
@@ -171,6 +180,7 @@ class TaskPanel(Plugin):
             'probe_setup': self.probe_setup_combo.currentText().strip(),
             'needle_setup': self.needle_setup_combo.currentText().strip(),
             'needle_gauge': self.needle_gauge_combo.currentText().strip(),
+            'speed': self.speed_combo.currentText().strip(),  # NEW
             'comments': self.comments_edit.toPlainText().strip(),
             'timestamp_iso': datetime.utcnow().isoformat() + 'Z',
         }
@@ -207,16 +217,18 @@ class TaskPanel(Plugin):
         instance_settings.set_value('probe_setup', self.probe_setup_combo.currentText())
         instance_settings.set_value('needle_setup', self.needle_setup_combo.currentText())
         instance_settings.set_value('needle_gauge', self.needle_gauge_combo.currentText())
+        instance_settings.set_value('speed', self.speed_combo.currentText())  # NEW
         instance_settings.set_value('comments', self.comments_edit.toPlainText())
 
     def restore_settings(self, plugin_settings, instance_settings):
-        self.task_combo.setCurrentText(instance_settings.value('task_label', ''))
-        self.operator_edit.setText(instance_settings.value('operator_name', ''))
+        self.task_combo.setCurrentText(instance_settings.value('task_label', 'Task 4.1'))
+        self.operator_edit.setText(instance_settings.value('operator_name', 'Yuelin Zhang'))
         self.patient_edit.setText(instance_settings.value('patient_name', ''))
         self.skill_combo.setCurrentText(instance_settings.value('operator_skill_level', ''))
-        self.phantom_combo.setCurrentText(instance_settings.value('phantom_info', ''))
+        self.phantom_combo.setCurrentText(instance_settings.value('phantom_info', 'Pig Liver'))
         self.probe_type_combo.setCurrentText(instance_settings.value('probe_type', 'Wisonic_Clover60_C5-1_convex'))
         self.probe_setup_combo.setCurrentText(instance_settings.value('probe_setup', 'Robotic'))
-        self.needle_setup_combo.setCurrentText(instance_settings.value('needle_setup', 'Free-hand'))
-        self.needle_gauge_combo.setCurrentText(instance_settings.value('needle_gauge', ''))
+        self.needle_setup_combo.setCurrentText(instance_settings.value('needle_setup', 'Static'))
+        self.needle_gauge_combo.setCurrentText(instance_settings.value('needle_gauge', '18G'))
+        self.speed_combo.setCurrentText(instance_settings.value('speed', '50'))  # NEW
         self.comments_edit.setPlainText(instance_settings.value('comments', ''))
