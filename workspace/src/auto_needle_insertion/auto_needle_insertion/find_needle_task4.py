@@ -85,25 +85,26 @@ CONTROLLER_NAMES = [
 PREFERRED_TIP_LINKS = ["tool0", "ee_link"]
 
 # Random perturbation parameters
-P2_ROT_RANGE_DEG = (-10.0, 10.0)  # deg
-P2_SWEEP_RANGE_MM = (-20.0, 20.0)  # mm
-P2_SLIDE_RANGE_MM = (-20.0, 20.0)  # mm
+P2_ROT_RANGE_DEG = (-8.0, 8.0)  # deg
+P2_SWEEP_RANGE_MM = (-10.0, 10.0)  # mm
+P2_SLIDE_RANGE_MM = (-10.0, 10.0)  # mm
 
 # Target position in image plane for needle centering (in meters)
 PIXEL_LOWER_BOUND = 0
 PIXEL_UPPER_BOUND = 1080
 
-STEP5_SWEEP_MM = 20.0    # sweep amplitude for z sweep (positive, mm)
-STEP6_SLIDE_MM = 20.0    # total slide length used to compute x/2 target (mm)
-STEP7_ROTATE_DEG = 10.0   # rotation amplitude for ry sweep (deg)
+# Task 4.2 param
+STEP5_SWEEP_MM = 13.0    # sweep amplitude for z sweep (positive, mm)
+STEP6_SLIDE_MM = 13.0    # total slide length used to compute x/2 target (mm)
+STEP7_ROTATE_DEG = 6.0   # rotation amplitude for ry sweep (deg)
 
 # Task 4.1 standard action parameters
-TASK41_TILT_DEG = 10.0        # tilt/fan about X
-TASK41_ROCK_DEG = 10.0        # rock about Z
-TASK41_SWEEP_MM = 25.0        # sweep along Z (mm)
+TASK41_TILT_DEG = 6.0        # tilt/fan about X
+TASK41_ROCK_DEG = 6.0        # rock about Z
+TASK41_SWEEP_MM = 13.0        # sweep along Z (mm)
 # TASK41_COMPRESSION_MM = 5.0  # compression along Y (mm)
 
-DELAY_AFTER_ROSBAG_SEC = 0.5
+DELAY_AFTER_ROSBAG_SEC = 0.7
 ROSBAG_STOP_WAIT_SEC = 0.5
 
 # Configure logging
@@ -556,7 +557,7 @@ def main() -> None:
         # Load probe calibrations
         us_probe = USProbe()
         us_probe.load_calibrations(
-            "./calibration/PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20251230_SRIL.xml",
+            "./calibration/PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20260111_SRIL.xml",
             "./calibration/hand_eye_20251231_075559.json",
         )
         to_in_probe = us_probe.to_in_probe
@@ -598,6 +599,7 @@ def main() -> None:
             image_in_tracker_after_alignment, needle_pose[0:3], needle_tip_position,
             x_center_in_plane=0.0, y_target_in_plane=y_target_in_to
         )
+        # image_in_tracker_after_centering = to_in_tracker
 
         while True:
             # Apply small random perturbations to get candidate image pose (p2)
