@@ -557,7 +557,7 @@ def main() -> None:
         # Load probe calibrations
         us_probe = USProbe()
         us_probe.load_calibrations(
-            "./calibration/PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20251230_SRIL.xml",
+            "./calibration/PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20260111_SRIL.xml",
             "./calibration/hand_eye_20251231_075559.json",
         )
         to_in_probe = us_probe.to_in_probe
@@ -599,6 +599,7 @@ def main() -> None:
             image_in_tracker_after_alignment, needle_pose[0:3], needle_tip_position,
             x_center_in_plane=0.0, y_target_in_plane=y_target_in_to
         )
+        # image_in_tracker_after_centering = to_in_tracker
 
         while True:
             # Apply small random perturbations to get candidate image pose (p2)
