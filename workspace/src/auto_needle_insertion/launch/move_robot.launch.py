@@ -14,6 +14,9 @@ def generate_launch_description():
     mode_arg  = DeclareLaunchArgument("mode", default_value="ee_moveit_square")
     mode_name = LaunchConfiguration("mode")
 
+    target_arg = DeclareLaunchArgument("target", default_value="us_probe")
+    target_name = LaunchConfiguration("target")
+
     # Control ROS 2 log verbosity for this node (affects all loggers in-process)
     log_level_arg = DeclareLaunchArgument(
         "log_level",
@@ -82,9 +85,10 @@ def generate_launch_description():
         output="screen",
         parameters=[
             moveit_config.to_dict(),
-            {"publish_robot_description_semantic": True}
+            {"publish_robot_description_semantic": True},
+            {"calibration_target": target_name},
         ],
         arguments=["--ros-args", "--log-level", log_level],
     )
 
-    return LaunchDescription([ur_type_arg, mode_arg, log_level_arg, node])
+    return LaunchDescription([ur_type_arg, mode_arg, target_arg, log_level_arg, node])
