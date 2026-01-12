@@ -276,7 +276,7 @@ class ProbePlacementTask:
         # Calibration
         self.us_probe = USProbe()
         self.us_probe.load_calibrations(
-            "./calibration/PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20251230_SRIL.xml",
+            "./calibration/PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20260111_SRIL.xml",
             "./calibration/hand_eye_20251231_075559.json",
         )
         if self.us_probe.to_in_probe is None or self.us_probe.to_in_ee is None:
@@ -470,8 +470,8 @@ class ProbePlacementTask:
         self.task_proc_pub.publish_step("7")
         print(_fmt("Step 7: Stopping rosbag recording.", "⏹️"), flush=True)
         self.task_info_pub.set_state("stopped_success")
-        sleep_with_spin(self.executor, 0.2)
         self.rosbag.stop_recording("Success")
+        sleep_with_spin(self.executor, 0.7)
 
     def _standard_motion_sequence(self, max_deg: float) -> List[float]:
         amp = random.uniform(0.2 * max_deg, max_deg)  # FIXME random motion?
