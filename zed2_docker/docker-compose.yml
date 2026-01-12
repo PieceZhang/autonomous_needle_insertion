@@ -53,7 +53,7 @@ services:
       - ./rosbag_control_service.py:/opt/rosbag_control/rosbag_control_service.py:ro
       - ./run_openh_rosbag_record.sh:/opt/rosbag_control/run_openh_rosbag_record.sh:ro
       - ./:/work:rw
-      - /mnt/dataset:/work/rosbag_recording:rw
+      - /mnt/dataset/rosbag_recording:/work/rosbag_recording:rw
 
     restart: unless-stopped
 
