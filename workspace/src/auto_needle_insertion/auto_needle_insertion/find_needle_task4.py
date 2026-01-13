@@ -353,12 +353,13 @@ def move_tip_z_to_zero_known(
     robot, arm, tip_link, planning_frame,
     to_in_base, to_in_ee,
     tracker_in_base, tip_in_tracker,
+    z_init = 0.0
 ):
     """
     Let the needle tip approach to z = 0 in the tracker frame.
     """
     tip_in_to = tip_in_to_frame(to_in_base, tracker_in_base, tip_in_tracker)
-    err_z = float(tip_in_to[2])
+    err_z = float(tip_in_to[2]) - float(z_init)
     T_step = transducer_motions("sweep", err_z*1000.0)
     to_target = to_in_base @ T_step
     ee_target = to_target @ np.linalg.inv(to_in_ee)
@@ -430,6 +431,10 @@ def run_subtask_2(
     # Current transducer pose in base
     current_ee_transfrorm = get_current_ee_transform(robot, tip_link)
     to_in_base = current_ee_transfrorm @ to_in_ee
+    ############ NEW: get tip_in_to_init
+    tip_in_to_init = tip_in_to_frame(to_in_base, tracker_in_base, needle_tip_position)
+    z_init = float(tip_in_to_init[2])  # pseudo groundtruth initial tip z
+    ############
     task_proc_pub.publish_step("subtask2_start")
     task_proc_pub.publish_step("subtask2_step5-1")
     logger.info("----------Step 5-1: sweep along local z axis-------------")
@@ -451,6 +456,7 @@ def run_subtask_2(
         to_in_base, to_in_ee,
         tracker_in_base,
         needle_tip_position,
+        z_init
     )
     logger.info("Step 5-2 finished")
 
