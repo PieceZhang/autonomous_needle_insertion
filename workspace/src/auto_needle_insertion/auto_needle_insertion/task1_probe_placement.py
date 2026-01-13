@@ -53,7 +53,7 @@ STANDARD_ROT_Y_MAX_DEG = 20.0    # rotation motion amplitude about +/−Y
 # STANDARD_TILT_X_MAX_DEG = 5.0   # NOT USED: tilt motion amplitude about +/−X
 MAXIMUM_TRACKER_LOST = 5
 
-DELAY_START_ROSBAG_S = 2.0
+DELAY_START_ROSBAG_S = 1.5
 DELAY_STOP_ROSBAG_S = 1.2  # DO NOT SET TOO LARGE, WILL CAUSE UR FAILURE
 
 # ----------------- Logging -----------------

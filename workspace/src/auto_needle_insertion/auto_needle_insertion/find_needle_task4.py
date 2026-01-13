@@ -105,7 +105,7 @@ TASK41_ROCK_DEG = 6.0        # rock about Z
 TASK41_SWEEP_MM = 25.0        # sweep along Z (mm)
 # TASK41_COMPRESSION_MM = 5.0  # compression along Y (mm)
 
-DELAY_START_ROSBAG_S = 2.0
+DELAY_START_ROSBAG_S = 1.5
 DELAY_STOP_ROSBAG_S = 1.2  # DO NOT SET TOO LARGE, WILL CAUSE UR FAILURE
 
 # Configure logging
