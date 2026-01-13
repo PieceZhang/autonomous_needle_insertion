@@ -1098,13 +1098,20 @@ def find_rosbag_folders(root: Path) -> List[Path]:
     bags: List[Path] = []
     if not root.is_dir():
         return bags
-    for p in sorted(root.iterdir()):
-        if p.is_dir() and (p / "metadata.yaml").is_file():
-            bags.append(p)
+    for metadata_path in sorted(root.rglob("metadata.yaml")):
+        bag_dir = metadata_path.parent
+        if bag_dir.is_dir():
+            bags.append(bag_dir)
     return bags
 
 
-def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace, logger: BagLogger) -> bool:
+def decode_one_bag(
+    bag_dir: Path,
+    input_root: Path,
+    output_root: Path,
+    args: argparse.Namespace,
+    logger: BagLogger,
+) -> bool:
     """
     Returns True if decode was attempted and progressed (logs produced); False if skipped/invalid with no logs.
     """
@@ -1128,8 +1135,18 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace, l
         return False
 
     task_label, task_outcome = extract_task_label_and_outcome(bag_dir, topic_specs)
-    bag_output_name = f"{bag_name}_{task_label}_{task_outcome}"
-    out_bag_dir = output_root / bag_output_name
+    try:
+        relative_path = bag_dir.relative_to(input_root)
+    except ValueError:
+        relative_path = Path(bag_name)
+    parent_parts = relative_path.parts[:-1]
+    bag_output_rel = (
+        Path(*parent_parts) / f"{bag_name}_{task_label}_{task_outcome}"
+        if parent_parts
+        else Path(f"{bag_name}_{task_label}_{task_outcome}")
+    )
+    bag_output_name = str(bag_output_rel)
+    out_bag_dir = output_root / bag_output_rel
 
     if out_bag_dir.exists() and not args.overwrite:
         return False
@@ -1412,7 +1429,7 @@ def main() -> int:
 
             decoded_any = False
             for bag_dir in bag_dirs:
-                ok = decode_one_bag(bag_dir, args.output_dir, args, logger)
+                ok = decode_one_bag(bag_dir, args.input_dir, args.output_dir, args, logger)
                 decoded_any = decoded_any or ok
 
             if interval <= 0:
