@@ -105,8 +105,8 @@ TASK41_ROCK_DEG = 6.0        # rock about Z
 TASK41_SWEEP_MM = 25.0        # sweep along Z (mm)
 # TASK41_COMPRESSION_MM = 5.0  # compression along Y (mm)
 
-DELAY_AFTER_ROSBAG_SEC = 0.7
-ROSBAG_STOP_WAIT_SEC = 0.5
+DELAY_START_ROSBAG_S = 2.0
+DELAY_STOP_ROSBAG_S = 1.2  # DO NOT SET TOO LARGE, WILL CAUSE UR FAILURE
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -519,7 +519,7 @@ def main() -> None:
         logger.info("Starting rosbag recording before move to p1")
         task_info_pub.set_state("started")
         rosbag_controller.start_recording()
-        sleep_with_spin(executor, DELAY_AFTER_ROSBAG_SEC)
+        sleep_with_spin(executor, DELAY_START_ROSBAG_S)
         rosbag_active = True
 
     def stop_rosbag_recording(success: bool) -> None:
@@ -530,7 +530,7 @@ def main() -> None:
         reason = "Success" if success else "Failure"
         task_info_pub.set_state(state)
         rosbag_controller.stop_recording(reason)
-        sleep_with_spin(executor, ROSBAG_STOP_WAIT_SEC)
+        sleep_with_spin(executor, DELAY_STOP_ROSBAG_S)
         rosbag_active = False
 
     # Replace task_mode selection with TASK4_SUBTASK env var
