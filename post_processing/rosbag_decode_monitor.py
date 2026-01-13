@@ -46,6 +46,8 @@ from array import array
 from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import (
     Any,
     Callable,
@@ -121,16 +123,18 @@ class BagLogger:
     def __init__(self, log_path: Path):
         log_path.parent.mkdir(parents=True, exist_ok=True)
         self.log_file = log_path.open("a", encoding="utf-8")
+        self._lock = threading.Lock()
         atexit.register(self.close)
 
     def _write(self, level: str, msg: str, to_stderr: bool = False) -> None:
         line = f"[{level}] {msg}"
-        if to_stderr:
-            print(line, file=sys.stderr)
-        else:
-            print(line)
-        self.log_file.write(line + "\n")
-        self.log_file.flush()
+        with self._lock:
+            if to_stderr:
+                print(line, file=sys.stderr)
+            else:
+                print(line)
+            self.log_file.write(line + "\n")
+            self.log_file.flush()
 
     def info(self, msg: str) -> None:
         self._write("INFO", msg, to_stderr=False)
@@ -165,6 +169,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input-dir", required=True, type=Path, help="Root dir containing rosbag folders.")
     parser.add_argument("--output-dir", required=True, type=Path, help="Output root dir; one subfolder per bag.")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing outputs if present.")
+    parser.add_argument("--workers", type=int, default=1, help="Number of threads to decode bags in parallel.")
     parser.add_argument("--topics", nargs="*", help="Optional subset of topics to decode.")
     parser.add_argument(
         "--monitoring-int",
@@ -1410,6 +1415,7 @@ def main() -> int:
 
     if not args.input_dir.is_dir():
         return 1
+    workers = max(1, int(args.workers))
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     logger = BagLogger(args.output_dir / "decode.log")
@@ -1428,9 +1434,19 @@ def main() -> int:
                     continue
 
             decoded_any = False
-            for bag_dir in bag_dirs:
-                ok = decode_one_bag(bag_dir, args.input_dir, args.output_dir, args, logger)
-                decoded_any = decoded_any or ok
+            if workers == 1:
+                for bag_dir in bag_dirs:
+                    ok = decode_one_bag(bag_dir, args.input_dir, args.output_dir, args, logger)
+                    decoded_any = decoded_any or ok
+            else:
+                with ThreadPoolExecutor(max_workers=workers) as executor:
+                    future_map = {executor.submit(decode_one_bag, bag_dir, args.input_dir, args.output_dir, args, logger): bag_dir for bag_dir in bag_dirs}
+                    for future in as_completed(future_map):
+                        try:
+                            ok = future.result()
+                            decoded_any = decoded_any or ok
+                        except Exception as exc:
+                            logger.error(f"Decoding failed for {future_map[future]}: {exc}")
 
             if interval <= 0:
                 return 0
