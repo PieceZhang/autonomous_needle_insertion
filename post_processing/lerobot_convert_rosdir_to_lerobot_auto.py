@@ -138,6 +138,7 @@ def pose_to_vec7(pose_dict):
 # -------------------------
 def lab_features_schema_fixed_hw():
     return {
+        "observation.description": {"dtype": "string", "shape": (1,), "names": ["task_description"]},  # TODO
         "observation.images.ultrasound": {"dtype": "video", "shape": (1080, 1920, 3), "names": ["height", "width", "channels"]},
         "observation.images.room_rgb_camera": {"dtype": "video", "shape": (768, 1024, 3), "names": ["height", "width", "channels"]},
         "observation.images.wrist_camera_depth": {"dtype": "video", "shape": (480, 848, 3), "names": ["height", "width", "channels"]},
@@ -179,9 +180,14 @@ def lab_features_schema_fixed_hw():
             "names": ["center_frequency_mhz", "num_elements", "imaging_depth_cm", "linear_fov_mm", "convex_radius_mm", "convex_fov_deg"],
         },
         "observation.meta.roomcam_cali_mtx_tracker_to_color": {"dtype": "float32", "shape": (7,), "names": ["tx_mm", "ty_mm", "tz_mm", "qx", "qy", "qz", "qw"]},
+        # roomcam_cali_mtx_tracker_to_color: [-14.8879, 34.6886, -65.7274, 0.709725, 0.704474, -0.001833, 0.002027]
         "observation.meta.wristcam_cali_mtx": {"dtype": "float32", "shape": (7,), "names": ["tx_m", "ty_m", "tz_m", "qx", "qy", "qz", "qw"]},
-        "observation.meta.wristcam_cali_mtx_depth_to_color": {"dtype": "float32", "shape": (7,), "names": ["tx_m", "ty_m", "tz_m", "qx", "qy", "qz", "qw"]},
+        # wristcam_cali_mtx: see /task_info 'T_c2g'
         "observation.meta.prob_cali_mtx": {"dtype": "float32", "shape": (7,), "names": ["tx_m", "ty_m", "tz_m", "qx", "qy", "qz", "qw"]},
+        # prob_cali_mtx: see /task_info 'T_probe_from_image'
+        "observation.meta.tip_offset_mm": {"dtype": "float32", "shape": (3,), "names": ['x', 'y', 'z']},
+        # tip_offset_mm: see /task_info 'tip_offset_mm'
+        # REMOVED: "observation.meta.wristcam_cali_mtx_depth_to_color": {"dtype": "float32", "shape": (7,), "names": ["tx_m", "ty_m", "tz_m", "qx", "qy", "qz", "qw"]},
     }
 
 
