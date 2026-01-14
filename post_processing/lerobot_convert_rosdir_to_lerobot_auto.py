@@ -183,10 +183,13 @@ def lab_features_schema_fixed_hw():
         # roomcam_cali_mtx_tracker_to_color: [-14.8879, 34.6886, -65.7274, 0.709725, 0.704474, -0.001833, 0.002027]
         "observation.meta.wristcam_cali_mtx": {"dtype": "float32", "shape": (7,), "names": ["tx_m", "ty_m", "tz_m", "qx", "qy", "qz", "qw"]},
         # wristcam_cali_mtx: see /task_info 'T_c2g'
+        # OR: read from hand_eye_xxxxx.json 'T_c2g'
         "observation.meta.prob_cali_mtx": {"dtype": "float32", "shape": (7,), "names": ["tx_m", "ty_m", "tz_m", "qx", "qy", "qz", "qw"]},
         # prob_cali_mtx: see /task_info 'T_probe_from_image'
+        # OR: read from PlusDeviceSet_fCal_xxxxx.xml 'Transform From="Image" To="Probe"'
         "observation.meta.tip_offset_mm": {"dtype": "float32", "shape": (3,), "names": ['x', 'y', 'z']},
         # tip_offset_mm: see /task_info 'tip_offset_mm'
+        # OR: read from needle_1_tip_offset.json 'tip_offset_mm'
         # REMOVED: "observation.meta.wristcam_cali_mtx_depth_to_color": {"dtype": "float32", "shape": (7,), "names": ["tx_m", "ty_m", "tz_m", "qx", "qy", "qz", "qw"]},
     }
 

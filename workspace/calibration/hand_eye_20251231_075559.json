@@ -1,5 +1,6 @@
 {
   "timestamp": "2025-12-31T07:55:59+0000",
+  "calibration_target": "probe",
   "T_c2g": [
     [
       0.4898643925370298,
