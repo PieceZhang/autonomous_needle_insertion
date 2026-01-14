@@ -677,15 +677,6 @@ def main() -> None:
             ee_target_pose_in_base_p2 = tracker_in_base @ candidate_image_in_tracker @ np.linalg.inv(to_in_ee)
             logger.info(f"Random pose p2 (EE in base):\n{ee_target_pose_in_base_p2}")
 
-            ############ NEW: get tip_in_to_init
-            current_ee_transfrorm = get_current_ee_transform(robot, tip_link)
-            to_in_base = current_ee_transfrorm @ to_in_ee
-            tip_in_to_init = tip_in_to_frame(to_in_base, tracker_in_base, needle_tip_position)
-            z_init = float(tip_in_to_init[2])  # pseudo groundtruth initial tip z
-            print("Initial tip z in tracker frame: ", z_init)
-            logger.info(f"Initial tip z in tracker frame: {z_init}")
-            ############
-
             task_proc_pub.publish_step("move_p1")
             # Plan and execute to p1
             ok = plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target_pose_in_base)
@@ -695,7 +686,17 @@ def main() -> None:
                 return
             logger.info("Reached target pose p1")
             task_proc_pub.publish_step("p1_reached")
+            print('p1_reached')
             to_in_base_p1 = ee_target_pose_in_base @ to_in_ee
+
+            ############ NEW: get tip_in_to_init
+            current_ee_transfrorm = get_current_ee_transform(robot, tip_link)
+            to_in_base = current_ee_transfrorm @ to_in_ee
+            tip_in_to_init = tip_in_to_frame(to_in_base, tracker_in_base, needle_tip_position)
+            z_init = float(tip_in_to_init[2])  # pseudo groundtruth initial tip z
+            print("Initial tip z in tracker frame: ", z_init)
+            logger.info(f"Initial tip z in tracker frame: {z_init}")
+            ############
 
             task_proc_pub.publish_step("move_p2")
             # Plan and execute to p2
@@ -706,6 +707,7 @@ def main() -> None:
                 return
             logger.info("Reached target pose p2")
             task_proc_pub.publish_step("p2_reached")
+            print('p2_reached')
 
             # Start rosbag recording after reaching p2
             print('Starting rosbag')
