@@ -1202,6 +1202,7 @@ def decode_one_bag(
         if is_zstd:
             if zstd is None:
                 logger.error(f"File {mcap_path.name} requires zstandard. Install via: pip install zstandard")
+                print(f"File {mcap_path.name} requires zstandard. Install via: pip install zstandard")
                 return True
             try:
                 dctx = zstd.ZstdDecompressor()
@@ -1222,6 +1223,7 @@ def decode_one_bag(
                     except Exception:
                         pass
                 logger.error(f"Failed to decompress {mcap_path.name}: {exc}")
+                print(f"Failed to decompress {mcap_path.name}: {exc}")
                 return True
         else:
             stream = mcap_path.open("rb")
@@ -1360,6 +1362,7 @@ def decode_one_bag(
             result = writer.finalize()
         except Exception as exc:  # pragma: no cover
             logger.error(f"Failed to finalize video for {topic} in bag {bag_name}: {exc}")
+            print(f"Failed to finalize video for {topic} in bag {bag_name}: {exc}")
             return True
         if result:
             video_outputs[topic] = result
@@ -1372,6 +1375,7 @@ def decode_one_bag(
             result = writer.finalize()
         except Exception as exc:  # pragma: no cover
             logger.error(f"Failed to finalize pointclouds for {topic} in bag {bag_name}: {exc}")
+            print(f"Failed to finalize pointclouds for {topic} in bag {bag_name}: {exc}")
             return True
         if result:
             pointcloud_outputs[topic] = result
@@ -1447,6 +1451,7 @@ def main() -> int:
                             decoded_any = decoded_any or ok
                         except Exception as exc:
                             logger.error(f"Decoding failed for {future_map[future]}: {exc}")
+                            print(f"Decoding failed for {future_map[future]}: {exc}")
 
             if interval <= 0:
                 return 0
