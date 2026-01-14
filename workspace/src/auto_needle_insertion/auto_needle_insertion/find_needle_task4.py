@@ -359,6 +359,9 @@ def move_tip_z_to_zero_known(
     Let the needle tip approach to z = 0 in the tracker frame.
     """
     tip_in_to = tip_in_to_frame(to_in_base, tracker_in_base, tip_in_tracker)
+    if z_init != 0.0:
+        print("Using provided non-zero z_init: ", z_init)
+        logger.info(f"Using provided non-zero z_init: {z_init}")
     err_z = float(tip_in_to[2]) - float(z_init)
     T_step = transducer_motions("sweep", err_z*1000.0)
     to_target = to_in_base @ T_step
@@ -680,6 +683,7 @@ def main() -> None:
             tip_in_to_init = tip_in_to_frame(to_in_base, tracker_in_base, needle_tip_position)
             z_init = float(tip_in_to_init[2])  # pseudo groundtruth initial tip z
             print("Initial tip z in tracker frame: ", z_init)
+            logger.info(f"Initial tip z in tracker frame: {z_init}")
             ############
 
             task_proc_pub.publish_step("move_p1")
