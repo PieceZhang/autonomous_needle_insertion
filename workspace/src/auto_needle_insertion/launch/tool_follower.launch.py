@@ -108,11 +108,11 @@ def generate_launch_description():
         output="screen",
     )
 
-    # Tool follower node
-    tool_follower = Node(
+    # Keyboard servo node
+    keyboard_servo = Node(
         package="auto_needle_insertion",
-        executable="tool_follower",
-        name="tool_follower",
+        executable="keyboard_servo",
+        name="keyboard_servo",
         output="screen",
     )
 
@@ -120,5 +120,5 @@ def generate_launch_description():
         ur_type_arg,
         servo,
         static_polaris_to_base,
-        tool_follower,
+        keyboard_servo,
     ])

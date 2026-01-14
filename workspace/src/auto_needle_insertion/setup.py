@@ -33,6 +33,7 @@ setup(
             "hand_eye_calib = auto_needle_insertion.hand_eye_calib:main",
             "tool_reporter = auto_needle_insertion.tool_reporter:main",
             "tool_follower = auto_needle_insertion.tool_follower:main",
+            "keyboard_servo = auto_needle_insertion.keyboard_servo:main",
         ],
     },
 )
