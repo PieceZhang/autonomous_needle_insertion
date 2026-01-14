@@ -106,7 +106,7 @@ TASK41_SWEEP_MM = 25.0        # sweep along Z (mm)
 # TASK41_COMPRESSION_MM = 5.0  # compression along Y (mm)
 
 DELAY_START_ROSBAG_S = 1.5
-DELAY_STOP_ROSBAG_S = 1.2  # DO NOT SET TOO LARGE, WILL CAUSE UR FAILURE
+DELAY_STOP_ROSBAG_S = 1.  # DO NOT SET TOO LARGE, WILL CAUSE UR FAILURE
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -353,12 +353,13 @@ def move_tip_z_to_zero_known(
     robot, arm, tip_link, planning_frame,
     to_in_base, to_in_ee,
     tracker_in_base, tip_in_tracker,
+    z_init = 0.0
 ):
     """
     Let the needle tip approach to z = 0 in the tracker frame.
     """
     tip_in_to = tip_in_to_frame(to_in_base, tracker_in_base, tip_in_tracker)
-    err_z = float(tip_in_to[2])
+    err_z = float(tip_in_to[2]) - float(z_init)
     T_step = transducer_motions("sweep", err_z*1000.0)
     to_target = to_in_base @ T_step
     ee_target = to_target @ np.linalg.inv(to_in_ee)
@@ -426,6 +427,7 @@ def run_subtask_2(
     task_proc_pub: TaskProcedurePublisher,
     sweep_mm: float = STEP5_SWEEP_MM,
     rotate_deg: float = STEP7_ROTATE_DEG,
+    z_init: float = 0.0,
 ):
     # Current transducer pose in base
     current_ee_transfrorm = get_current_ee_transform(robot, tip_link)
@@ -451,6 +453,7 @@ def run_subtask_2(
         to_in_base, to_in_ee,
         tracker_in_base,
         needle_tip_position,
+        z_init
     )
     logger.info("Step 5-2 finished")
 
@@ -671,6 +674,14 @@ def main() -> None:
             ee_target_pose_in_base_p2 = tracker_in_base @ candidate_image_in_tracker @ np.linalg.inv(to_in_ee)
             logger.info(f"Random pose p2 (EE in base):\n{ee_target_pose_in_base_p2}")
 
+            ############ NEW: get tip_in_to_init
+            current_ee_transfrorm = get_current_ee_transform(robot, tip_link)
+            to_in_base = current_ee_transfrorm @ to_in_ee
+            tip_in_to_init = tip_in_to_frame(to_in_base, tracker_in_base, needle_tip_position)
+            z_init = float(tip_in_to_init[2])  # pseudo groundtruth initial tip z
+            print("Initial tip z in tracker frame: ", z_init)
+            ############
+
             task_proc_pub.publish_step("move_p1")
             # Plan and execute to p1
             ok = plan_and_execute_pose(robot, arm, tip_link, planning_frame, ee_target_pose_in_base)
@@ -719,6 +730,7 @@ def main() -> None:
                     needle_tip_position=needle_tip_position,
                     needle_pose=needle_pose,
                     task_proc_pub=task_proc_pub,
+                    z_init=z_init
                 )
 
             stop_rosbag_recording(success=True)
