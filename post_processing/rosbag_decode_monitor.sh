@@ -4,4 +4,4 @@ python  ./post_processing/rosbag_decode_monitor.py \
       --input-dir /mnt/dataset/storage \
       --output-dir /mnt/dataset/storage_decoding \
       --monitoring-int 5 \
-      --workers 4
+      --workers 1  # still have some issues with multi-process decoding
