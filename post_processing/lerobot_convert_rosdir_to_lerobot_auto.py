@@ -181,10 +181,12 @@ def lab_features_schema_fixed_hw():
         },
         "observation.meta.roomcam_cali_mtx_tracker_to_color": {"dtype": "float32", "shape": (7,), "names": ["tx_mm", "ty_mm", "tz_mm", "qx", "qy", "qz", "qw"]},
         # roomcam_cali_mtx_tracker_to_color: [-14.8879, 34.6886, -65.7274, 0.709725, 0.704474, -0.001833, 0.002027]
-        "observation.meta.wristcam_cali_mtx": {"dtype": "float32", "shape": (7,), "names": ["tx_m", "ty_m", "tz_m", "qx", "qy", "qz", "qw"]},
+        "observation.meta.probe_handeye_cali_mtx": {"dtype": "float32", "shape": (7,), "names": ["tx_m", "ty_m", "tz_m", "qx", "qy", "qz", "qw"]},
+        # read from hand_eye_20251231_075559.json probe:'T_c2g'
+        "observation.meta.wristcam_handeye_cali_mtx": {"dtype": "float32", "shape": (7,), "names": ["tx_m", "ty_m", "tz_m", "qx", "qy", "qz", "qw"]},
         # wristcam_cali_mtx: see /task_info 'T_c2g'
-        # OR: read from hand_eye_xxxxx.json 'T_c2g'
-        "observation.meta.prob_cali_mtx": {"dtype": "float32", "shape": (7,), "names": ["tx_m", "ty_m", "tz_m", "qx", "qy", "qz", "qw"]},
+        # OR: read from hand_eye_20260112_071955.json zed2:'T_c2g'
+        "observation.meta.probe_from_image_cali_mtx": {"dtype": "float32", "shape": (7,), "names": ["tx_m", "ty_m", "tz_m", "qx", "qy", "qz", "qw"]},
         # prob_cali_mtx: see /task_info 'T_probe_from_image'
         # OR: read from PlusDeviceSet_fCal_xxxxx.xml 'Transform From="Image" To="Probe"'
         "observation.meta.tip_offset_mm": {"dtype": "float32", "shape": (3,), "names": ['x', 'y', 'z']},
