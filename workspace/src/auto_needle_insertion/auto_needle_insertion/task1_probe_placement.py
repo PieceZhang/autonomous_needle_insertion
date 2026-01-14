@@ -51,8 +51,10 @@ RAND_ROT_DEG = 10.0              # rotation jitter for P2 (roll/pitch/yaw, deg)
 STANDARD_ROT_Y_MAX_DEG = 20.0    # rotation motion amplitude about +/−Y
 # STANDARD_ROCK_Z_MAX_DEG = 5.0   # NOT USED: rock motion amplitude about +/−Z
 # STANDARD_TILT_X_MAX_DEG = 5.0   # NOT USED: tilt motion amplitude about +/−X
-DELAY_AFTER_ROSBAG_MS = 300      # milliseconds to wait before starting rosbag recording
 MAXIMUM_TRACKER_LOST = 5
+
+DELAY_START_ROSBAG_S = 1.5
+DELAY_STOP_ROSBAG_S = 1.2  # DO NOT SET TOO LARGE, WILL CAUSE UR FAILURE
 
 # ----------------- Logging -----------------
 logging.basicConfig(level=logging.INFO)
@@ -276,7 +278,7 @@ class ProbePlacementTask:
         # Calibration
         self.us_probe = USProbe()
         self.us_probe.load_calibrations(
-            "./calibration/PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20251230_SRIL.xml",
+            "./calibration/PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20260111_SRIL.xml",
             "./calibration/hand_eye_20251231_075559.json",
         )
         if self.us_probe.to_in_probe is None or self.us_probe.to_in_ee is None:
@@ -464,14 +466,14 @@ class ProbePlacementTask:
         print(_fmt("Step 4: Starting rosbag recording.", "⏺️"), flush=True)
         self.task_info_pub.set_state("started")
         self.rosbag.start_recording()
-        sleep_with_spin(self.executor, DELAY_AFTER_ROSBAG_MS / 1000.0)
+        sleep_with_spin(self.executor, DELAY_START_ROSBAG_S)
 
     def stop_recording(self) -> None:
         self.task_proc_pub.publish_step("7")
         print(_fmt("Step 7: Stopping rosbag recording.", "⏹️"), flush=True)
         self.task_info_pub.set_state("stopped_success")
-        sleep_with_spin(self.executor, 0.2)
         self.rosbag.stop_recording("Success")
+        sleep_with_spin(self.executor, DELAY_STOP_ROSBAG_S)
 
     def _standard_motion_sequence(self, max_deg: float) -> List[float]:
         amp = random.uniform(0.2 * max_deg, max_deg)  # FIXME random motion?

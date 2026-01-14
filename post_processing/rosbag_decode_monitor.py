@@ -46,6 +46,8 @@ from array import array
 from datetime import datetime, timezone
 from pathlib import Path
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import (
     Any,
     Callable,
@@ -121,16 +123,18 @@ class BagLogger:
     def __init__(self, log_path: Path):
         log_path.parent.mkdir(parents=True, exist_ok=True)
         self.log_file = log_path.open("a", encoding="utf-8")
+        self._lock = threading.Lock()
         atexit.register(self.close)
 
     def _write(self, level: str, msg: str, to_stderr: bool = False) -> None:
         line = f"[{level}] {msg}"
-        if to_stderr:
-            print(line, file=sys.stderr)
-        else:
-            print(line)
-        self.log_file.write(line + "\n")
-        self.log_file.flush()
+        with self._lock:
+            if to_stderr:
+                print(line, file=sys.stderr)
+            else:
+                print(line)
+            self.log_file.write(line + "\n")
+            self.log_file.flush()
 
     def info(self, msg: str) -> None:
         self._write("INFO", msg, to_stderr=False)
@@ -165,6 +169,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--input-dir", required=True, type=Path, help="Root dir containing rosbag folders.")
     parser.add_argument("--output-dir", required=True, type=Path, help="Output root dir; one subfolder per bag.")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing outputs if present.")
+    parser.add_argument("--workers", type=int, default=1, help="Number of threads to decode bags in parallel.")
     parser.add_argument("--topics", nargs="*", help="Optional subset of topics to decode.")
     parser.add_argument(
         "--monitoring-int",
@@ -1098,13 +1103,20 @@ def find_rosbag_folders(root: Path) -> List[Path]:
     bags: List[Path] = []
     if not root.is_dir():
         return bags
-    for p in sorted(root.iterdir()):
-        if p.is_dir() and (p / "metadata.yaml").is_file():
-            bags.append(p)
+    for metadata_path in sorted(root.rglob("metadata.yaml")):
+        bag_dir = metadata_path.parent
+        if bag_dir.is_dir():
+            bags.append(bag_dir)
     return bags
 
 
-def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace, logger: BagLogger) -> bool:
+def decode_one_bag(
+    bag_dir: Path,
+    input_root: Path,
+    output_root: Path,
+    args: argparse.Namespace,
+    logger: BagLogger,
+) -> bool:
     """
     Returns True if decode was attempted and progressed (logs produced); False if skipped/invalid with no logs.
     """
@@ -1128,8 +1140,18 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace, l
         return False
 
     task_label, task_outcome = extract_task_label_and_outcome(bag_dir, topic_specs)
-    bag_output_name = f"{bag_name}_{task_label}_{task_outcome}"
-    out_bag_dir = output_root / bag_output_name
+    try:
+        relative_path = bag_dir.relative_to(input_root)
+    except ValueError:
+        relative_path = Path(bag_name)
+    parent_parts = relative_path.parts[:-1]
+    bag_output_rel = (
+        Path(*parent_parts) / f"{bag_name}_{task_label}_{task_outcome}"
+        if parent_parts
+        else Path(f"{bag_name}_{task_label}_{task_outcome}")
+    )
+    bag_output_name = str(bag_output_rel)
+    out_bag_dir = output_root / bag_output_rel
 
     if out_bag_dir.exists() and not args.overwrite:
         return False
@@ -1180,6 +1202,7 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace, l
         if is_zstd:
             if zstd is None:
                 logger.error(f"File {mcap_path.name} requires zstandard. Install via: pip install zstandard")
+                print(f"File {mcap_path.name} requires zstandard. Install via: pip install zstandard")
                 return True
             try:
                 dctx = zstd.ZstdDecompressor()
@@ -1200,6 +1223,7 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace, l
                     except Exception:
                         pass
                 logger.error(f"Failed to decompress {mcap_path.name}: {exc}")
+                print(f"Failed to decompress {mcap_path.name}: {exc}")
                 return True
         else:
             stream = mcap_path.open("rb")
@@ -1338,6 +1362,7 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace, l
             result = writer.finalize()
         except Exception as exc:  # pragma: no cover
             logger.error(f"Failed to finalize video for {topic} in bag {bag_name}: {exc}")
+            print(f"Failed to finalize video for {topic} in bag {bag_name}: {exc}")
             return True
         if result:
             video_outputs[topic] = result
@@ -1350,6 +1375,7 @@ def decode_one_bag(bag_dir: Path, output_root: Path, args: argparse.Namespace, l
             result = writer.finalize()
         except Exception as exc:  # pragma: no cover
             logger.error(f"Failed to finalize pointclouds for {topic} in bag {bag_name}: {exc}")
+            print(f"Failed to finalize pointclouds for {topic} in bag {bag_name}: {exc}")
             return True
         if result:
             pointcloud_outputs[topic] = result
@@ -1393,6 +1419,7 @@ def main() -> int:
 
     if not args.input_dir.is_dir():
         return 1
+    workers = max(1, int(args.workers))
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     logger = BagLogger(args.output_dir / "decode.log")
@@ -1411,9 +1438,20 @@ def main() -> int:
                     continue
 
             decoded_any = False
-            for bag_dir in bag_dirs:
-                ok = decode_one_bag(bag_dir, args.output_dir, args, logger)
-                decoded_any = decoded_any or ok
+            if workers == 1:
+                for bag_dir in bag_dirs:
+                    ok = decode_one_bag(bag_dir, args.input_dir, args.output_dir, args, logger)
+                    decoded_any = decoded_any or ok
+            else:
+                with ThreadPoolExecutor(max_workers=workers) as executor:
+                    future_map = {executor.submit(decode_one_bag, bag_dir, args.input_dir, args.output_dir, args, logger): bag_dir for bag_dir in bag_dirs}
+                    for future in as_completed(future_map):
+                        try:
+                            ok = future.result()
+                            decoded_any = decoded_any or ok
+                        except Exception as exc:
+                            logger.error(f"Decoding failed for {future_map[future]}: {exc}")
+                            print(f"Decoding failed for {future_map[future]}: {exc}")
 
             if interval <= 0:
                 return 0

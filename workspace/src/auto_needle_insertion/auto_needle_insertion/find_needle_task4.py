@@ -21,6 +21,7 @@ Usage:
         "one" -> Subtask 1, "two" -> Subtask 2 (default: "two")
 """
 
+import json
 import logging
 import os
 import sys
@@ -101,11 +102,11 @@ STEP7_ROTATE_DEG = 6.0   # rotation amplitude for ry sweep (deg)
 # Task 4.1 standard action parameters
 TASK41_TILT_DEG = 6.0        # tilt/fan about X
 TASK41_ROCK_DEG = 6.0        # rock about Z
-TASK41_SWEEP_MM = 13.0        # sweep along Z (mm)
+TASK41_SWEEP_MM = 25.0        # sweep along Z (mm)
 # TASK41_COMPRESSION_MM = 5.0  # compression along Y (mm)
 
-DELAY_AFTER_ROSBAG_SEC = 0.7
-ROSBAG_STOP_WAIT_SEC = 0.5
+DELAY_START_ROSBAG_S = 1.5
+DELAY_STOP_ROSBAG_S = 1.2  # DO NOT SET TOO LARGE, WILL CAUSE UR FAILURE
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -163,6 +164,29 @@ class _SpinThread:
         while not self._stop.is_set() and rclpy.ok():
             self._exec.spin_once(timeout_sec=0.1)
 
+
+# New: publish parameter set to /task_info at 1 Hz
+class TaskInfoParamsPublisher(rclpy.node.Node):
+    """Publish selected task parameters to '/task_info' at a fixed rate (JSON string)."""
+    def __init__(self, topic_name: str = "/task_info", hz: float = 1.0) -> None:
+        super().__init__("task_info_params_publisher")
+        self._pub = self.create_publisher(String, topic_name, 10)
+        self._timer = self.create_timer(1.0 / hz, self._timer_cb)
+
+    def _timer_cb(self) -> None:
+        # Publish the parameters defined around lines ~88-108
+        payload = {
+            "CONTROLLER_NAMES": CONTROLLER_NAMES,
+            "PREFERRED_TIP_LINKS": PREFERRED_TIP_LINKS,
+            "P2_ROT_RANGE_DEG": P2_ROT_RANGE_DEG,
+            "P2_SWEEP_RANGE_MM": P2_SWEEP_RANGE_MM,
+            "P2_SLIDE_RANGE_MM": P2_SLIDE_RANGE_MM,
+            "PIXEL_LOWER_BOUND": PIXEL_LOWER_BOUND,
+            "PIXEL_UPPER_BOUND": PIXEL_UPPER_BOUND,
+        }
+        msg = String()
+        msg.data = json.dumps(payload)
+        self._pub.publish(msg)
 
 # ---------------------- Planning helpers ----------------------
 def get_planning_group_name(robot: MoveItPy) -> str:
@@ -474,9 +498,14 @@ def main() -> None:
     task_info_pub = TaskInfoPublisher(topic_name="task_info_collection_states")
     task_proc_pub = TaskProcedurePublisher(topic_name="task_procedure")
     tip_y_sub = NeedleTipYSubscriber(topic_name="/decoded_coor_image/needle_tip")
+
+    # Instantiate the new params publisher and add to executor
+    task_params_pub = TaskInfoParamsPublisher(topic_name="/task_info", hz=1.0)
+
     executor.add_node(task_info_pub)
     executor.add_node(task_proc_pub)
     executor.add_node(tip_y_sub)
+    executor.add_node(task_params_pub)
     spinner = _SpinThread(executor)
     spinner.start()
 
@@ -490,7 +519,7 @@ def main() -> None:
         logger.info("Starting rosbag recording before move to p1")
         task_info_pub.set_state("started")
         rosbag_controller.start_recording()
-        sleep_with_spin(executor, DELAY_AFTER_ROSBAG_SEC)
+        sleep_with_spin(executor, DELAY_START_ROSBAG_S)
         rosbag_active = True
 
     def stop_rosbag_recording(success: bool) -> None:
@@ -500,8 +529,8 @@ def main() -> None:
         state = "stopped_success" if success else "stopped_failure"
         reason = "Success" if success else "Failure"
         task_info_pub.set_state(state)
-        sleep_with_spin(executor, ROSBAG_STOP_WAIT_SEC)
         rosbag_controller.stop_recording(reason)
+        sleep_with_spin(executor, DELAY_STOP_ROSBAG_S)
         rosbag_active = False
 
     # Replace task_mode selection with TASK4_SUBTASK env var
@@ -592,14 +621,14 @@ def main() -> None:
         y_target_in_to = y_target_in_top * pixel_spacing_y
 
         # Align and center image frame
-        image_in_tracker_after_alignment = align_image_to_needle_axis(
-            to_in_tracker, needle_pose[0:3], needle_tip_position
-        )
-        image_in_tracker_after_centering = center_needle_in_image(
-            image_in_tracker_after_alignment, needle_pose[0:3], needle_tip_position,
-            x_center_in_plane=0.0, y_target_in_plane=y_target_in_to
-        )
-        # image_in_tracker_after_centering = to_in_tracker
+        # image_in_tracker_after_alignment = align_image_to_needle_axis(
+        #     to_in_tracker, needle_pose[0:3], needle_tip_position
+        # )
+        # image_in_tracker_after_centering = center_needle_in_image(
+        #     image_in_tracker_after_alignment, needle_pose[0:3], needle_tip_position,
+        #     x_center_in_plane=0.0, y_target_in_plane=y_target_in_to
+        # )
+        image_in_tracker_after_centering = to_in_tracker
 
         while True:
             # Apply small random perturbations to get candidate image pose (p2)
@@ -705,6 +734,7 @@ def main() -> None:
         executor.shutdown()
         task_info_pub.destroy_node()
         task_proc_pub.destroy_node()
+        task_params_pub.destroy_node()
         rclpy.shutdown()
 
 

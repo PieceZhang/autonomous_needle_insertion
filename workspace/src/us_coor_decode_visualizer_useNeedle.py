@@ -9,6 +9,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import CompressedImage, Image
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import String
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
@@ -104,11 +105,19 @@ class USVisualizer(Node):
 
         # Calibration transforms (all in millimeters)
         self.tip_offset_mm = None         # NeedleBody -> NeedleTip translation (mm)
+        self.tip_offset_json_path = None  # path to loaded needle tip offset json
         self.T_probe_from_image = None    # Image -> Probe
         self.T_image_from_probe = None    # Probe -> Image (inverse)
         self.image_lag_sec = 0.0          # LocalTimeOffsetSec (image lags tracker by this many seconds)
+        self.calib_xml_path = None
+
+        # add hand-eye attributes
+        self.T_c2g = None                 # Camera -> Guide transform (4x4, mm or m per file convention)
+        self.hand_eye_json_path = None
+
         self.load_calibration_xml()       # still loads Image<->Probe and LocalTimeOffsetSec
         self.load_tip_offset_json()       # load needle tip offset from JSON
+        self.load_handeye_json()          # load T_c2g from hand-eye json
 
         # Dynamic transforms (latest) and availability flags (kept in millimeters)
         self.T_tracker_probe = None          # Tracker -> Probe (mm)
@@ -180,6 +189,14 @@ class USVisualizer(Node):
             qos_profile=pose_qos,
         )
 
+        # Task info publisher (1 Hz)
+        self.task_info_pub = self.create_publisher(
+            String,
+            "/task_info",
+            qos_profile=pose_qos,
+        )
+        self.create_timer(1.0, self.publish_task_info)
+
         # Timer: 20 Hz publishing of decoded coordinates (unsynchronized; unchanged)
         self.create_timer(0.05, self.publish_decoded_coordinates)
 
@@ -213,6 +230,7 @@ class USVisualizer(Node):
                 f"Multiple calibration files found: {files}. Using the latest (by mtime): {xml_path}"
             )
         self.get_logger().info(f"Reading calibration file: {xml_path}")
+        self.calib_xml_path = xml_path
 
         tree = ET.parse(xml_path)
         root = tree.getroot()
@@ -250,6 +268,7 @@ class USVisualizer(Node):
             self.get_logger().warn("LocalTimeOffsetSec not found; defaulting to 0.0")
 
         self.get_logger().info("Loaded transform matrices (units: mm):")
+        self.get_logger().info(f"Calibration XML file: {self.calib_xml_path}")
         self.get_logger().info(f"Image -> Probe:\n{self.T_probe_from_image}")
         self.get_logger().info(f"Probe -> Image (computed inverse):\n{self.T_image_from_probe}")
         self.get_logger().info(f"LocalTimeOffsetSec (image lag vs tracker): {self.image_lag_sec:.6f} s")
@@ -273,7 +292,57 @@ class USVisualizer(Node):
         if offset.shape[0] != 3 or not np.isfinite(offset).all():
             raise RuntimeError(f"Invalid tip_offset_mm in {json_path}: {offset}")
         self.tip_offset_mm = offset
+        self.tip_offset_json_path = json_path
         self.get_logger().info(f"Loaded tip_offset_mm (NeedleBody -> NeedleTip, mm): {self.tip_offset_mm}")
+        self.get_logger().info(f"Tip offset JSON path: {self.tip_offset_json_path}")
+
+    def load_handeye_json(self):
+        """
+        Locate the newest hand_eye_*.json under <WS_DIR>/calibration, load T_c2g and save to:
+          self.T_c2g (numpy 4x4 float)
+          self.hand_eye_json_path (string)
+        """
+        ws_dir = os.environ.get("WS_DIR", "/ani_ws")
+        calib_dir = os.path.join(ws_dir, "calibration")
+        pattern = os.path.join(calib_dir, "hand_eye_*.json")
+        files = glob.glob(pattern)
+        if len(files) == 0:
+            msg = f"Hand-eye JSON not found: {pattern}"
+            self.get_logger().warn(msg)
+            # keep attributes None, but do not raise to allow node to continue
+            return
+        files.sort(key=os.path.getmtime, reverse=True)
+        json_path = files[0]
+        if len(files) > 1:
+            self.get_logger().warn(
+                f"Multiple hand-eye JSON files found: {files}. Using the latest (by mtime): {json_path}"
+            )
+        try:
+            with open(json_path, "r") as f:
+                data = json.load(f)
+        except Exception as exc:
+            self.get_logger().error(f"Failed to read hand-eye JSON {json_path}: {exc}")
+            return
+
+        if "T_c2g" not in data:
+            self.get_logger().error(f"'T_c2g' not found in hand-eye JSON: {json_path}")
+            return
+
+        try:
+            mat = np.array(data["T_c2g"], dtype=float)
+            if mat.size != 16:
+                raise ValueError(f"T_c2g expects 4x4 (16) values, got shape {mat.shape}")
+            mat = mat.reshape(4, 4)
+            if not is_finite_matrix(mat):
+                raise ValueError("T_c2g contains NaN/Inf or wrong shape")
+        except Exception as exc:
+            self.get_logger().error(f"Failed to parse/validate T_c2g from {json_path}: {exc}")
+            return
+
+        self.T_c2g = mat
+        self.hand_eye_json_path = json_path
+        self.get_logger().info(f"Loaded hand-eye T_c2g from: {self.hand_eye_json_path}")
+        self.get_logger().info(f"T_c2g:\n{self.T_c2g}")
 
     def on_probe_pose(self, msg: PoseStamped):
         # Tracker -> Probe (incoming meters, convert to mm)
@@ -597,6 +666,24 @@ class USVisualizer(Node):
             self.get_logger().debug(f"Probe pose dict (meters): {self.last_probe_pose_dict}")
         if self.last_needle_pose_dict:
             self.get_logger().debug(f"Needle pose dict (meters): {self.last_needle_pose_dict}")
+
+    def publish_task_info(self):
+        """Publish JSON with calibration/task info at 1 Hz on /task_info (std_msgs/String)."""
+        try:
+            info = {
+                "calib_xml_path": self.calib_xml_path,
+                "T_probe_from_image": (self.T_probe_from_image.tolist() if self.T_probe_from_image is not None else None),
+                "image_lag_sec": float(self.image_lag_sec) if self.image_lag_sec is not None else None,
+                "tip_offset_json_path": self.tip_offset_json_path,
+                "tip_offset_mm": (self.tip_offset_mm.tolist() if self.tip_offset_mm is not None else None),
+                "hand_eye_json_path": self.hand_eye_json_path,
+                "T_c2g": (self.T_c2g.tolist() if self.T_c2g is not None else None),
+            }
+            msg = String()
+            msg.data = json.dumps(info)
+            self.task_info_pub.publish(msg)
+        except Exception as exc:
+            self.get_logger().error(f"Failed to publish task_info: {exc}")
 
 
 def main():
