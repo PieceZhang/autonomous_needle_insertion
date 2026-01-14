@@ -5,4 +5,8 @@
 ## Jan 11
 - probe calibration performed, change US depth to 10
 
+## Jan 12/13
+- rosbag2_20260112_task42_liver_zzhong, rosbag2_20260113_task42_liver_zyh, rosbag2_20260113_task42_liver_zzhong: 
+data collected before modify task 4.2, **may at bad quality**
+
 ## When decoding, task label should be manually corrected according to folder name.
