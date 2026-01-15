@@ -1,11 +1,26 @@
 # LeRobot Dataset Conversion for Autonomous Needle Insertion
 
-This repository provides scripts to convert decoded ROS2 / MCAP data into the **LeRobot dataset format**, and to inspect the converted dataset using visualization tools.
+This repository provides scripts to convert decoded ROS2 / MCAP data into the **LeRobot dataset format**, and to inspect the converted datasets using a unified visualization tool.
 
-The project is organized around **multiple surgical robotics tasks**, currently including:
+The pipeline is organized around **multiple surgical robotics tasks**, while sharing common abstractions for:
+- sensor synchronization
+- calibration handling
+- LeRobot episode construction
+- visualization
 
-- **Task 1**: Probe Placement  
-- **Task 4.1 / 4.2**: Needle Retrieval *(planned / under extension)*
+---
+
+## Supported Tasks
+
+| Task ID | Task Name | Conversion Script | Visualization |
+|-------|----------|-------------------|---------------|
+| Task 1 | Probe Placement | `task1_to_lerobot.py` | shared |
+| Task 4.1 | Needle Retrieval | `task4_to_lerobot.py` | shared |
+| Task 4.2 | Needle Retrieval | `task4_to_lerobot.py` | shared |
+
+> **Note**  
+> Task 4.1 and Task 4.2 differ only in raw data content and task semantics.  
+> They are processed using the **same conversion script**.
 
 ---
 
@@ -13,61 +28,34 @@ The project is organized around **multiple surgical robotics tasks**, currently 
 
 ```text
 .
-├── task1_to_lerobot.py              # Convert raw Task 1 data to LeRobot format
-├── task1_viz_lerobot_gui.py         # Visualize converted LeRobot episodes
-├── task1_to_lerobot.sh              # Convenience script for Task 1 conversion
-├── task1_viz_lerobot_gui.sh         # Convenience script for visualization
+├── task1_to_lerobot.py              # Task 1 conversion
+├── task4_to_lerobot.py              # Task 4.1 / 4.2 conversion
+├── visualize_lerobot_gui.py         # Shared visualization tool
+├── task1_to_lerobot.sh
+├── task4_to_lerobot.sh
 ├── README.md
 └── workspace/
     └── calibration/
-        └── PlusDeviceSet_*.xml      # Hand-eye & probe calibration files
+        └── PlusDeviceSet_*.xml      # Probe / tracker / camera calibration
         └── hand_eye_20251231_075559.json
         └── hand_eye_20260112_071955.json
 ````
 
 ---
 
-## Tasks Overview
-
-### **Task 1 — Probe Placement**
-
-**Key Outputs**
-
-* RGB / depth / ultrasound video streams
-* Robot poses and actions
-* Synchronized multi-sensor episodes
-
----
-
-### **Task 4.1 / Task 4.2 — Needle Retrieval**
-
-**Status**
-Planned extension.
-The same dataset abstraction and conversion pipeline will be reused, with task-specific action/state definitions.
-
----
-
 ## Environment Setup
-
-Make sure you have:
-
-* Python ≥ 3.9
-* `lerobot` installed and available in your environment, **recommend 0.4.2**
-* OpenCV, NumPy, tqdm, etc.
-
-Example:
 
 ```bash
 conda activate lerobot
 ```
 
+Make sure `lerobot` and common dependencies (NumPy, OpenCV, tqdm, etc.) are installed.
+
 ---
 
-## Task 1: Convert Raw Data to LeRobot Format
+## Task 1 — Probe Placement
 
-### 1. Data Conversion
-
-Use `task1_to_lerobot.py` to convert decoded raw data into a LeRobot dataset.
+### Convert Raw Data to LeRobot Format
 
 ```bash
 python task1_to_lerobot.py \
@@ -77,64 +65,75 @@ python task1_to_lerobot.py \
   --calib_xml <WORKSPACE_ROOT>/calibration/PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20260111_SRIL.xml
 ```
 
-#### Arguments
+---
 
-| Argument           | Description                                            |
-| ------------------ | ------------------------------------------------------ |
-| `--raw_root`       | Root directory of decoded Task 1 raw data              |
-| `--out_root`       | Output directory for LeRobot-formatted dataset         |
-| `--workspace_root` | Workspace directory containing calibration and configs |
-| `--calib_xml`      | PLUS calibration XML (probe ↔ tracker ↔ camera)        |
+## Task 4.1 / Task 4.2 — Needle Retrieval
+
+### Convert Raw Data to LeRobot Format
+
+Both Task 4.1 and Task 4.2 use the **same conversion script**.
+
+```bash
+python task4_to_lerobot.py \
+  --raw_root <RAW_DATA_ROOT>/task41 \
+  --out_root <OUTPUT_ROOT>/task41_output \
+  --workspace_root <WORKSPACE_ROOT> \
+  --calib_xml <WORKSPACE_ROOT>/calibration/PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20260111_SRIL.xml
+```
+
+> To process Task 4.2, simply change `--raw_root` and `--out_root` accordingly.
 
 ---
 
-### 2. Visualization
+## Shared Visualization (All Tasks)
 
-After conversion, visualize the dataset using the GUI viewer:
+All tasks use the **same visualization script** to inspect converted LeRobot datasets.
 
 ```bash
-python task1_viz_lerobot_gui.py \
-  --root <OUTPUT_ROOT>/task1_output
+python visualize_lerobot_gui.py \
+  --root <OUTPUT_ROOT>/<TASK_OUTPUT_DIR>
 ```
 
-This tool allows you to:
+This viewer supports:
 
-* Inspect per-episode videos
-* Verify sensor synchronization
-* Check robot state / action consistency
+* per-episode video playback
+* multi-stream inspection
+* numeric state / action verification
 
 ---
 
 ## Shell Script Shortcuts
 
-For convenience, the following shell scripts wrap the commands above:
+For convenience:
 
 ```bash
 bash task1_to_lerobot.sh
-bash task1_viz_lerobot_gui.sh
+bash task4_to_lerobot.sh
 ```
 
-You may edit these scripts to point to your local paths.
+Each script wraps the corresponding Python command with editable local paths.
 
 ---
 
-## Notes & Design Choices
+## Design Notes
 
-* **Multiple FPS streams** are temporally aligned at the episode level.
-* Numeric states and actions are stored in LeRobot-compatible arrays for downstream learning.
-* Video visualization is decoupled from numeric inspection to avoid performance bottlenecks.
-* The pipeline is designed to be **task-agnostic**, enabling easy extension to Task 4.x.
+* Multi-FPS streams are temporally aligned at the **episode level**
+* Numeric states and actions are stored independently from video streams
+* Visualization is shared and task-agnostic
+* Task-specific logic is isolated in conversion scripts only
 
 ---
 
-## Planned Extensions
+## Extending to New Tasks
 
-* [ ] Task 4.1 / 4.2 conversion scripts
-* [ ] Unified task configuration (`task_spec.json`)
+To add a new task:
+
+1. Implement a new `taskX_to_lerobot.py` (or reuse an existing one)
+2. Follow the same raw / output directory structure
+3. Use the shared visualization tool without modification
 
 ---
 
 ## Contact
 
-For questions or extensions, please refer to the project maintainer or open an issue.
-
+For questions or extensions, please open an issue or contact the maintainer.
