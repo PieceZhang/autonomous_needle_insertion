@@ -8,19 +8,19 @@ import os
 from pathlib import Path
 from typing import Iterable, List
 
-MINIMAL_SIZE_MB = 40.0
-DEFAULT_EXTENSIONS = (".mcap")
+MINIMAL_SIZE_MB = 60
+DEFAULT_EXTENSIONS = ".mcap"
 
 
 def iter_rosbag_files(paths: Iterable[Path], extensions: Iterable[str]) -> Iterable[Path]:
     for root in paths:
         if root.is_file():
-            if root.suffix in extensions:
+            if root.suffix == extensions:
                 yield root
             continue
         for dirpath, _, filenames in os.walk(root):
             for filename in filenames:
-                if Path(filename).suffix in extensions:
+                if Path(filename).suffix == extensions:
                     yield Path(dirpath, filename)
 
 
@@ -35,29 +35,10 @@ def find_small_bags(paths: Iterable[Path], min_size_mb: float, extensions: Itera
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="List rosbag files smaller than the minimal size threshold.")
-    parser.add_argument(
-        "paths",
-        nargs="*",
-        default=[Path.cwd()],
-        type=Path,
-        help="Directory or file paths to inspect (defaults to current working directory).",
-    )
-    parser.add_argument(
-        "--min-size-mb",
-        type=float,
-        default=MINIMAL_SIZE_MB,
-        help=f"Minimal rosbag size in MB (default: {MINIMAL_SIZE_MB}).",
-    )
-    parser.add_argument(
-        "--extensions",
-        nargs="+",
-        default=list(DEFAULT_EXTENSIONS),
-        help="File extensions treated as rosbag files.",
-    )
-    args = parser.parse_args()
 
-    small_bags = find_small_bags(args.paths, args.min_size_mb, tuple(args.extensions))
+    small_bags = find_small_bags([Path('/mnt/dataset/storage/')],
+                                 MINIMAL_SIZE_MB,
+                                 DEFAULT_EXTENSIONS)
 
     if not small_bags:
         print("No rosbag files under the minimal size were found.")
