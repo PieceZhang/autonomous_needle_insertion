@@ -728,10 +728,10 @@ def main():
         print(f"[INFO] LocalTimeOffsetSec = {offset_sec:.6f} sec (from {xml_path}, device_id={device_id})")
 
     # Resolve episode dirs
-    if raw_root.is_dir() and raw_root.name.startswith("rosbag2_"):
-        episode_dirs = [raw_root]
-    else:
-        episode_dirs = sorted([p for p in raw_root.glob("rosbag2_*") if p.is_dir()])
+    # if raw_root.is_dir() and raw_root.name.startswith("rosbag2_"):
+    #     episode_dirs = [raw_root]
+    # else:
+    episode_dirs = sorted([p for p in raw_root.glob("rosbag2_*") if p.is_dir()])
 
     if args.max_episodes > 0:
         episode_dirs = episode_dirs[: args.max_episodes]
