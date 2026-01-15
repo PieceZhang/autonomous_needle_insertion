@@ -90,7 +90,7 @@ python task4_to_lerobot.py \
 All tasks use the **same visualization script** to inspect converted LeRobot datasets.
 
 ```bash
-python visualize_lerobot_gui.py \
+python task_viz_lerobot_gui.py \
   --root <OUTPUT_ROOT>/<TASK_OUTPUT_DIR>
 ```
 
