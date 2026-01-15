@@ -1,7 +1,3 @@
-
----
-
-````markdown
 # LeRobot Dataset Conversion for Autonomous Needle Insertion
 
 This repository provides scripts to convert decoded ROS2 / MCAP data into the **LeRobot dataset format**, and to inspect the converted dataset using visualization tools.
