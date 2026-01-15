@@ -52,7 +52,7 @@ The same dataset abstraction and conversion pipeline will be reused, with task-s
 Make sure you have:
 
 * Python ≥ 3.9
-* `lerobot` installed and available in your environment
+* `lerobot` installed and available in your environment, **recommend 0.4.2**
 * OpenCV, NumPy, tqdm, etc.
 
 Example:
