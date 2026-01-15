@@ -45,6 +45,11 @@ The pipeline is organized around **multiple surgical robotics tasks**, while sha
 
 ## Environment Setup
 
+The conversion and visualization scripts are tested with the following environment:
+
+- **Python**: 3.10.19  
+- **LeRobot**: 0.4.2 
+
 ```bash
 conda activate lerobot
 ```
