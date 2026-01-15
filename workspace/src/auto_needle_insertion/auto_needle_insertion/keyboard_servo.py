@@ -1,5 +1,6 @@
-"""Keyboard servo node for commanding end-effector local motion."""
+"""Keyboard servo node for commanding transducer-origin local motion."""
 
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -11,6 +12,8 @@ from rclpy.duration import Duration
 from rclpy.node import Node
 from std_msgs.msg import String
 from tf2_ros import Buffer, TransformListener
+
+from auto_needle_insertion.utils.us_probe import USProbe
 
 
 def quat_to_rot(q: Quaternion) -> np.ndarray:
@@ -34,7 +37,7 @@ def quat_to_rot(q: Quaternion) -> np.ndarray:
 
 
 class MirrorServoNode(Node):
-    """Node that maps keyboard input to end-effector local motion."""
+    """Node that maps keyboard input to transducer-origin local motion."""
 
     def __init__(self):
         """Initialize the mirror servo node."""
@@ -43,6 +46,9 @@ class MirrorServoNode(Node):
         # --- Parameters (override in your launch if needed)
         self._declare_parameters()
         self._load_parameters()
+
+        self.us_probe = USProbe()
+        self.to_in_ee = self._load_transducer_calibration()
 
         # TF setup
         self.tf_buffer = Buffer()
@@ -86,7 +92,7 @@ class MirrorServoNode(Node):
 
         self.get_logger().info(
             f"Keyboard servo ready: [{self.glyph_topic}] drives "
-            f"[{self.ee_link}] in [{self.planning_frame}]"
+            f"[{self.ee_link}] about transducer origin in [{self.planning_frame}]"
         )
         self.get_logger().info(
             "Key map: W/S => +/-Y, A/D => +/-X, Q/E => +/-Z "
@@ -113,6 +119,14 @@ class MirrorServoNode(Node):
         self.declare_parameter("hold_timeout_sec", 0.02)
         self.declare_parameter("key_speed_mps", 0.3)
         self.declare_parameter("key_rot_speed_radps", 0.3)
+        self.declare_parameter(
+            "calibration_xml_path",
+            "./calibration/PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20260111_SRIL.xml",
+        )
+        self.declare_parameter(
+            "hand_eye_json_path",
+            "./calibration/hand_eye_20251231_075559.json",
+        )
 
     def _load_parameters(self) -> None:
         """Load parameter values from ROS parameter server."""
@@ -164,6 +178,23 @@ class MirrorServoNode(Node):
             self.get_parameter("key_rot_speed_radps")
             .get_parameter_value().double_value
         )
+        self.calibration_xml_path = (
+            self.get_parameter("calibration_xml_path")
+            .get_parameter_value().string_value
+        )
+        self.hand_eye_json_path = (
+            self.get_parameter("hand_eye_json_path")
+            .get_parameter_value().string_value
+        )
+
+    def _load_transducer_calibration(self) -> np.ndarray:
+        """Load probe calibration and return TO in EE transform."""
+        calibration_xml = Path(self.calibration_xml_path)
+        hand_eye_json = Path(self.hand_eye_json_path)
+        self.us_probe.load_calibrations(calibration_xml, hand_eye_json)
+        if self.us_probe.to_in_ee is None:
+            raise RuntimeError("US probe calibration failed to compute TO in EE.")
+        return self.us_probe.to_in_ee
 
     def now_stamp(self) -> Time:
         """Get current ROS time as Time message."""
@@ -180,6 +211,20 @@ class MirrorServoNode(Node):
         """Get current end-effector rotation matrix in planning frame."""
         t = self.lookup_transform(self.planning_frame, self.ee_link)
         return quat_to_rot(t.transform.rotation)
+
+    def get_current_ee_transform(self) -> np.ndarray:
+        """Get current end-effector transform in planning frame."""
+        t = self.lookup_transform(self.planning_frame, self.ee_link)
+        R = quat_to_rot(t.transform.rotation)
+        p = np.array([
+            t.transform.translation.x,
+            t.transform.translation.y,
+            t.transform.translation.z,
+        ])
+        T = np.eye(4)
+        T[:3, :3] = R
+        T[:3, 3] = p
+        return T
 
     def clamp(self, v: np.ndarray, max_norm: float) -> np.ndarray:
         """Clamp vector magnitude to maximum value."""
@@ -198,7 +243,7 @@ class MirrorServoNode(Node):
             return
 
         try:
-            R_ee = self.get_current_ee_rotation()
+            T_base_ee = self.get_current_ee_transform()
         except Exception as e:
             self.get_logger().warn(f"TF lookup EE failed: {e}")
             return
@@ -210,8 +255,16 @@ class MirrorServoNode(Node):
         if key in self.rot_key_map:
             omega_local = self.rot_key_map[key] * self.key_rot_speed
 
-        v_world_for_ee = self.clamp(R_ee @ v_local, self.speed_clamp)
-        omega_world_for_ee = self.clamp(R_ee @ omega_local, self.rot_clamp)
+        T_base_to = T_base_ee @ self.to_in_ee
+        R_base_to = T_base_to[:3, :3]
+        r_base = T_base_ee[:3, :3] @ self.to_in_ee[:3, 3]
+
+        v_base_to = R_base_to @ v_local
+        omega_base = R_base_to @ omega_local
+        v_base_ee = v_base_to - np.cross(omega_base, r_base)
+
+        v_world_for_ee = self.clamp(v_base_ee, self.speed_clamp)
+        omega_world_for_ee = self.clamp(omega_base, self.rot_clamp)
 
         self.last_commanded_local = v_local
         self.last_linear = v_world_for_ee
