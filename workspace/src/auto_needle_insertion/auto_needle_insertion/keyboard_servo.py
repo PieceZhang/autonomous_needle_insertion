@@ -110,7 +110,7 @@ class MirrorServoNode(Node):
         self.declare_parameter("twist_publish_rate_hz", 200.0)
         self.declare_parameter("speed_clamp_mps", 0.2)
         self.declare_parameter("rot_clamp_radps", 0.8)
-        self.declare_parameter("hold_timeout_sec", 0.25)
+        self.declare_parameter("hold_timeout_sec", 0.02)
         self.declare_parameter("key_speed_mps", 0.03)
         self.declare_parameter("key_rot_speed_radps", 0.3)
 
@@ -224,9 +224,11 @@ class MirrorServoNode(Node):
         """Publish twist command to servo."""
         # If we haven't received tool updates recently, publish zero
         now_sec = self.get_clock().now().nanoseconds * 1e-9
+        min_hold = 1.0 / max(self.twist_rate, 1.0)
+        hold_timeout = max(self.hold_timeout, min_hold)
         should_zero = (
             self.last_update_rostime is None or
-            (now_sec - self.last_update_rostime) > (2.0 * self.hold_timeout)
+            (now_sec - self.last_update_rostime) > hold_timeout
         )
 
         lin = np.zeros(3) if should_zero else self.last_linear

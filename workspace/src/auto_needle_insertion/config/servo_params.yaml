@@ -22,10 +22,11 @@ servo_node:
       # Safety & smoothing
       check_collisions: true
       collision_check_rate: 100.0   # Hz
-      smoothing_filter_plugin_name: "online_signal_smoothing::RuckigFilterPlugin"
+      # Disable smoothing for more immediate start/stop response from keyboard taps.
+      smoothing_filter_plugin_name: ""
       publish_period: 0.008            # 125 Hz -> match UR RTDE/joint_states
       max_expected_latency: 0.2        # de-jitter window; publish_period must be < (max_expected_latency/3)
-      incoming_command_timeout: 0.15   # quick halt if input stream hiccups
+      incoming_command_timeout: 0.05   # quick halt if input stream hiccups
       num_outgoing_halt_msgs_to_publish: 4
       publish_joint_positions: true
       publish_joint_velocities: false
