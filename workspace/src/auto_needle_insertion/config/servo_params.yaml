@@ -23,7 +23,7 @@ servo_node:
       check_collisions: true
       collision_check_rate: 100.0   # Hz
       # Disable smoothing for more immediate start/stop response from keyboard taps.
-      smoothing_filter_plugin_name: ""
+      smoothing_filter_plugin_name: "online_signal_smoothing::RuckigFilterPlugin"
       publish_period: 0.008            # 125 Hz -> match UR RTDE/joint_states
       max_expected_latency: 0.2        # de-jitter window; publish_period must be < (max_expected_latency/3)
       incoming_command_timeout: 0.05   # quick halt if input stream hiccups

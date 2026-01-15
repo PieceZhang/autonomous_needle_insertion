@@ -111,7 +111,7 @@ class MirrorServoNode(Node):
         self.declare_parameter("speed_clamp_mps", 0.2)
         self.declare_parameter("rot_clamp_radps", 0.8)
         self.declare_parameter("hold_timeout_sec", 0.02)
-        self.declare_parameter("key_speed_mps", 0.03)
+        self.declare_parameter("key_speed_mps", 0.3)
         self.declare_parameter("key_rot_speed_radps", 0.3)
 
     def _load_parameters(self) -> None:
