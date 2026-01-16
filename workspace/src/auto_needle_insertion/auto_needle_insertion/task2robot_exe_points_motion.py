@@ -8,7 +8,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import rclpy
@@ -54,6 +54,9 @@ class TaskInfoParamsPublisher(rclpy.node.Node):
     def update(self, key: str, value) -> None:
         self._payload[key] = value
 
+    def remove(self, key: str) -> None:
+        self._payload.pop(key, None)
+
     def _timer_cb(self) -> None:
         base_payload = {
             "TASK_NAME": "task2robot_exe_points_motion",
@@ -88,7 +91,16 @@ PREFERRED_TIP_LINKS = ["tool0", "ee_link"]
 INITIAL_AREA_DIAMETER = 0.12  # meters, used only for jitter fallback
 RAND_ROT_DEG = 10.0
 MAXIMUM_TRACKER_LOST = 5
-TARGET_CHOICES = ["P1", "P2", "P3"]
+DEFAULT_TARGET_IDS = ["1", "2", "3"]
+
+def _resolve_target_choices() -> List[str]:
+    env_raw = os.getenv("TARGET_P", "").strip()
+    if not env_raw:
+        return DEFAULT_TARGET_IDS.copy()
+    choices = [c.strip() for c in env_raw.split(",") if c.strip()]
+    return choices or DEFAULT_TARGET_IDS.copy()
+
+TARGET_CHOICES = _resolve_target_choices()
 
 # ----------------- Helpers -----------------
 def _controller_order_from_env() -> List[str]:
@@ -200,11 +212,7 @@ def homogeneous_to_pose_msg(T: np.ndarray) -> PoseStamped:
 
 
 # ----------------- Data classes -----------------
-@dataclass
-class TargetSet:
-    P1: Optional[np.ndarray]
-    P2: Optional[np.ndarray]
-    P3: Optional[np.ndarray]
+TargetSet = Dict[str, Optional[np.ndarray]]
 
 
 # ----------------- Core logic -----------------
@@ -424,18 +432,27 @@ class ExecPointsMotion:
         self.task_proc_pub.publish_step("5")
         print("Starting rosbag recording.", flush=True)
         self.task_info_pub.set_state("started")
-        self.rosbag.start_recording()
-
-        # Step 6: manual action
-        self.task_proc_pub.publish_step("6")
-        if not _wait_for_enter(self, "Drive the robot arm to perform the action, then press Enter to stop recording (or 'c' to cancel)..."):
-            return False
+        recording_started = False
+        try:
+            label = f"Task 2 Robot motion P{self.target_name}"
+            self.params_pub.update("task_label_FORCE", label)
+            self.rosbag.start_recording()
+            recording_started = True
+            # Step 6: manual action
+            self.task_proc_pub.publish_step("6")
+            if not _wait_for_enter(self, "Drive the robot arm to perform the action, then press Enter to stop recording (or 'c' to cancel)..."):
+                return False
+        finally:
+            if recording_started and not rclpy.ok():
+                self.params_pub.remove("task_label_FORCE")
 
         # Step 7: stop rosbag
         self.task_proc_pub.publish_step("7")
         print("Stopping rosbag recording.", flush=True)
         self.task_info_pub.set_state("stopped_success")
         self.rosbag.stop_recording("Success")
+        if recording_started:
+            self.params_pub.remove("task_label_FORCE")
         return True
 
     def close(self) -> None:
@@ -489,6 +506,17 @@ def _cancel_requested(task: ExecPointsMotion) -> bool:
 
 
 # ----------------- File loading -----------------
+def _get_target_from_env() -> str:
+    env_raw = os.getenv("TARGET_P", "").strip()
+    if not TARGET_CHOICES:
+        raise RuntimeError("TARGET_CHOICES is empty; set TARGET_P or use default targets 1,2,3")
+    if not env_raw or "," in env_raw:
+        return TARGET_CHOICES[0]
+    if env_raw not in TARGET_CHOICES:
+        raise RuntimeError(f"TARGET_P must be one of {TARGET_CHOICES}, got '{env_raw}'")
+    return env_raw
+
+
 def _load_latest_targets(base_dir: Path) -> TargetSet:
     candidates = sorted(base_dir.glob("task2_pose_*.json"))
     if not candidates:
@@ -508,7 +536,7 @@ def _load_latest_targets(base_dir: Path) -> TargetSet:
         return arr
 
     print(f"Loaded targets from {latest}", flush=True)
-    return TargetSet(P1=to_mat("P1"), P2=to_mat("P2"), P3=to_mat("P3"))
+    return dict(P1=to_mat("P1"), P2=to_mat("P2"), P3=to_mat("P3"))
 
 
 # ----------------- CLI -----------------
@@ -519,14 +547,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    args = parse_args()
     base_dir = Path(__file__).resolve().parent
     targets = _load_latest_targets(base_dir)
-    target_mat = getattr(targets, args.target)
+    target_name = _get_target_from_env()
+    target_mat = targets.get('P' + target_name)
     if target_mat is None:
-        raise RuntimeError(f"Target {args.target} not found in latest JSON")
+        raise RuntimeError(f"Target {target_name} not found in latest JSON")
 
-    task = ExecPointsMotion(args.target, targets)
+    task = ExecPointsMotion(target_name, targets)
     try:
         print("Looping steps 2-7; press 'c' to cancel at any prompt.", flush=True)
         while rclpy.ok():
