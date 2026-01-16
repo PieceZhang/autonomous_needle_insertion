@@ -3,13 +3,14 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 import rclpy
 
 from auto_needle_insertion.utils.us_probe import USProbe
 from auto_needle_insertion.utils.optical_tracking import read_instrument_pose
+from auto_needle_insertion.rosbag_recorder_control import KeystrokeTopicInput
 
 
 # ----------------- Math helpers -----------------
@@ -61,6 +62,12 @@ class PointRecorder:
             rclpy.init()
         self.node = rclpy.create_node("task2_record_points")
 
+        # keyboard listener node
+        self.key_input = KeystrokeTopicInput(
+            glyph_topic="/keyboard_listener/glyphkey_pressed",
+            keycode_topic="/keyboard_listener/key_pressed",
+        )
+
         self.us_probe = USProbe()
         calib_root = Path(__file__).resolve().parents[3] / "calibration"  # repo-root calibration dir
         xml_path = calib_root / "PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20260111_SRIL.xml"
@@ -78,6 +85,10 @@ class PointRecorder:
 
     def close(self) -> None:
         try:
+            self.key_input.destroy_node()
+        except Exception:
+            pass
+        try:
             self.node.destroy_node()
         except Exception:
             pass
@@ -86,10 +97,29 @@ class PointRecorder:
 
 
 # ----------------- Helpers -----------------
-def _prompt(msg: str) -> None:
-    if not sys.stdin or not sys.stdin.isatty():
-        raise SystemExit("This script requires an interactive terminal for prompts.")
-    input(msg)
+def _is_enter_key(token: Optional[str]) -> bool:
+    if token is None:
+        return False
+    t = token.strip().lower()
+    return t in ("", "enter", "return", "\n", "\r", "<enter>", "<return>", "<vk_13>", "65293", "<vk_65293>")
+
+
+def _is_cancel_key(token: Optional[str]) -> bool:
+    if token is None:
+        return False
+    return token.strip().lower() == "c"
+
+
+def _wait_for_enter(node: rclpy.node.Node, key_input: KeystrokeTopicInput, prompt: str, allow_cancel: bool = True) -> bool:
+    print(prompt, flush=True)
+    while rclpy.ok():
+        rclpy.spin_once(key_input, timeout_sec=0.05)
+        token = key_input.get_key()
+        if _is_enter_key(token):
+            return True
+        if allow_cancel and _is_cancel_key(token):
+            return False
+    return False
 
 
 def _timestamp_str() -> str:
@@ -101,16 +131,25 @@ def main() -> None:
     recorder = PointRecorder()
     points = RecordedPoints()
     try:
-        _prompt("Press Enter to record P1...")
+        if not _wait_for_enter(recorder.node, recorder.key_input, "Place probe for P1, then press Enter (or 'c' to cancel)..."):
+            print("Cancelled before P1.", flush=True)
+            return
         points.P1 = recorder.capture_to_in_tracker("P1")
 
-        _prompt("Press Enter to record P2...")
+        if not _wait_for_enter(recorder.node, recorder.key_input, "Place probe for P2, then press Enter (or 'c' to cancel)..."):
+            print("Cancelled before P2.", flush=True)
+            return
         points.P2 = recorder.capture_to_in_tracker("P2")
 
-        _prompt("Press Enter to record P3...")
+        if not _wait_for_enter(recorder.node, recorder.key_input, "Place probe for P3, then press Enter (or 'c' to cancel)..."):
+            print("Cancelled before P3.", flush=True)
+            return
         points.P3 = recorder.capture_to_in_tracker("P3")
 
-        _prompt("Press Enter to save all points...")
+        if not _wait_for_enter(recorder.node, recorder.key_input, "Press Enter to save all points (or 'c' to cancel without saving)..."):
+            print("Cancelled before saving. Points not written to file.", flush=True)
+            return
+
         ts = _timestamp_str()
         out_path = Path(__file__).resolve().parent / f"task2_pose_{ts}.json"
         payload: Dict[str, object] = {
