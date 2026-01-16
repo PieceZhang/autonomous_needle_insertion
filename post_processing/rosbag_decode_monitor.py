@@ -217,31 +217,66 @@ def sanitize_outcome(value: str) -> str:
     return "unknown"
 
 
-def _extract_task_label_from_msg(msg: Any) -> Optional[str]:
+def _extract_task_label_from_msg(msg: Any) -> Tuple[Optional[str], bool]:
     """
-    Extract task label from various message shapes, including:
-      - objects with .task_label_FORCE, .task_label or .label
-      - dicts with keys "task_label_FORCE", "task_label" / "label"
+    Extract task label and whether it was sourced from task_label_FORCE.
+      - objects with .task_label_FORCE, .task_label or .label (case-insensitive)
+      - dicts with keys "task_label_FORCE", "task_label" / "label" (case-insensitive)
       - std_msgs/String-like objects where .data is a JSON string containing {"task_label_FORCE": "..."} or {"task_label": "..."}.
+    Returns (label, is_force)
     """
     if msg is None:
-        return None
+        return None, False
 
-    def _pick_label(obj: Any) -> Optional[str]:
+    def _pick_label(obj: Any) -> Tuple[Optional[str], bool]:
         if isinstance(obj, dict):
-            # Prefer forced label if present
-            for key in ("task_label_FORCE", "task_label", "label"):
-                val = obj.get(key)
+            lower_map = {str(k).lower(): v for k, v in obj.items()}
+            for key in ("task_label_force", "task_label", "label"):
+                val = lower_map.get(key)
                 if isinstance(val, str) and val.strip():
-                    return val.strip()
+                    return val.strip(), key == "task_label_force"
+        return None, False
+
+    def _regex_extract_label(text: str) -> Tuple[Optional[str], bool]:
+        m = re.search(r'"?(task_label_force|task_label)"?\s*:\s*"([^"]+)"', text, flags=re.IGNORECASE)
+        if m:
+            return m.group(2).strip(), m.group(1).lower() == "task_label_force"
+        return None, False
+
+    def _from_data_field(raw: Any) -> Optional[str]:
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        s = raw.strip()
+        try:
+            parsed = json.loads(s)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            picked = _pick_label(parsed)
+            if picked:
+                return picked
+            nested = parsed.get("data")
+            if isinstance(nested, str) and nested.strip():
+                try:
+                    parsed2 = json.loads(nested)
+                except Exception:
+                    parsed2 = None
+                if isinstance(parsed2, dict):
+                    picked2 = _pick_label(parsed2)
+                    if picked2:
+                        return picked2
+        regex_lbl = _regex_extract_label(s)
+        if regex_lbl:
+            return regex_lbl
         return None
 
-    # 1) Direct attributes on decoded object (prefer FORCE)
+    # 1) Direct attributes on decoded object (prefer FORCE), case-insensitive
     for attr in ("task_label_FORCE", "task_label", "label"):
-        if hasattr(msg, attr):
-            val = getattr(msg, attr)
-            if isinstance(val, str) and val.strip():
-                return val.strip()
+        for candidate in (attr, attr.lower()):
+            if hasattr(msg, candidate):
+                val = getattr(msg, candidate)
+                if isinstance(val, str) and val.strip():
+                    return val.strip(), attr.lower() == "task_label_force"
 
     # 2) Convert to jsonable (dict/primitive) and check directly
     try:
@@ -250,38 +285,25 @@ def _extract_task_label_from_msg(msg: Any) -> Optional[str]:
         obj = None
 
     if isinstance(obj, dict):
-        direct = _pick_label(obj)
+        direct, is_force = _pick_label(obj)
         if direct:
-            return direct
+            return direct, is_force
 
-        # 3) std_msgs/String pattern: {"data": "<json string>"}
         inner = obj.get("data")
-        if isinstance(inner, str):
-            s = inner.strip()
-            if s:
-                # Try to parse JSON contained in the string
-                try:
-                    parsed = json.loads(s)
-                except Exception:
-                    parsed = None
-
-                if isinstance(parsed, dict):
-                    inside = _pick_label(parsed)
-                    if inside:
-                        return inside
-
-                    # Optional: one more level if task_label itself is nested strangely
-                    nested = parsed.get("data")
-                    if isinstance(nested, str) and nested.strip():
-                        try:
-                            parsed2 = json.loads(nested)
-                        except Exception:
-                            parsed2 = None
-                        if isinstance(parsed2, dict):
-                            inside2 = _pick_label(parsed2)
-                            if inside2:
-                                return inside2
-    return None
+        lbl, is_force = _from_data_field(inner)
+        if lbl:
+            return lbl, is_force
+    else:
+        if hasattr(msg, "data"):
+            lbl, is_force = _from_data_field(getattr(msg, "data"))
+            if lbl:
+                return lbl, is_force
+        text = str(msg).strip()
+        if text:
+            regex_lbl, is_force = _regex_extract_label(text)
+            if regex_lbl:
+                return regex_lbl, is_force
+    return None, False
 
 
 def _extract_task_outcome_from_msg(msg: Any) -> Optional[str]:
@@ -301,14 +323,15 @@ def _extract_task_outcome_from_msg(msg: Any) -> Optional[str]:
 
 
 def extract_task_label_and_outcome(bag_dir: Path, topic_specs: Dict[str, str]) -> Tuple[str, str]:
-    task_label = "unknown"
+    task_label_force: Optional[str] = None
+    task_label_any: Optional[str] = None
     task_outcome = "unknown"
 
     candidate_label_topics = [t for t in topic_specs if "task_info" in t]
     candidate_outcome_topics = [t for t in topic_specs if "task_info_collection_states" in t or "task_info" in t]
 
     if not candidate_label_topics and not candidate_outcome_topics:
-        return task_label, task_outcome
+        return task_label_force or "unknown", task_outcome
 
     decoder_factory = DecoderFactory()
     decoder_cache: Dict[Tuple[int, str], Callable[[bytes], Any]] = {}
@@ -324,7 +347,6 @@ def extract_task_label_and_outcome(bag_dir: Path, topic_specs: Dict[str, str]) -
             decoder_cache[key] = dec
         return dec
 
-    found_label = False
     found_outcome = False
 
     for mcap_path in iter_mcap_files(bag_dir):
@@ -348,14 +370,16 @@ def extract_task_label_and_outcome(bag_dir: Path, topic_specs: Dict[str, str]) -
             for schema, channel, message in reader.iter_messages():
                 topic = channel.topic
 
-                if (not found_label) and topic in candidate_label_topics:
+                if topic in candidate_label_topics and task_label_force is None:
                     try:
                         dec = get_decoder(schema, channel)
                         msg = dec(message.data)
-                        lbl = _extract_task_label_from_msg(msg)
+                        lbl, is_force = _extract_task_label_from_msg(msg)
                         if lbl:
-                            task_label = sanitize_label(lbl)
-                            found_label = True
+                            if is_force:
+                                task_label_force = sanitize_label(lbl)
+                            elif task_label_any is None:
+                                task_label_any = sanitize_label(lbl)
                     except Exception:
                         pass
 
@@ -370,15 +394,16 @@ def extract_task_label_and_outcome(bag_dir: Path, topic_specs: Dict[str, str]) -
                     except Exception:
                         pass
 
-                if found_label and found_outcome:
+                if (task_label_force is not None) and found_outcome:
                     break
-            if found_label and found_outcome:
+            if (task_label_force is not None) and found_outcome:
                 break
         finally:
             if not is_zstd:
                 stream.close()
 
-    return task_label, task_outcome
+    final_label = task_label_force or task_label_any or "unknown"
+    return final_label, task_outcome
 
 
 def iter_mcap_files(bag_dir: Path) -> Iterable[Path]:
