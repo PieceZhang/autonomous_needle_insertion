@@ -152,6 +152,7 @@ class ManualRecordTask:
 
             # Start rosbag
             self.task_proc_pub.publish_step(f"start_{action_name}")
+            self.params_pub.update("task_label_FORCE", f"Task 2 Manual Action {idx}")
             self.task_info_pub.set_state("started")
             print(f"Starting rosbag for {action_name}.", flush=True)
             self.rosbag.start_recording()
