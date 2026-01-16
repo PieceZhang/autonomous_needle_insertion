@@ -220,23 +220,24 @@ def sanitize_outcome(value: str) -> str:
 def _extract_task_label_from_msg(msg: Any) -> Optional[str]:
     """
     Extract task label from various message shapes, including:
-      - objects with .task_label or .label
-      - dicts with keys "task_label" / "label"
-      - std_msgs/String-like objects where .data is a JSON string containing {"task_label": "..."}.
+      - objects with .task_label_FORCE, .task_label or .label
+      - dicts with keys "task_label_FORCE", "task_label" / "label"
+      - std_msgs/String-like objects where .data is a JSON string containing {"task_label_FORCE": "..."} or {"task_label": "..."}.
     """
     if msg is None:
         return None
 
     def _pick_label(obj: Any) -> Optional[str]:
         if isinstance(obj, dict):
-            for key in ("task_label", "label"):
+            # Prefer forced label if present
+            for key in ("task_label_FORCE", "task_label", "label"):
                 val = obj.get(key)
                 if isinstance(val, str) and val.strip():
                     return val.strip()
         return None
 
-    # 1) Direct attributes on decoded object
-    for attr in ("task_label", "label"):
+    # 1) Direct attributes on decoded object (prefer FORCE)
+    for attr in ("task_label_FORCE", "task_label", "label"):
         if hasattr(msg, attr):
             val = getattr(msg, attr)
             if isinstance(val, str) and val.strip():
