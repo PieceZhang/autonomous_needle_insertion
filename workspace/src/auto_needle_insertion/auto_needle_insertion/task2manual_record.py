@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 
 NODE_NAME = "task2manual_record"
 TASK_NAME = "task2manual_record"
-DELAY_START_ROSBAG_S = 0.5
-DELAY_STOP_ROSBAG_S = 0.5
+DELAY_START_ROSBAG_S = 1.5
+DELAY_STOP_ROSBAG_S = 1.0
 ACTIONS = ["Action1", "Action2", "Action3"]
 
 

@@ -1,4 +1,3 @@
-import argparse
 import json
 import logging
 import math
@@ -26,6 +25,7 @@ from auto_needle_insertion.rosbag_recorder_control import (
     RosbagController,
     TaskInfoPublisher,
     KeystrokeTopicInput,
+    sleep_with_spin
 )
 
 # ----------------- Publishers -----------------
@@ -54,6 +54,10 @@ class TaskInfoParamsPublisher(rclpy.node.Node):
 
     def update(self, key: str, value) -> None:
         self._payload[key] = value
+
+    def remove(self, key: str) -> None:
+        # Remove a key so it stops being published in the periodic payload
+        self._payload.pop(key, None)
 
     def _timer_cb(self) -> None:
         base_payload = {
@@ -90,7 +94,10 @@ PREFERRED_TIP_LINKS = ["tool0", "ee_link"]
 INITIAL_AREA_DIAMETER = 0.12  # meters
 RAND_ROT_DEG = 10.0
 MAXIMUM_TRACKER_LOST = 5
-TARGET_CHOICES = ["P1", "P2", "P3"]
+TARGET_CHOICES = ["1", "2", "3"]
+
+DELAY_START_ROSBAG_S = 1.5
+DELAY_STOP_ROSBAG_S = 1.0
 
 # ----------------- Helpers -----------------
 def _controller_order_from_env() -> List[str]:
@@ -223,12 +230,14 @@ class ExecPointsTask:
 
         self.task_info_pub = TaskInfoPublisher(topic_name="task_info_collection_states")
         self.task_proc_pub = TaskProcedurePublisher(topic_name="task_procedure")
+        self.params_pub = TaskInfoParamsPublisher(topic_name="/task_info", hz=1.0)
         self.key_input = KeystrokeTopicInput(
             glyph_topic="/keyboard_listener/glyphkey_pressed",
             keycode_topic="/keyboard_listener/key_pressed",
         )
         self.executor.add_node(self.task_info_pub)
         self.executor.add_node(self.task_proc_pub)
+        self.executor.add_node(self.params_pub)
         self.executor.add_node(self.key_input)
 
         self._spin_thread = threading.Thread(target=self._spin_executor, daemon=True)
@@ -444,18 +453,28 @@ class ExecPointsTask:
 
         self.task_proc_pub.publish_step("5")
         print("Starting rosbag recording.", flush=True)
-        self.task_info_pub.set_state("started")
-        self.rosbag.start_recording()
+        recording_started = False
+        try:
+            self.task_info_pub.set_state("started")
+            self.rosbag.start_recording()
+            # Publish label strictly while rosbag is running
+            self.params_pub.update("task_label_FORCE", f"Task 2 Robot place P{self.target_name}")
+            recording_started = True
+            sleep_with_spin(self.executor, DELAY_START_ROSBAG_S)
 
-        self.task_proc_pub.publish_step("6")
-        print(f"Moving to target {self.target_name}.", flush=True)
-        self._plan_and_execute_to_to_frame(target_to_in_tracker, label=self.target_name)
+            self.task_proc_pub.publish_step("6")
+            print(f"Moving to target {self.target_name}.", flush=True)
+            self._plan_and_execute_to_to_frame(target_to_in_tracker, label=self.target_name)
 
-        self.task_proc_pub.publish_step("7")
-        print("Stopping rosbag recording.", flush=True)
-        self.task_info_pub.set_state("stopped_success")
-        self.rosbag.stop_recording("Success")
-        return True
+            self.task_proc_pub.publish_step("7")
+            print("Stopping rosbag recording.", flush=True)
+            self.task_info_pub.set_state("stopped_success")
+            self.rosbag.stop_recording("Success")
+            sleep_with_spin(self.executor, DELAY_STOP_ROSBAG_S)
+            return True
+        finally:
+            if recording_started:
+                self.params_pub.remove("task_label_FORCE")
 
     def close(self) -> None:
         self._spin_running = False
@@ -523,25 +542,23 @@ def _load_latest_targets(base_dir: Path) -> TargetSet:
         _check_hmat(arr, key)
         return arr
     print(f"Loaded targets from {latest}", flush=True)
+    # JSON still stores keys "P1", "P2", "P3"
     return TargetSet(P1=to_mat("P1"), P2=to_mat("P2"), P3=to_mat("P3"))
 
 
 # ----------------- CLI -----------------
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Execute task2 points loop")
-    parser.add_argument("--target", choices=TARGET_CHOICES, default=os.getenv("TARGET_P", "P1"), help="Target point name")
-    return parser.parse_args()
-
-
 def main() -> None:
-    args = parse_args()
     base_dir = Path(__file__).resolve().parent
     targets = _load_latest_targets(base_dir)
-    target_mat = getattr(targets, args.target)
-    if target_mat is None:
-        raise RuntimeError(f"Target {args.target} not found in latest JSON")
 
-    task = ExecPointsTask(args.target, targets)
+    # Map env TARGET_P ("1","2","3") to TargetSet attributes ("P1","P2","P3")
+    target_id = os.getenv("TARGET_P", "1")
+    attr_name = f"P{target_id}"
+    target_mat = getattr(targets, attr_name, None)
+    if target_mat is None:
+        raise RuntimeError(f"Target {target_id} not found in latest JSON")
+
+    task = ExecPointsTask(target_id, targets)
     try:
         print("Step 2: Move robot to C0 then press Enter (keyboard listener) to capture.", flush=True)
         if not _wait_for_enter(task, "Press Enter to capture C0 (or 'c' to cancel)..."):
