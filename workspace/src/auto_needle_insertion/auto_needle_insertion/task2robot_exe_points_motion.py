@@ -53,9 +53,13 @@ class TaskInfoParamsPublisher(rclpy.node.Node):
 
     def update(self, key: str, value) -> None:
         self._payload[key] = value
+        if key == "task_label_FORCE":
+            self._publish_task_label_force(value)
 
     def remove(self, key: str) -> None:
         self._payload.pop(key, None)
+        if key == "task_label_FORCE":
+            self._publish_task_label_force(None)
 
     def _timer_cb(self) -> None:
         base_payload = {
@@ -71,6 +75,11 @@ class TaskInfoParamsPublisher(rclpy.node.Node):
         payload = {**base_payload, **self._payload}
         msg = String()
         msg.data = json.dumps(payload)
+        self._pub.publish(msg)
+
+    def _publish_task_label_force(self, value) -> None:
+        msg = String()
+        msg.data = json.dumps({"task_label_FORCE": value})
         self._pub.publish(msg)
 
 
