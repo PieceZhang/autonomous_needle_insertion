@@ -651,12 +651,13 @@ def convert_one_episode(
         }
         frame.update(static_meta)
 
-        frame["task"] = "Needle Retrieval"
+        # frame["task"] = "Needle Retrieval"
 
         keep = set(expected_keys) | {"task"}
         frame = {k: v for k, v in frame.items() if k in keep}
+        TASK_NAME = "Needle Retrieval"  # task4.1
 
-        dataset.add_frame(frame)
+        dataset.add_frame(frame, task=TASK_NAME)
 
     dataset.save_episode()
 
@@ -731,7 +732,7 @@ def main():
     # if raw_root.is_dir() and raw_root.name.startswith("rosbag2_"):
     #     episode_dirs = [raw_root]
     # else:
-    episode_dirs = sorted([p for p in raw_root.glob("rosbag2_*") if p.is_dir()])
+    episode_dirs = sorted([p for p in raw_root.glob("*/rosbag2_*") if p.is_dir()])
 
     if args.max_episodes > 0:
         episode_dirs = episode_dirs[: args.max_episodes]
@@ -806,7 +807,7 @@ def main():
             traceback.print_exc()
             continue
 
-    dataset.finalize()
+    # dataset.finalize()
     print(f"✅ Done. LeRobot dataset saved at: {out_root}")
 
 
