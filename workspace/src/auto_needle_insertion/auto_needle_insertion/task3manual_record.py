@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 
 NODE_NAME = "task3manual_record"
 TASK_NAME = "task3manual_record"
-DELAY_START_ROSBAG_S = 0.5
-DELAY_STOP_ROSBAG_S = 0.5
+DELAY_START_ROSBAG_S = 1.0
+DELAY_STOP_ROSBAG_S = 1.0
 PATH_RECORD_DURATION_S = 3.0
 
 
@@ -148,6 +148,7 @@ class ManualRecordTask:
 
         # Step 3: place probe
         self.task_proc_pub.publish_step("place_probe_tumor")
+        # make sure initial label is cleared or neutral if desired
         if not _wait_for_enter(
             self.key_input,
             "Place the probe around the tumor location, then press Enter (or 'c' to cancel)...",
@@ -155,17 +156,20 @@ class ManualRecordTask:
             return False
 
         # Step 4: start rosbag for insertion plane
-        self.task_proc_pub.publish_step("plane_start")
+        self.task_proc_pub.publish_step("find_plane_start")
+        # update task label for plane phase
+        self.params_pub.update("task_label_FORCE", "Task 3 Manual plane")
         self.task_info_pub.set_state("started")
         print("Starting rosbag: find optimal insertion plane.", flush=True)
         self.rosbag.start_recording()
         sleep_with_spin(self.executor, DELAY_START_ROSBAG_S)
 
         # Step 5: stop rosbag and prompt for path determination
-        self.task_proc_pub.publish_step("plane_stop")
+        self.task_proc_pub.publish_step("find_plane_stop")
         if not _wait_for_enter(
             self.key_input,
-            "Press Enter to stop recording (plane found). Probe should remain still while determining path (or 'c' to cancel)...",
+            "Press Enter to start recording when insertion path found. "
+            "Probe should remain still while determining path (or 'c' to cancel)...",
         ):
             return False
         self.task_info_pub.set_state("stopped_success")
@@ -173,15 +177,23 @@ class ManualRecordTask:
         self.rosbag.stop_recording("Success")
         sleep_with_spin(self.executor, DELAY_STOP_ROSBAG_S)
 
+        if not _wait_for_enter(
+            self.key_input,
+            "Press Enter to stop recording (plane found). "
+            "Probe should remain still while determining path (or 'c' to cancel)...",
+        ):
+            return False
         # Step 6: start rosbag for insertion path (auto stop after duration)
-        self.task_proc_pub.publish_step("path_start")
+        self.task_proc_pub.publish_step("find_insertion_path_start")
+        # update task label for path phase
+        self.params_pub.update("task_label_FORCE", "Task 3 Manual path")
         self.task_info_pub.set_state("started")
         print("Starting rosbag: determine insertion path (probe should stay fixed).", flush=True)
         self.rosbag.start_recording()
         sleep_with_spin(self.executor, PATH_RECORD_DURATION_S)
 
         # Step 7: stop rosbag after duration
-        self.task_proc_pub.publish_step("path_stop")
+        self.task_proc_pub.publish_step("find_insertion_path_stop")
         self.task_info_pub.set_state("stopped_success")
         print("Stopping rosbag (path).", flush=True)
         self.rosbag.stop_recording("Success")
