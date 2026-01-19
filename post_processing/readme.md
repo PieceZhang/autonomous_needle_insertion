@@ -90,7 +90,7 @@ python task4_to_lerobot.py \
 
 ---
 
-## Shared Visualization (All Tasks)
+## Shared Visualization from Lerobot Format(All Tasks)
 
 All tasks use the **same visualization script** to inspect converted LeRobot datasets.
 
@@ -106,6 +106,14 @@ This viewer supports:
 * numeric state / action verification
 
 ---
+
+## Shared Visualization from Rosbag_decode(All Tasks)
+
+```bash
+python task_viz_lerobot_gui.py \
+  --raw_root <ROSBAG_DECODE_ROOT>/<TASK_OUTPUT_DIR>
+  --task task4 || task1
+```
 
 ## Shell Script Shortcuts
 
