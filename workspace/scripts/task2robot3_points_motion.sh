@@ -1,4 +1,5 @@
 source ./install/setup.bash
+echo 'Remember to set TARGET_P'
 export TARGET_P=1 && ros2 launch auto_needle_insertion dataset.launch.py mode:=task2robot_exe_points_motion
 pkill -INT -f "ros2 bag record"
 bash ./scripts/send_rosbag_stop_command.sh

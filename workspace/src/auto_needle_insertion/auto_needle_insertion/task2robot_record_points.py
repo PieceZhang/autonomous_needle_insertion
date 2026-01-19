@@ -52,7 +52,9 @@ def quat_to_T(quat):
 class RecordedPoints:
     P1: np.ndarray | None = None
     P2: np.ndarray | None = None
+    P2e: np.ndarray | None = None
     P3: np.ndarray | None = None
+    P3e: np.ndarray | None = None
 
 
 # ----------------- Core logic -----------------
@@ -141,10 +143,20 @@ def main() -> None:
             return
         points.P2 = recorder.capture_to_in_tracker("P2")
 
+        if not _wait_for_enter(recorder.node, recorder.key_input, "Place probe for P2e, then press Enter (or 'c' to cancel)..."):
+            print("Cancelled before P2e.", flush=True)
+            return
+        points.P2e = recorder.capture_to_in_tracker("P2e")
+
         if not _wait_for_enter(recorder.node, recorder.key_input, "Place probe for P3, then press Enter (or 'c' to cancel)..."):
             print("Cancelled before P3.", flush=True)
             return
         points.P3 = recorder.capture_to_in_tracker("P3")
+
+        if not _wait_for_enter(recorder.node, recorder.key_input, "Place probe for P3e, then press Enter (or 'c' to cancel)..."):
+            print("Cancelled before P3e.", flush=True)
+            return
+        points.P3e = recorder.capture_to_in_tracker("P3e")
 
         if not _wait_for_enter(recorder.node, recorder.key_input, "Press Enter to save all points (or 'c' to cancel without saving)..."):
             print("Cancelled before saving. Points not written to file.", flush=True)
@@ -157,7 +169,9 @@ def main() -> None:
             "points": {
                 "P1": points.P1.tolist() if points.P1 is not None else None,
                 "P2": points.P2.tolist() if points.P2 is not None else None,
+                "P2e": points.P2e.tolist() if points.P2e is not None else None,
                 "P3": points.P3.tolist() if points.P3 is not None else None,
+                "P3e": points.P3e.tolist() if points.P3e is not None else None,
             },
         }
         out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
