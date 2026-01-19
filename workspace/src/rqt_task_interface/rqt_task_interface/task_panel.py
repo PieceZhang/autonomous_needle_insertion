@@ -40,7 +40,10 @@ class TaskPanel(Plugin):
         # Task Label
         self.task_combo = QtWidgets.QComboBox()
         self.task_combo.setEditable(True)
-        self.task_combo.addItems(['Task 1', 'Task 2', 'Task 3', 'Task 4.1', 'Task 4.2'])
+        self.task_combo.addItems(['Task 1',
+                                  'Task 2', 'Task 2 Manual',
+                                  'Task 3', 'Task 3 Manual',
+                                  'Task 4.1', 'Task 4.2'])
         self.task_combo.setCurrentIndex(-1)
         self.task_combo.lineEdit().setPlaceholderText('Select or type...')
         form.addRow('Task Label:', self.task_combo)
@@ -110,7 +113,7 @@ class TaskPanel(Plugin):
         # Speed (NEW)
         self.speed_combo = QtWidgets.QComboBox()
         self.speed_combo.setEditable(True)
-        speed_options = ['10', '20', '30', '40', '50', '60', '70', '80', '90', '100']
+        speed_options = ['NA', '10', '20', '30', '40', '50', '60', '70', '80', '90', '100']
         self.speed_combo.addItems(speed_options)
         self.speed_combo.setCurrentText('50')
         self.speed_combo.lineEdit().setPlaceholderText('Select or type...')

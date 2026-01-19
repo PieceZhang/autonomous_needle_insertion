@@ -574,6 +574,15 @@ class USVisualizer(Node):
         if (np.isfinite([u_body, v_body, u_tip, v_tip]).all()):
             self.draw_dashed_line(frame, (u_body, v_body), (u_tip, v_tip),
                                   color=color_axis, thickness=2, dash_length=10, gap_length=6)
+            body_px = np.array([u_body, v_body], dtype=float)
+            tip_px = np.array([u_tip, v_tip], dtype=float)
+            axis_vec = tip_px - body_px
+            axis_len = float(np.linalg.norm(axis_vec))
+            if axis_len > 1e-3:
+                extension_px = 2400
+                extended_tip = tip_px + (axis_vec / axis_len) * extension_px
+                extended_tip_pt = (int(round(extended_tip[0])), int(round(extended_tip[1])))
+                cv2.line(frame, (u_body, v_body), extended_tip_pt, color_axis, 1, cv2.LINE_AA)
         else:
             self.get_logger().debug("Needle body or tip projection not finite; skip axis drawing")
 
