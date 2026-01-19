@@ -110,7 +110,7 @@ This viewer supports:
 ## Shared Visualization from Rosbag_decode(All Tasks)
 
 ```bash
-python task_viz_lerobot_gui.py \
+python task_viz.py \
   --raw_root <ROSBAG_DECODE_ROOT>/<TASK_OUTPUT_DIR>
   --task task4 || task1
 ```

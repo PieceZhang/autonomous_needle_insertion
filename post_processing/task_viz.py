@@ -356,14 +356,14 @@ class RawDecodeViewer:
             self.plot_defs = [
                 ("ati_ft_wrench", "ft", "FT", "multi6"),
                 ("tcp_pose (x)", "tcp_x", "tcp_x", "single"),
-                ("tcp_pose (roll)", "tcp_roll", "tcp_roll(rad)", "single"),
+                ("tcp_pose (yaw)", "tcp_yaw", "tcp_yaw(rad)", "single"),
                 ("ndi_us_probe (x)", "probe_x", "probe_x", "single"),
                 ("ndi_us_probe (roll)", "probe_roll", "probe_roll(rad)", "single"),
             ]
         else:
             self.plot_defs = [
                 ("tcp_pose (x)", "tcp_x", "tcp_x", "single"),
-                ("tcp_pose (roll)", "tcp_roll", "tcp_roll(rad)", "single"),
+                ("tcp_pose (yaw)", "tcp_yaw", "tcp_yaw(rad)", "single"),
                 ("ndi_us_probe (x)", "probe_x", "probe_x", "single"),
                 ("ndi_us_probe (roll)", "probe_roll", "probe_roll(rad)", "single"),
                 ("ndi_needle (x)", "needle_x", "needle_x", "single"),
@@ -681,9 +681,14 @@ class RawDecodeViewer:
         probe_roll = c.probe_rpy[:, 0]
         needle_roll = c.needle_rpy[:, 0] if c.needle_rpy is not None else None
 
+        # euler yaw
+        tcp_yaw = c.tcp_rpy[:, 2]
+        probe_yaw = c.probe_rpy[:, 2]
+        needle_yaw = c.needle_rpy[:, 2] if c.needle_rpy is not None else None
+
         series = {
             "tcp_x": tcp_x,
-            "tcp_roll": tcp_roll,
+            "tcp_yaw": tcp_yaw,
             "probe_x": probe_x,
             "probe_roll": probe_roll,
             "needle_x": needle_x,
@@ -700,11 +705,11 @@ class RawDecodeViewer:
                 if ft is None:
                     ft = np.full((c.T, 6), np.nan, dtype=np.float32)
                 ax.plot(t, ft[:, 0], label="Fx")
-                ax.plot(t, ft[:, 1], label="Fy")
-                ax.plot(t, ft[:, 2], label="Fz")
-                ax.plot(t, ft[:, 3], label="Tx")
-                ax.plot(t, ft[:, 4], label="Ty")
-                ax.plot(t, ft[:, 5], label="Tz")
+                # ax.plot(t, ft[:, 1], label="Fy")
+                # ax.plot(t, ft[:, 2], label="Fz")
+                # ax.plot(t, ft[:, 3], label="Tx")
+                # ax.plot(t, ft[:, 4], label="Ty")
+                # ax.plot(t, ft[:, 5], label="Tz")
                 ax.legend(loc="upper right", fontsize=7)
 
                 y0 = ft[:, 0]
@@ -758,9 +763,14 @@ class RawDecodeViewer:
         probe_roll = c.probe_rpy[:, 0]
         needle_roll = c.needle_rpy[:, 0] if c.needle_rpy is not None else None
 
+        # euler yaw
+        tcp_yaw = c.tcp_rpy[:, 2]
+        probe_yaw = c.probe_rpy[:, 2]
+        needle_yaw = c.needle_rpy[:, 2] if c.needle_rpy is not None else None
+
         series = {
             "tcp_x": tcp_x,
-            "tcp_roll": tcp_roll,
+            "tcp_yaw": tcp_yaw,
             "probe_x": probe_x,
             "probe_roll": probe_roll,
             "needle_x": needle_x,
@@ -921,7 +931,7 @@ class RawDecodeViewer:
         tcp_x = float(c.tcp7[i, 0])
         probe_x = float(c.probe7[i, 0])
 
-        tcp_roll = float(c.tcp_rpy[i, 0])
+        tcp_yaw = float(c.tcp_rpy[i, 2])
         probe_roll = float(c.probe_rpy[i, 0])
         # 你想显示全 rpy 的话，可以用：
         # tcp_r, tcp_p, tcp_y = map(float, c.tcp_rpy[i])
@@ -932,12 +942,12 @@ class RawDecodeViewer:
             needle_x = float(c.needle7[i, 0])
             needle_roll = float(c.needle_rpy[i, 0]) if c.needle_rpy is not None else float("nan")
             self.bar2.set(
-                f"tcp_x={tcp_x:.3f} tcp_roll={tcp_roll:.3f} | probe_x={probe_x:.3f} probe_roll={probe_roll:.3f} | "
+                f"tcp_x={tcp_x:.3f} tcp_yaw={tcp_yaw:.3f} | probe_x={probe_x:.3f} probe_roll={probe_roll:.3f} | "
                 f"needle_x={needle_x:.3f} needle_roll={needle_roll:.3f}"
             )
         else:
             self.bar2.set(
-                f"tcp_x={tcp_x:.3f} tcp_roll={tcp_roll:.3f} | probe_x={probe_x:.3f} probe_roll={probe_roll:.3f}"
+                f"tcp_x={tcp_x:.3f} tcp_yaw={tcp_yaw:.3f} | probe_x={probe_x:.3f} probe_roll={probe_roll:.3f}"
             )
 
         if c.ft6 is not None and np.isfinite(c.ft6[i]).any():
