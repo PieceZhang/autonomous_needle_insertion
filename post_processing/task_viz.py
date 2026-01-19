@@ -18,6 +18,7 @@ import matplotlib
 matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import time
 
 
 # -------------------------
@@ -422,8 +423,35 @@ class RawDecodeViewer:
         self.paned.add(self.left, weight=3)
         self.paned.add(self.right, weight=1)
 
-        self.img_label = ttk.Label(self.left)
-        self.img_label.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        # self.img_label = ttk.Label(self.left)
+        # self.img_label.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        # ---- Scrollable video area (Canvas + vertical scrollbar) ----
+        self.video_frame = ttk.Frame(self.left)
+        self.video_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        self.vscroll = ttk.Scrollbar(self.video_frame, orient=tk.VERTICAL)
+        self.vscroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.canvas_vid = tk.Canvas(self.video_frame, yscrollcommand=self.vscroll.set, highlightthickness=0)
+        self.canvas_vid.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.vscroll.config(command=self.canvas_vid.yview)
+
+        # store image id on canvas
+        self._canvas_img_id = None
+        self._tk_img = None
+
+        def _on_canvas_configure(event):
+            # keep scrollregion updated when canvas size changes
+            self.canvas_vid.configure(scrollregion=self.canvas_vid.bbox("all"))
+
+        self.canvas_vid.bind("<Configure>", _on_canvas_configure)
+
+        # mouse wheel scroll (Windows/Linux)
+        self.canvas_vid.bind_all("<MouseWheel>", lambda e: self.canvas_vid.yview_scroll(int(-1*(e.delta/120)), "units"))
+        # macOS wheel (may differ)
+        self.canvas_vid.bind_all("<Button-4>", lambda e: self.canvas_vid.yview_scroll(-3, "units"))
+        self.canvas_vid.bind_all("<Button-5>", lambda e: self.canvas_vid.yview_scroll(3, "units"))
+
 
         self.slider_var = tk.DoubleVar(value=0.0)
         self.slider = ttk.Scale(
@@ -769,7 +797,55 @@ class RawDecodeViewer:
             return np.zeros(fallback_shape, dtype=np.uint8)
         return pick_frame_by_time(stream["frames"], stream["times_ns"], t_ns)
 
-    def _update_image(self):
+    # def _update_image(self):
+    #     c = self.cache[self.cur_ep]
+    #     i = int(np.clip(self.cur_i, 0, c.T - 1))
+    #     t_ns = int(c.frame_times_ns[i])
+
+    #     img_us = self._get_frame_rgb(c.streams["ultrasound"], t_ns, (1080, 1920, 3))
+    #     img_room = self._get_frame_rgb(c.streams["room"], t_ns, (768, 1024, 3))
+    #     img_wrgb = self._get_frame_rgb(c.streams["wrist_rgb"], t_ns, (360, 640, 3))
+    #     img_wdepth = self._get_frame_rgb(c.streams["wrist_depth"], t_ns, (360, 640, 3))
+
+    #     room_present = bool(c.streams["room"]["present"])
+
+    #     if self.task == "task1":
+    #         names = ["ultrasound", "room", "wrist_rgb", "wrist_depth"]
+    #         cols = 2
+    #     else:
+    #         img_sync = self._get_frame_rgb(c.streams["us_sync"], t_ns, img_us.shape)
+    #         if not room_present:
+    #             names = ["ultrasound", "us_sync", "wrist_rgb", "wrist_depth"]
+    #             cols = 2
+    #         else:
+    #             names = ["ultrasound", "room", "wrist_rgb", "wrist_depth", "us_sync", "blank"]
+    #             cols = 2
+
+    #     name_to_img = {
+    #         "ultrasound": img_us,
+    #         "room": img_room,
+    #         "wrist_rgb": img_wrgb,
+    #         "wrist_depth": img_wdepth,
+    #     }
+    #     if self.task == "task4":
+    #         name_to_img["us_sync"] = img_sync
+    #         name_to_img["blank"] = np.zeros_like(img_sync)
+
+    #     tile_w = max(int(self.mosaic_width // cols), 360)
+
+    #     tiles = []
+    #     for nm in names:
+    #         im = name_to_img[nm]
+    #         im2 = resize_keep_aspect_rgb(im, tile_w)
+    #         if nm != "blank":
+    #             im2 = draw_stream_label(im2, nm)
+    #         tiles.append(im2)
+
+    #     mosaic = stack_grid(tiles, cols=cols)
+
+    #     self._tk_img = rgb_to_tk(mosaic)
+    #     self.img_label.configure(image=self._tk_img)
+    def _make_current_mosaic_rgb(self) -> np.ndarray:
         c = self.cache[self.cur_ep]
         i = int(np.clip(self.cur_i, 0, c.T - 1))
         t_ns = int(c.frame_times_ns[i])
@@ -814,9 +890,21 @@ class RawDecodeViewer:
             tiles.append(im2)
 
         mosaic = stack_grid(tiles, cols=cols)
+        return mosaic
+
+    def _update_image(self):
+        mosaic = self._make_current_mosaic_rgb()
 
         self._tk_img = rgb_to_tk(mosaic)
-        self.img_label.configure(image=self._tk_img)
+
+        if self._canvas_img_id is None:
+            self._canvas_img_id = self.canvas_vid.create_image(0, 0, anchor="nw", image=self._tk_img)
+        else:
+            self.canvas_vid.itemconfig(self._canvas_img_id, image=self._tk_img)
+
+        # update scroll region to allow scrolling
+        self.canvas_vid.config(scrollregion=(0, 0, mosaic.shape[1], mosaic.shape[0]))
+
 
     def update_all(self):
         c = self.cache[self.cur_ep]
