@@ -158,7 +158,7 @@ class ManualRecordTask:
         # make sure initial label is cleared or neutral if desired
         if not _wait_for_enter(
             self.key_input,
-            "Place the probe around the tumor location, then press Enter (or 'c' to cancel)...",
+            "Place the probe around the tumor location, then press Enter to start recording (or 'c' to cancel)...",
         ):
             return False
 
@@ -175,7 +175,7 @@ class ManualRecordTask:
         self.task_proc_pub.publish_step("find_plane_stop")
         if not _wait_for_enter(
             self.key_input,
-            "Press Enter to start recording when insertion path found. "
+            "Press Enter to stop recording (plane found). "
             "Probe should remain still while determining path (or 'c' to cancel)...",
         ):
             return False
@@ -186,7 +186,7 @@ class ManualRecordTask:
 
         if not _wait_for_enter(
             self.key_input,
-            "Press Enter to stop recording (plane found). "
+            "Press Enter to record insertion path (record a short segment). "
             "Probe should remain still while determining path (or 'c' to cancel)...",
         ):
             return False
