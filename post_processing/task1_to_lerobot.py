@@ -385,7 +385,7 @@ def lab_features_schema_task1_fixed_hw():
             "shape": (16,),
             "names": [f"t{i}{j}" for i in range(1, 5) for j in range(1, 5)],
         },
-        "observation.meta.probe_from_image_cali_mtx": {
+        "observation.meta.probe_from_img_cali_mtx": {
             "dtype": "float32",
             "shape": (16,),
             "names": [f"t{i}{j}" for i in range(1, 5) for j in range(1, 5)],
