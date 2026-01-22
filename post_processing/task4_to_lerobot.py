@@ -360,7 +360,7 @@ def lab_features_schema_task41_fixed_hw():
 
         "observation.meta.probe_handeye_cali_mtx": {"dtype": "float32", "shape": (16,), "names": [f"t{i}{j}" for i in range(1, 5) for j in range(1, 5)]},
         "observation.meta.wristcam_handeye_cali_mtx": {"dtype": "float32", "shape": (16,), "names": [f"t{i}{j}" for i in range(1, 5) for j in range(1, 5)]},
-        "observation.meta.probe_from_image_cali_mtx": {"dtype": "float32", "shape": (16,), "names": [f"t{i}{j}" for i in range(1, 5) for j in range(1, 5)]},
+        "observation.meta.probe_from_img_cali_mtx": {"dtype": "float32", "shape": (16,), "names": [f"t{i}{j}" for i in range(1, 5) for j in range(1, 5)]},
 
         "observation.meta.roomcam_cali_mtx_tracker_to_color": {"dtype": "float32", "shape": (7,), "names": ["tx_mm", "ty_mm", "tz_mm", "qx", "qy", "qz", "qw"]},
         "observation.meta.tip_offset_mm": {"dtype": "float32", "shape": (3,), "names": ["x", "y", "z"]},
