@@ -7,6 +7,7 @@ from std_msgs.msg import String
 
 from rqt_gui_py.plugin import Plugin
 from python_qt_binding import QtWidgets, QtCore
+from auto_needle_insertion.rosbag_recorder_control import RosbagController
 
 
 class TaskPanel(Plugin):
@@ -31,6 +32,9 @@ class TaskPanel(Plugin):
             self.on_collection_state,
             10
         )
+        self.rosbag_controller = RosbagController()
+        self.is_recording = False
+        self.pending_start_timer: QtCore.QTimer | None = None
 
         # Build UI
         self.widget = QtWidgets.QWidget()
@@ -124,11 +128,21 @@ class TaskPanel(Plugin):
         self.comments_edit.setPlaceholderText('Enter comments')
         self.comments_edit.setFixedHeight(80)
         form.addRow('Comments:', self.comments_edit)
+        self.start_delay_spin = QtWidgets.QDoubleSpinBox()
+        self.start_delay_spin.setRange(0.0, 60.0)
+        self.start_delay_spin.setDecimals(1)
+        self.start_delay_spin.setSingleStep(0.5)
+        self.start_delay_spin.setSuffix(' s')
+        self.start_delay_spin.setValue(0.0)
+        form.addRow('Start Delay (s):', self.start_delay_spin)
 
         # Rosbag 状态显示
         self.status_label = QtWidgets.QLabel('Rosbag Recording Stopped')
         self.status_label.setWordWrap(True)
         form.addRow('Rosbag Status:', self.status_label)
+        self.record_button = QtWidgets.QPushButton('Start')
+        self.record_button.clicked.connect(self.on_record_button_clicked)
+        form.addRow('Rosbag Control:', self.record_button)
 
         self.widget.setLayout(form)
         if context.serial_number() > 1:
@@ -150,20 +164,32 @@ class TaskPanel(Plugin):
         self.spin_timer.timeout.connect(self.spin_once)
         self.spin_timer.start()
 
+    def set_rosbag_status(self, text: str, recording_state: bool | None = None):
+        self.status_label.setText(text)
+        if recording_state is not None:
+            self.is_recording = recording_state
+        self.update_record_button()
+
     def on_collection_state(self, msg: String):
         state = msg.data.strip().lower()
         if state == 'started':
             text = 'Rosbag Recording Started'
+            self.is_recording = True
+            self.clear_pending_start_timer()
         elif state == 'stopped_success':
             text = 'Rosbag Recording Stopped with Status: Success'
+            self.is_recording = False
         elif state == 'stopped_failure':
             text = 'Rosbag Recording Stopped with Status: Failure'
+            self.is_recording = False
         elif state == 'stopped_recovery':
             text = 'Rosbag Recording Stopped with Status: Recovery'
+            self.is_recording = False
         else:
             # 未知状态保持原文，或可选择保持不变
             text = f'Rosbag Recording State: {msg.data.strip()}'
         self.status_label.setText(text)
+        self.update_record_button()
 
     def spin_once(self):
         try:
@@ -191,9 +217,80 @@ class TaskPanel(Plugin):
         msg.data = json.dumps(data, ensure_ascii=False)
         self.pub.publish(msg)
 
+    def update_record_button(self):
+        if self.pending_start_timer is not None:
+            self.record_button.setText('Cancel Start')
+        else:
+            self.record_button.setText('Stop' if self.is_recording else 'Start')
+
+    def on_record_button_clicked(self):
+        if self.pending_start_timer is not None:
+            self.cancel_pending_start()
+            return
+        if self.is_recording:
+            self.set_rosbag_status('Sending rosbag stop command...', recording_state=False)
+            try:
+                self.rosbag_controller.stop_recording('TaskPanelButton')
+            except Exception as exc:
+                self.node.get_logger().error(f'Failed to stop rosbag recording: {exc}')
+                self.set_rosbag_status('Rosbag stop command failed, see logs.', recording_state=True)
+        else:
+            delay_s = self.start_delay_spin.value()
+            if delay_s > 0.0:
+                self.schedule_start_recording(delay_s)
+            else:
+                self.send_start_command()
+
+    def send_start_command(self):
+        self.set_rosbag_status('Sending rosbag start command...', recording_state=True)
+        try:
+            self.rosbag_controller.start_recording()
+        except Exception as exc:
+            self.node.get_logger().error(f'Failed to start rosbag recording: {exc}')
+            self.set_rosbag_status('Rosbag start command failed, see logs.', recording_state=False)
+
+    def schedule_start_recording(self, delay_s: float):
+        self.clear_pending_start_timer()
+        self.pending_start_timer = QtCore.QTimer(self.widget)
+        self.pending_start_timer.setSingleShot(True)
+        self.pending_start_timer.timeout.connect(self._on_pending_start_timeout)
+        self.pending_start_timer.start(int(delay_s * 1000))
+        self.set_rosbag_status(f'Rosbag start scheduled in {delay_s:.1f} s...', recording_state=False)
+
+    def _on_pending_start_timeout(self):
+        timer = self.pending_start_timer
+        self.pending_start_timer = None
+        if timer is not None:
+            timer.deleteLater()
+        self.send_start_command()
+
+    def cancel_pending_start(self, notify: bool = True):
+        if self.pending_start_timer is None:
+            return
+        self.pending_start_timer.stop()
+        self.pending_start_timer.deleteLater()
+        self.pending_start_timer = None
+        if notify:
+            self.set_rosbag_status('Scheduled rosbag start canceled.', recording_state=False)
+        else:
+            self.update_record_button()
+
+    def clear_pending_start_timer(self):
+        if self.pending_start_timer is not None:
+            self.pending_start_timer.stop()
+            self.pending_start_timer.deleteLater()
+            self.pending_start_timer = None
+            self.update_record_button()
+
     def shutdown_plugin(self):
+        self.cancel_pending_start(notify=False)
         self.timer.stop()
         self.spin_timer.stop()
+        if getattr(self, 'rosbag_controller', None) is not None and self.is_recording:
+            try:
+                self.rosbag_controller.stop_recording('TaskPanelShutdown')
+            except Exception:
+                pass
         if self.node is not None:
             try:
                 self.node.destroy_subscription(self.sub_state)
@@ -222,6 +319,7 @@ class TaskPanel(Plugin):
         instance_settings.set_value('needle_gauge', self.needle_gauge_combo.currentText())
         instance_settings.set_value('speed', self.speed_combo.currentText())  # NEW
         instance_settings.set_value('comments', self.comments_edit.toPlainText())
+        instance_settings.set_value('start_delay', self.start_delay_spin.value())
 
     def restore_settings(self, plugin_settings, instance_settings):
         self.task_combo.setCurrentText(instance_settings.value('task_label', 'Task 4.1'))
@@ -235,3 +333,10 @@ class TaskPanel(Plugin):
         self.needle_gauge_combo.setCurrentText(instance_settings.value('needle_gauge', '18G'))
         self.speed_combo.setCurrentText(instance_settings.value('speed', '50'))  # NEW
         self.comments_edit.setPlainText(instance_settings.value('comments', ''))
+        delay_value = instance_settings.value('start_delay', 0.0)
+        try:
+            delay_value = float(delay_value)
+        except (TypeError, ValueError):
+            delay_value = 0.0
+        self.start_delay_spin.setValue(delay_value)
+
