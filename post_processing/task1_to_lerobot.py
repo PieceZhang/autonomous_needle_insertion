@@ -8,7 +8,6 @@ for task1: "Probe Placement".
 
 import argparse
 import json
-import math
 from pathlib import Path
 from bisect import bisect_left
 import xml.etree.ElementTree as ET
@@ -20,17 +19,6 @@ import traceback
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-# ---------- PATCH: REALLY disable stats aggregation (patch both refs) ----------
-import lerobot.datasets.compute_stats as cs
-import lerobot.datasets.lerobot_dataset as lds
-
-def _aggregate_stats_disabled(*args, **kwargs):
-    return {}  # empty stats => no quantile/min/max validation
-
-cs.aggregate_stats = _aggregate_stats_disabled
-lds.aggregate_stats = _aggregate_stats_disabled
-# -----------------------------------------------------------------------------
-
 
 # -------------------------
 # Helpers: NA placeholders
@@ -41,6 +29,9 @@ def na_str() -> str:
 def na_floats(n: int) -> np.ndarray:
     return np.full((n,), np.nan, dtype=np.float32)
 
+def na_ints(n: int) -> np.ndarray:
+    return np.full((n,), -1, dtype=np.int32)
+
 def na_mat4x4_flat() -> np.ndarray:
     return np.full((16,), np.nan, dtype=np.float32)
 
@@ -49,11 +40,6 @@ def na_mat4x4_flat() -> np.ndarray:
 # XML: read LocalTimeOffsetSec
 # -------------------------
 def read_local_time_offset_sec(xml_path: Path, device_id: str | None = None) -> float:
-    """
-    Parse PlusDeviceSet XML and find attribute LocalTimeOffsetSec.
-    If device_id is provided, prefer <Device Id="device_id" ... LocalTimeOffsetSec="...">.
-    Otherwise, return the first LocalTimeOffsetSec found during traversal.
-    """
     if not xml_path.exists():
         raise FileNotFoundError(f"XML not found: {xml_path}")
 
@@ -158,16 +144,13 @@ def check_frame_shape(name: str, arr: np.ndarray, expected_shape):
 
 
 def frame_times_from_info(info: dict, n_frames: int) -> np.ndarray:
-    """Return per-frame timestamps (ns) for a stream based on start_time_ns and fps."""
     fps = info["fps"] if info["fps"] > 1e-6 else 30.0
     dt_ns = 1e9 / fps
     start = int(info["start_time_ns"])
-    # Use float64 for accumulation, then round to int64.
     return (start + np.arange(n_frames, dtype=np.float64) * dt_ns).round().astype(np.int64)
 
 
 def pick_frame_by_time(frames: list, times_ns: np.ndarray, t_ns: int) -> np.ndarray:
-    """Pick nearest frame in `frames` by timestamp."""
     idx = bisect_left(times_ns, t_ns)
     if idx <= 0:
         return frames[0]
@@ -177,6 +160,21 @@ def pick_frame_by_time(frames: list, times_ns: np.ndarray, t_ns: int) -> np.ndar
     after = times_ns[idx]
     j = idx - 1 if (t_ns - before) <= (after - t_ns) else idx
     return frames[j]
+
+
+# -------------------------
+# Resize helpers (wrist -> 480p)
+# -------------------------
+WRIST_480P_HW = (480, 854)  # (H, W)
+
+def resize_rgb_frame(frame: np.ndarray, out_h: int, out_w: int, name: str = "") -> np.ndarray:
+    if frame is None:
+        raise ValueError(f"{name}: frame is None")
+    if frame.ndim != 3 or frame.shape[2] != 3:
+        raise ValueError(f"{name}: expected HxWx3 RGB, got {frame.shape}")
+    if frame.shape[0] == out_h and frame.shape[1] == out_w:
+        return frame
+    return cv2.resize(frame, (out_w, out_h), interpolation=cv2.INTER_LINEAR).astype(np.uint8)
 
 
 # -------------------------
@@ -208,15 +206,6 @@ def find_first_json_in_dir(d: Path) -> Path | None:
 
 
 def extract_mat4x4_flat(obj) -> np.ndarray:
-    """
-    Accept common representations and return flattened 16 float32:
-    - {"T_c2g": [[...],[...],[...],[...]]}
-    - {"T_probe_from_image": [[...]]}
-    - {"matrix": [[...]]}
-    - [[...],[...],[...],[...]]
-    - [16 floats]
-    If cannot parse -> all-nan.
-    """
     try:
         mat = None
         if isinstance(obj, dict):
@@ -242,17 +231,6 @@ def extract_mat4x4_flat(obj) -> np.ndarray:
 
 
 def extract_handeye_Tc2g_flat(handeye_json, device_key: str) -> np.ndarray:
-    """
-    For your hand-eye files:
-      - probe_handeye_cali_mtx: device_key='probe', want ['T_c2g']
-      - wristcam_handeye_cali_mtx: device_key='zed2', want ['T_c2g']
-
-    Supports common layouts:
-      A) {"probe": {"T_c2g": [[4x4]]}, "zed2": {"T_c2g": [[4x4]]}}
-      B) {"T_c2g": [[4x4]]}  (fallback if device key not present)
-      C) {"probe": {"T_c2g": [16 floats]}}
-    Returns (16,) float32; if fail => all-nan.
-    """
     if not isinstance(handeye_json, (dict, list)):
         return na_mat4x4_flat()
 
@@ -271,27 +249,13 @@ def extract_handeye_Tc2g_flat(handeye_json, device_key: str) -> np.ndarray:
 
 
 def extract_probe_acq_param_from_spec(spec_json: dict | None) -> np.ndarray:
-    """
-    Supports your structure:
-    {
-      "probe_type": "Wisonic_C51",
-      "specifications": {
-        "center_frequency_mhz": "4",
-        "num_elements": "NA",
-        ...
-      }
-    }
-
-    Output order (6):
-      [center_frequency_mhz, num_elements, imaging_depth_cm, linear_fov_mm, convex_radius_mm, convex_fov_deg]
-    """
     out = na_floats(6)
     if not isinstance(spec_json, dict):
         return out
 
     spec_block = spec_json.get("specifications", None)
     if not isinstance(spec_block, dict):
-        spec_block = spec_json  # fallback
+        spec_block = spec_json
 
     def to_float(v):
         if v is None:
@@ -332,12 +296,27 @@ def extract_probe_acq_param_from_spec(spec_json: dict | None) -> np.ndarray:
 # Features schema
 # -------------------------
 def lab_features_schema_task1_fixed_hw():
+    """
+    Store resized wrist frames at 480p (H=480, W=854).
+    Also stores original sizes in meta fields:
+      - observation.meta.original_size_ultrasound: (2,) [H, W]
+      - observation.meta.original_size_room_rgb_camera: (2,) [H, W]
+      - observation.meta.original_size_wrist_camera_rgb: (2,) [H, W]
+      - observation.meta.original_size_wrist_camera_depth: (2,) [H, W]
+    """
     return {
         "observation.description": {"dtype": "string", "shape": (1,), "names": ["task_description"]},
+
         "observation.images.ultrasound": {"dtype": "video", "shape": (1080, 1920, 3), "names": ["height", "width", "channels"]},
         "observation.images.room_rgb_camera": {"dtype": "video", "shape": (768, 1024, 3), "names": ["height", "width", "channels"]},
-        "observation.images.wrist_camera_depth": {"dtype": "video", "shape": (360, 640, 3), "names": ["height", "width", "channels"]},
-        "observation.images.wrist_camera_rgb": {"dtype": "video", "shape": (360, 640, 3), "names": ["height", "width", "channels"]},
+        "observation.images.wrist_camera_depth": {"dtype": "video", "shape": (480, 854, 3), "names": ["height", "width", "channels"]},
+        "observation.images.wrist_camera_rgb": {"dtype": "video", "shape": (480, 854, 3), "names": ["height", "width", "channels"]},
+
+        # NEW: record original (pre-resize) sizes for traceability
+        "observation.meta.original_size_ultrasound": {"dtype": "int32", "shape": (2,), "names": ["height", "width"]},
+        "observation.meta.original_size_room_rgb_camera": {"dtype": "int32", "shape": (2,), "names": ["height", "width"]},
+        "observation.meta.original_size_wrist_camera_depth": {"dtype": "int32", "shape": (2,), "names": ["height", "width"]},
+        "observation.meta.original_size_wrist_camera_rgb": {"dtype": "int32", "shape": (2,), "names": ["height", "width"]},
 
         "observation.meta.force_torque": {
             "dtype": "float32",
@@ -449,12 +428,6 @@ def load_roomcam_tracker_to_color_7_hardcoded() -> np.ndarray:
 # (2)(3) hand-eye matrices: load explicit files and keys
 # -------------------------
 def load_handeye_matrices_explicit(workspace_root: Path) -> tuple[np.ndarray, np.ndarray]:
-    """
-    probe_handeye_cali_mtx:
-      calibration/hand_eye_20251231_075559.json   -> probe:'T_c2g' -> (16,)
-    wristcam_handeye_cali_mtx:
-      calibration/hand_eye_20260112_071955.json   -> zed2:'T_c2g'  -> (16,)
-    """
     calib = workspace_root / "calibration"
 
     probe_path = calib / "hand_eye_20251231_075559.json"
@@ -528,8 +501,6 @@ def convert_one_episode(
     max_frames=None,
     action_hz: float = 15.0,
 ):
-    # NOTE: offset_sec is kept for debug, but video alignment is now purely time-based from video_info.json.
-
     folder_room  = "vega_vt__image_raw__compressed"
     folder_us    = "image_raw__compressed"
     folder_wrgb  = "zed__zed_node__rgb__color__rect__image__compressed"
@@ -592,9 +563,6 @@ def convert_one_episode(
         f"overlap_sec={(t1 - t0)/1e9:.3f}, T={T}"
     )
 
-    # keep these for dbg compatibility (now no trimming)
-    us_drop_front = room_drop_back = wrgb_drop_back = wdepth_drop_back = 0
-
     # ndjson streams
     t_joint,  joint_payloads  = load_ndjson_times_and_payloads(episode_dir / "joint_states" / "messages.ndjson")
     t_tcp,    tcp_payloads    = load_ndjson_times_and_payloads(episode_dir / "tcp_pose_broadcaster__pose" / "messages.ndjson")
@@ -615,7 +583,15 @@ def convert_one_episode(
         probe_pose_seq[i]  = pose_to_vec7(probe_msg["pose"])
         needle_pose_seq[i] = pose_to_vec7(needle_msg["pose"])
 
+    # Determine original sizes (from first decoded frame)
+    # These are "raw" pre-resize dimensions, stored into meta every frame.
+    orig_us_hw = np.array([int(us_frames[0].shape[0]), int(us_frames[0].shape[1])], dtype=np.int32)
+    orig_room_hw = np.array([int(room_frames[0].shape[0]), int(room_frames[0].shape[1])], dtype=np.int32)
+    orig_wrgb_hw = np.array([int(wrgb_frames[0].shape[0]), int(wrgb_frames[0].shape[1])], dtype=np.int32)
+    orig_wdepth_hw = np.array([int(wdepth_frames[0].shape[0]), int(wdepth_frames[0].shape[1])], dtype=np.int32)
+
     # write frames
+    out_h, out_w = WRIST_480P_HW
     for i in range(T):
         t_ns = int(frame_times_ns[i])
 
@@ -625,10 +601,14 @@ def convert_one_episode(
         img_wrgb   = pick_frame_by_time(wrgb_frames,  wrgb_times_ns,   t_ns)
         img_wdepth = pick_frame_by_time(wdepth_frames,wdepth_times_ns, t_ns)
 
+        # resize wrist streams to 480p (keep 16:9, no distortion)
+        img_wrgb   = resize_rgb_frame(img_wrgb,   out_h, out_w, name="wrist_camera_rgb")
+        img_wdepth = resize_rgb_frame(img_wdepth, out_h, out_w, name="wrist_camera_depth")
+
         check_frame_shape("ultrasound",         img_us,     (1080, 1920, 3))
         check_frame_shape("room_rgb_camera",    img_room,   (768,  1024, 3))
-        check_frame_shape("wrist_camera_depth", img_wdepth, (360,  640,  3))
-        check_frame_shape("wrist_camera_rgb",   img_wrgb,   (360,  640,  3))
+        check_frame_shape("wrist_camera_depth", img_wdepth, (480,  854,  3))
+        check_frame_shape("wrist_camera_rgb",   img_wrgb,   (480,  854,  3))
 
         wmsg = nearest_payload(t_wrench, wrench_payloads, t_ns)
         w = wmsg["wrench"]
@@ -643,11 +623,7 @@ def convert_one_episode(
         if qpos.shape[0] != 6:
             raise ValueError(f"{episode_dir.name}: expected 6 joints, got {qpos.shape[0]}")
 
-        tcp_pose7    = tcp_pose_seq[i]
-        probe_pose7  = probe_pose_seq[i]
-        needle_pose7 = needle_pose_seq[i]
-
-        state = np.concatenate([qpos, tcp_pose7, probe_pose7, needle_pose7], axis=0).astype(np.float32)
+        state = np.concatenate([qpos, tcp_pose_seq[i], probe_pose_seq[i], needle_pose_seq[i]], axis=0).astype(np.float32)
         if state.shape != (27,):
             raise ValueError(f"{episode_dir.name}: state shape mismatch {state.shape}")
 
@@ -659,7 +635,6 @@ def convert_one_episode(
         else:
             probe_delta  = np.zeros((7,), dtype=np.float32)
             needle_delta = np.zeros((7,), dtype=np.float32)
-
         action = np.concatenate([probe_delta, needle_delta], axis=0).astype(np.float32)
 
         frame = {
@@ -667,39 +642,37 @@ def convert_one_episode(
             "observation.images.room_rgb_camera": img_room,
             "observation.images.wrist_camera_depth": img_wdepth,
             "observation.images.wrist_camera_rgb": img_wrgb,
+
+            # NEW meta: original sizes
+            "observation.meta.original_size_ultrasound": orig_us_hw,
+            "observation.meta.original_size_room_rgb_camera": orig_room_hw,
+            "observation.meta.original_size_wrist_camera_depth": orig_wdepth_hw,
+            "observation.meta.original_size_wrist_camera_rgb": orig_wrgb_hw,
+
             "observation.meta.force_torque": ft,
             "observation.state": state,
             "action": action,
         }
         frame.update(static_meta)
 
-        # frame["task"] = "Probe Placement"
-
         keep = set(expected_keys) | {"task"}
         frame = {k: v for k, v in frame.items() if k in keep}
-        TASK_NAME = "Probe Placement"   # task1
+        dataset.add_frame(frame, task="Probe Placement")
 
-        dataset.add_frame(frame, task=TASK_NAME)
-
-    try:
-        dataset.save_episode()
-    except Exception as e:
-        print(f"[ERROR] save_episode failed at {episode_dir.name}: {e}")
-        raise
+    dataset.save_episode()
 
     return T, {
         "offset_sec": float(offset_sec),
         "action_hz": float(action_hz),
         "action_stride": int(action_stride),
-        "us_drop_front": int(us_drop_front),
-        "room_drop_back": int(room_drop_back),
-        "wrgb_drop_back": int(wrgb_drop_back),
-        "wdepth_drop_back": int(wdepth_drop_back),
         "room_fps": float(room_fps),
         "us_fps": float(us_fps),
         "wrgb_fps": float(wrgb_fps),
         "wdepth_fps": float(wdepth_fps),
         "out_fps": float(out_fps),
+        "wrist_resized_to": [int(out_h), int(out_w)],
+        "wrist_original_rgb": [int(orig_wrgb_hw[0]), int(orig_wrgb_hw[1])],
+        "wrist_original_depth": [int(orig_wdepth_hw[0]), int(orig_wdepth_hw[1])],
     }
 
 
@@ -710,7 +683,7 @@ def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--raw_root", type=str, required=True,
-                        help="Either a single rosbag2_* episode dir, or a directory containing rosbag2_* dirs.")
+                        help="Directory containing rosbag2_* episode dirs.")
     parser.add_argument("--out_root", type=str, required=True)
     parser.add_argument("--repo_id", type=str, default="local/task1_probe_placement_v2")
     parser.add_argument("--robot_type", type=str, default="panda")
@@ -723,20 +696,12 @@ def main():
     parser.add_argument("--max_episodes", type=int, default=-1)
     parser.add_argument("--max_frames", type=int, default=None)
 
-    # action delta target rate
-    parser.add_argument("--action_hz", type=float, default=15.0,
-                        help="Compute action delta at this rate (Hz) using frame stride based on OUTPUT fps. Default=15.")
+    parser.add_argument("--action_hz", type=float, default=15.0)
 
-    # Workspace root (for calibration files)
-    parser.add_argument("--workspace_root", type=str, required=True,
-                        help="Path to your workspace that contains calibration/, e.g. workspace/")
-    # XML offset (kept for compatibility; video sync no longer trims by this)
-    parser.add_argument("--calib_xml", type=str, required=True,
-                        help="Path to PlusDeviceSet*.xml (for LocalTimeOffsetSec)")
-    parser.add_argument("--offset_device_id", type=str, default="TrackerDevice",
-                        help="Which <Device Id='...'> to read LocalTimeOffsetSec from. Default: TrackerDevice. Use '' to disable.")
-    parser.add_argument("--override_offset_sec", type=float, default=None,
-                        help="If provided, override LocalTimeOffsetSec read from XML.")
+    parser.add_argument("--workspace_root", type=str, required=True)
+    parser.add_argument("--calib_xml", type=str, required=True)
+    parser.add_argument("--offset_device_id", type=str, default="TrackerDevice")
+    parser.add_argument("--override_offset_sec", type=float, default=None)
 
     args = parser.parse_args()
 
@@ -758,18 +723,12 @@ def main():
         offset_sec = read_local_time_offset_sec(xml_path, device_id=device_id)
         print(f"[INFO] LocalTimeOffsetSec = {offset_sec:.6f} sec (from {xml_path}, device_id={device_id})")
 
-    # Resolve episode dirs
-    # if raw_root.is_dir() and raw_root.name.startswith("rosbag2_"):
-    #     episode_dirs = [raw_root]
-    # else:
     episode_dirs = sorted([p for p in raw_root.glob("*/rosbag2_*") if p.is_dir()])
-
     if args.max_episodes > 0:
         episode_dirs = episode_dirs[: args.max_episodes]
     if len(episode_dirs) == 0:
         raise RuntimeError(f"No episode folders found under: {raw_root}")
 
-    # ---- Read file-based static meta (global for this conversion) ----
     spec_path = workspace_root / "calibration" / "Spec_probe_c51.json"
     spec_json = read_json_if_exists(spec_path)
     probe_acq_param = extract_probe_acq_param_from_spec(spec_json)
@@ -807,7 +766,7 @@ def main():
         "observation.meta.probe_acquisition_param": probe_acq_param.astype(np.float32),
         "observation.meta.probe_handeye_cali_mtx": probe_handeye.astype(np.float32),
         "observation.meta.wristcam_handeye_cali_mtx": wrist_handeye.astype(np.float32),
-        "observation.meta.probe_from_image_cali_mtx": probe_from_image.astype(np.float32),
+        "observation.meta.probe_from_img_cali_mtx": probe_from_image.astype(np.float32),
         "observation.meta.roomcam_cali_mtx_tracker_to_color": roomcam_tracker_to_color.astype(np.float32),
         "observation.meta.tip_offset_mm": tip_offset_placeholder.astype(np.float32),
         "observation.description": na_str(),
@@ -837,7 +796,6 @@ def main():
             traceback.print_exc()
             continue
 
-    # dataset.finalize()
     print(f"✅ Done. LeRobot dataset saved at: {out_root}")
 
 

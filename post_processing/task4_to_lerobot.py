@@ -3,12 +3,7 @@
 
 """
 Convert rosbag2-exported multi-stream videos + ndjson topics into a LeRobot dataset
-for task4.1: "Needle Retrieval".
-
-Differences vs task1:
-- ati_ft_broadcaster__wrench may be missing => force_torque = NaN(6,)
-- vega/room camera stream may be missing    => room_rgb_camera filled with black frames (uint8)
-  and time alignment ignores the missing stream.
+for task4: "Needle Retrieval".
 """
 
 import argparse
@@ -24,18 +19,6 @@ from tqdm import tqdm
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-# ---------- PATCH: REALLY disable stats aggregation (patch both refs) ----------
-import lerobot.datasets.compute_stats as cs
-import lerobot.datasets.lerobot_dataset as lds
-
-def _aggregate_stats_disabled(*args, **kwargs):
-    return {}
-
-cs.aggregate_stats = _aggregate_stats_disabled
-lds.aggregate_stats = _aggregate_stats_disabled
-# -----------------------------------------------------------------------------
-
-
 # -------------------------
 # Helpers: NA placeholders
 # -------------------------
@@ -44,6 +27,9 @@ def na_str() -> str:
 
 def na_floats(n: int) -> np.ndarray:
     return np.full((n,), np.nan, dtype=np.float32)
+
+def na_ints(n: int) -> np.ndarray:
+    return np.full((n,), -1, dtype=np.int32)
 
 def na_mat4x4_flat() -> np.ndarray:
     return np.full((16,), np.nan, dtype=np.float32)
@@ -200,6 +186,21 @@ def load_video_stream_optional(episode_dir: Path, folder: str, max_frames=None):
 
 
 # -------------------------
+# Resize helpers (wrist -> 480p)
+# -------------------------
+WRIST_480P_HW = (480, 854)  # (H, W) for 16:9 480p, from 640x360 -> 854x480
+
+def resize_rgb_frame(frame: np.ndarray, out_h: int, out_w: int, name: str = "") -> np.ndarray:
+    if frame is None:
+        raise ValueError(f"{name}: frame is None")
+    if frame.ndim != 3 or frame.shape[2] != 3:
+        raise ValueError(f"{name}: expected HxWx3 RGB, got {frame.shape}")
+    if frame.shape[0] == out_h and frame.shape[1] == out_w:
+        return frame
+    return cv2.resize(frame, (out_w, out_h), interpolation=cv2.INTER_LINEAR).astype(np.uint8)
+
+
+# -------------------------
 # Pose helpers
 # -------------------------
 def pose_to_vec7(pose_dict):
@@ -311,16 +312,23 @@ def extract_probe_acq_param_from_spec(spec_json: dict | None) -> np.ndarray:
 
 
 # -------------------------
-# Features schema (keep same)
+# Features schema (UPDATED: wrist=480p + meta original sizes)
 # -------------------------
 def lab_features_schema_task41_fixed_hw():
-    # Same schema as task1 for now
     return {
         "observation.description": {"dtype": "string", "shape": (1,), "names": ["task_description"]},
+
         "observation.images.ultrasound": {"dtype": "video", "shape": (1080, 1920, 3), "names": ["height", "width", "channels"]},
         "observation.images.room_rgb_camera": {"dtype": "video", "shape": (768, 1024, 3), "names": ["height", "width", "channels"]},
-        "observation.images.wrist_camera_depth": {"dtype": "video", "shape": (360, 640, 3), "names": ["height", "width", "channels"]},
-        "observation.images.wrist_camera_rgb": {"dtype": "video", "shape": (360, 640, 3), "names": ["height", "width", "channels"]},
+        # resized to 480p
+        "observation.images.wrist_camera_depth": {"dtype": "video", "shape": (480, 854, 3), "names": ["height", "width", "channels"]},
+        "observation.images.wrist_camera_rgb": {"dtype": "video", "shape": (480, 854, 3), "names": ["height", "width", "channels"]},
+
+        # NEW: original sizes (pre-resize)
+        "observation.meta.original_size_ultrasound": {"dtype": "int32", "shape": (2,), "names": ["height", "width"]},
+        "observation.meta.original_size_room_rgb_camera": {"dtype": "int32", "shape": (2,), "names": ["height", "width"]},
+        "observation.meta.original_size_wrist_camera_depth": {"dtype": "int32", "shape": (2,), "names": ["height", "width"]},
+        "observation.meta.original_size_wrist_camera_rgb": {"dtype": "int32", "shape": (2,), "names": ["height", "width"]},
 
         "observation.meta.force_torque": {
             "dtype": "float32",
@@ -478,19 +486,18 @@ def convert_one_episode(
     max_frames=None,
     action_hz: float = 15.0,
 ):
-    # --- folders (keep same as task1; room stream optional) ---
-    folder_room   = "vega_vt__image_raw__compressed"  # may be missing in task4.1
+    TASK_NAME = "Needle Retrieval"
+
+    folder_room   = "vega_vt__image_raw__compressed"  # may be missing
     folder_us     = "image_raw__compressed"
     folder_wrgb   = "zed__zed_node__rgb__color__rect__image__compressed"
     folder_wdepth = "zed__zed_node__depth__depth_registered__compressedDepth"
 
-    # --- load video streams ---
-    room_stream  = load_video_stream_optional(episode_dir, folder_room,   max_frames=max_frames)
-    us_stream    = load_video_stream_optional(episode_dir, folder_us,     max_frames=max_frames)
-    wrgb_stream  = load_video_stream_optional(episode_dir, folder_wrgb,   max_frames=max_frames)
-    wdepth_stream= load_video_stream_optional(episode_dir, folder_wdepth, max_frames=max_frames)
+    room_stream   = load_video_stream_optional(episode_dir, folder_room,   max_frames=max_frames)
+    us_stream     = load_video_stream_optional(episode_dir, folder_us,     max_frames=max_frames)
+    wrgb_stream   = load_video_stream_optional(episode_dir, folder_wrgb,   max_frames=max_frames)
+    wdepth_stream = load_video_stream_optional(episode_dir, folder_wdepth, max_frames=max_frames)
 
-    # Required streams (assume exist): ultrasound, wrist rgb, wrist depth
     if not us_stream["present"]:
         raise RuntimeError(f"{episode_dir.name}: missing ultrasound stream folder/video: {folder_us}")
     if not wrgb_stream["present"]:
@@ -498,32 +505,17 @@ def convert_one_episode(
     if not wdepth_stream["present"]:
         raise RuntimeError(f"{episode_dir.name}: missing wrist depth stream folder/video: {folder_wdepth}")
 
-    # Optional room stream
     if not room_stream["present"]:
         print(f"[WARN] {episode_dir.name}: room/vega stream missing -> fill room_rgb_camera with black frames.")
 
-    # --- build overlap window using PRESENT streams only ---
-    present_times = [
-        us_stream["times_ns"],
-        wrgb_stream["times_ns"],
-        wdepth_stream["times_ns"],
-    ]
+    present_times = [us_stream["times_ns"], wrgb_stream["times_ns"], wdepth_stream["times_ns"]]
     if room_stream["present"]:
         present_times.append(room_stream["times_ns"])
 
     t0 = max(ts[0] for ts in present_times)
     t1 = min(ts[-1] for ts in present_times)
     if t1 <= t0:
-        raise RuntimeError(
-            f"{episode_dir.name}: no temporal overlap across PRESENT streams. "
-            f"us=[{us_stream['times_ns'][0]},{us_stream['times_ns'][-1]}], "
-            f"wrgb=[{wrgb_stream['times_ns'][0]},{wrgb_stream['times_ns'][-1]}], "
-            f"wdepth=[{wdepth_stream['times_ns'][0]},{wdepth_stream['times_ns'][-1]}]"
-            + (
-                f", room=[{room_stream['times_ns'][0]},{room_stream['times_ns'][-1]}]"
-                if room_stream["present"] else ""
-            )
-        )
+        raise RuntimeError(f"{episode_dir.name}: no temporal overlap across PRESENT streams.")
 
     out_fps = float(dataset.fps) if hasattr(dataset, "fps") else 30.0
     out_dt_ns = int(round(1e9 / out_fps))
@@ -539,7 +531,6 @@ def convert_one_episode(
         action_stride = int(round(out_fps / float(action_hz)))
         action_stride = max(action_stride, 1)
 
-    # Debug fps values
     us_fps = us_stream["info"]["fps"] if us_stream["info"]["fps"] > 1e-3 else 30.0
     wrgb_fps = wrgb_stream["info"]["fps"] if wrgb_stream["info"]["fps"] > 1e-3 else 30.0
     wdepth_fps = wdepth_stream["info"]["fps"] if wdepth_stream["info"]["fps"] > 1e-3 else 30.0
@@ -553,21 +544,18 @@ def convert_one_episode(
         f"overlap_sec={(t1 - t0)/1e9:.3f}, T={T}"
     )
 
-    # ---------------- NDJSON topics ----------------
-    # Required
+    # NDJSON streams
     t_joint,  joint_payloads  = load_ndjson_times_and_payloads(episode_dir / "joint_states" / "messages.ndjson")
     t_tcp,    tcp_payloads    = load_ndjson_times_and_payloads(episode_dir / "tcp_pose_broadcaster__pose" / "messages.ndjson")
     t_probe,  probe_payloads  = load_ndjson_times_and_payloads(episode_dir / "ndi__us_probe_pose" / "messages.ndjson")
     t_needle, needle_payloads = load_ndjson_times_and_payloads(episode_dir / "ndi__needle_pose" / "messages.ndjson")
 
-    # Optional wrench (task4.1 may miss)
     t_wrench, wrench_payloads = load_ndjson_optional(episode_dir / "ati_ft_broadcaster__wrench" / "messages.ndjson")
     wrench_present = (t_wrench is not None and wrench_payloads is not None)
-
     if not wrench_present:
         print(f"[WARN] {episode_dir.name}: ati_ft_broadcaster__wrench missing -> force_torque = NaN.")
 
-    # precompute pose seqs aligned to master timeline
+    # precompute pose seqs aligned
     tcp_pose_seq    = np.zeros((T, 7), dtype=np.float32)
     probe_pose_seq  = np.zeros((T, 7), dtype=np.float32)
     needle_pose_seq = np.zeros((T, 7), dtype=np.float32)
@@ -580,30 +568,43 @@ def convert_one_episode(
         probe_pose_seq[i]  = pose_to_vec7(probe_msg["pose"])
         needle_pose_seq[i] = pose_to_vec7(needle_msg["pose"])
 
-    # constant placeholders
+    # room placeholder
     room_black = np.zeros((768, 1024, 3), dtype=np.uint8)
 
-    # write frames
+    # ORIGINAL sizes (pre-resize)
+    orig_us_hw = np.array([int(us_stream["frames"][0].shape[0]), int(us_stream["frames"][0].shape[1])], dtype=np.int32)
+    orig_wrgb_hw = np.array([int(wrgb_stream["frames"][0].shape[0]), int(wrgb_stream["frames"][0].shape[1])], dtype=np.int32)
+    orig_wdepth_hw = np.array([int(wdepth_stream["frames"][0].shape[0]), int(wdepth_stream["frames"][0].shape[1])], dtype=np.int32)
+    if room_stream["present"]:
+        orig_room_hw = np.array([int(room_stream["frames"][0].shape[0]), int(room_stream["frames"][0].shape[1])], dtype=np.int32)
+    else:
+        orig_room_hw = na_ints(2)  # (-1, -1)
+
+    out_h, out_w = WRIST_480P_HW
+
     for i in range(T):
         t_ns = int(frame_times_ns[i])
 
-        # pick images by time
-        img_us     = pick_frame_by_time(us_stream["frames"],    us_stream["times_ns"],     t_ns)
-        img_wrgb   = pick_frame_by_time(wrgb_stream["frames"],  wrgb_stream["times_ns"],   t_ns)
-        img_wdepth = pick_frame_by_time(wdepth_stream["frames"],wdepth_stream["times_ns"], t_ns)
+        img_us     = pick_frame_by_time(us_stream["frames"],     us_stream["times_ns"],     t_ns)
+        img_wrgb   = pick_frame_by_time(wrgb_stream["frames"],   wrgb_stream["times_ns"],   t_ns)
+        img_wdepth = pick_frame_by_time(wdepth_stream["frames"], wdepth_stream["times_ns"], t_ns)
 
         if room_stream["present"]:
             img_room = pick_frame_by_time(room_stream["frames"], room_stream["times_ns"], t_ns)
         else:
             img_room = room_black
 
-        # shape checks (room check only if present; but placeholder already correct)
+        # resize wrist to 480p
+        img_wrgb   = resize_rgb_frame(img_wrgb,   out_h, out_w, name="wrist_camera_rgb")
+        img_wdepth = resize_rgb_frame(img_wdepth, out_h, out_w, name="wrist_camera_depth")
+
+        # checks
         check_frame_shape("ultrasound",         img_us,     (1080, 1920, 3))
         check_frame_shape("room_rgb_camera",    img_room,   (768,  1024, 3))
-        check_frame_shape("wrist_camera_depth", img_wdepth, (360,  640,  3))
-        check_frame_shape("wrist_camera_rgb",   img_wrgb,   (360,  640,  3))
+        check_frame_shape("wrist_camera_rgb",   img_wrgb,   (480,  854,  3))
+        check_frame_shape("wrist_camera_depth", img_wdepth, (480,  854,  3))
 
-        # wrench -> ft (optional)
+        # wrench
         if wrench_present:
             wmsg = nearest_payload(t_wrench, wrench_payloads, t_ns)
             w = wmsg["wrench"]
@@ -621,15 +622,11 @@ def convert_one_episode(
         if qpos.shape[0] != 6:
             raise ValueError(f"{episode_dir.name}: expected 6 joints, got {qpos.shape[0]}")
 
-        tcp_pose7    = tcp_pose_seq[i]
-        probe_pose7  = probe_pose_seq[i]
-        needle_pose7 = needle_pose_seq[i]
-
-        state = np.concatenate([qpos, tcp_pose7, probe_pose7, needle_pose7], axis=0).astype(np.float32)
+        state = np.concatenate([qpos, tcp_pose_seq[i], probe_pose_seq[i], needle_pose_seq[i]], axis=0).astype(np.float32)
         if state.shape != (27,):
             raise ValueError(f"{episode_dir.name}: state shape mismatch {state.shape}")
 
-        # ACTION: delta at target Hz using stride on output timeline
+        # action
         j = i + action_stride
         if j < T:
             probe_delta  = (tcp_pose_seq[j] - tcp_pose_seq[i]).astype(np.float32)
@@ -637,7 +634,6 @@ def convert_one_episode(
         else:
             probe_delta  = np.zeros((7,), dtype=np.float32)
             needle_delta = np.zeros((7,), dtype=np.float32)
-
         action = np.concatenate([probe_delta, needle_delta], axis=0).astype(np.float32)
 
         frame = {
@@ -645,19 +641,28 @@ def convert_one_episode(
             "observation.images.room_rgb_camera": img_room,
             "observation.images.wrist_camera_depth": img_wdepth,
             "observation.images.wrist_camera_rgb": img_wrgb,
+
+            # NEW meta original sizes
+            "observation.meta.original_size_ultrasound": orig_us_hw,
+            "observation.meta.original_size_room_rgb_camera": orig_room_hw,
+            "observation.meta.original_size_wrist_camera_depth": orig_wdepth_hw,
+            "observation.meta.original_size_wrist_camera_rgb": orig_wrgb_hw,
+
             "observation.meta.force_torque": ft,
             "observation.state": state,
             "action": action,
         }
         frame.update(static_meta)
 
-        # frame["task"] = "Needle Retrieval"
-
+        # Keep both: field "task" + kwarg task (for compatibility across lerobot versions)
+        # frame["task"] = TASK_NAME
         keep = set(expected_keys) | {"task"}
         frame = {k: v for k, v in frame.items() if k in keep}
-        TASK_NAME = "Needle Retrieval"  # task4.1
 
-        dataset.add_frame(frame, task=TASK_NAME)
+        try:
+            dataset.add_frame(frame, task=TASK_NAME)
+        except TypeError:
+            dataset.add_frame(frame)
 
     dataset.save_episode()
 
@@ -672,7 +677,10 @@ def convert_one_episode(
         "wrgb_fps": float(wrgb_fps),
         "wdepth_fps": float(wdepth_fps),
         "out_fps": float(out_fps),
-        "T": int(T),
+        "wrist_resized_to": [int(out_h), int(out_w)],
+        "orig_wrist_rgb": [int(orig_wrgb_hw[0]), int(orig_wrgb_hw[1])],
+        "orig_wrist_depth": [int(orig_wdepth_hw[0]), int(orig_wdepth_hw[1])],
+        "orig_room": [int(orig_room_hw[0]), int(orig_room_hw[1])],
     }
 
 
@@ -728,10 +736,6 @@ def main():
         offset_sec = read_local_time_offset_sec(xml_path, device_id=device_id)
         print(f"[INFO] LocalTimeOffsetSec = {offset_sec:.6f} sec (from {xml_path}, device_id={device_id})")
 
-    # Resolve episode dirs
-    # if raw_root.is_dir() and raw_root.name.startswith("rosbag2_"):
-    #     episode_dirs = [raw_root]
-    # else:
     episode_dirs = sorted([p for p in raw_root.glob("*/rosbag2_*") if p.is_dir()])
 
     if args.max_episodes > 0:
@@ -739,7 +743,7 @@ def main():
     if len(episode_dirs) == 0:
         raise RuntimeError(f"No episode folders found under: {raw_root}")
 
-    # ---- Read file-based static meta (global for this conversion) ----
+    # ---- static meta (global) ----
     spec_path = workspace_root / "calibration" / "Spec_probe_c51.json"
     spec_json = read_json_if_exists(spec_path)
     probe_acq_param = extract_probe_acq_param_from_spec(spec_json)
@@ -777,13 +781,13 @@ def main():
         "observation.meta.probe_acquisition_param": probe_acq_param.astype(np.float32),
         "observation.meta.probe_handeye_cali_mtx": probe_handeye.astype(np.float32),
         "observation.meta.wristcam_handeye_cali_mtx": wrist_handeye.astype(np.float32),
-        "observation.meta.probe_from_image_cali_mtx": probe_from_image.astype(np.float32),
+        "observation.meta.probe_from_img_cali_mtx": probe_from_image.astype(np.float32),
         "observation.meta.roomcam_cali_mtx_tracker_to_color": roomcam_tracker_to_color.astype(np.float32),
         "observation.meta.tip_offset_mm": tip_offset_placeholder.astype(np.float32),
         "observation.description": na_str(),
     }
 
-    for ep in tqdm(episode_dirs, desc="Converting episodes (task4.1/4.2)"):
+    for ep in tqdm(episode_dirs, desc="Converting episodes (task4)"):
         try:
             desc = load_episode_task_description(ep)
             tip_offset = load_tip_offset_mm(ep, workspace_root)
@@ -807,7 +811,11 @@ def main():
             traceback.print_exc()
             continue
 
-    # dataset.finalize()
+    try:
+        dataset.finalize()
+    except Exception:
+        pass
+
     print(f"✅ Done. LeRobot dataset saved at: {out_root}")
 
 
