@@ -28,7 +28,7 @@ This dataset supports training and evaluating vision-language-action (VLA) and i
 
 - [ ] **Surgical Robotics**
 - [x] **Ultrasound Robotics**
-- [ ] **Other Healthcare Robotics** (Please specify: \[Your Domain\])
+- [ ] **Other Healthcare Robotics** 
 
 ### Demonstrated Skills
 
@@ -49,7 +49,7 @@ This dataset supports training and evaluating vision-language-action (VLA) and i
 - [x] **Human Teleoperation**
 - [x] **Programmatic/State-Machine**
 - [ ] **AI Policy / Autonomous**
-- [ ] **Other** (Please specify: \[Your Method\])
+- [ ] **Other**
 
 
 ### Operator Details
@@ -76,7 +76,7 @@ This dataset supports training and evaluating vision-language-action (VLA) and i
 - [ ] **Robot Embodiment** (if multiple robots were used)
 - [x] **Task Execution** (e.g., different scanning/insertion techniques)
 - [x] **Background / Scene**
-- [ ] **Other** (Please specify: tissue properties / anatomical scenario difficulty)
+- [ ] **Other** 
 
 **Elaboration:**
 
@@ -114,14 +114,14 @@ This dataset follows the **LeRobot** format and provides synchronized actions, r
 - [x] **Absolute Cartesian** (position/orientation relative to robot base)
 - [x] **Relative Cartesian** (delta position/orientation from current pose) *(typical for teleop step commands)*
 - [x] **Joint Space** (direct joint commands recorded from robot interface)
-- [ ] **Other** (Please specify: discrete teleop inputs / insertion depth commands)
+- [ ] **Other**
 
 **Orientation Representation:**
 - [x] **Quaternions** (x, y, z, w)
 - [ ] **Euler Angles** (roll, pitch, yaw)
 - [ ] **Axis-Angle** (rotation vector)
 - [ ] **Rotation Matrix** (3x3 matrix)
-- [ ] **Other** (Please specify: \[Your Representation\])
+- [ ] **Other**
 
 **Reference Frame:**
 - [x] **Robot Base Frame**
