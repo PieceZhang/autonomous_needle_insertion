@@ -1,0 +1,13 @@
+needle_deflection:
+  ros__parameters:
+    calibration_factor: 0.69
+    needle_length: 0.2
+    needle_diameter: 0.00127
+    youngs_modulus: 200e9
+    shear_modulus: 80e9
+    poisson_ratio: 0.28
+    filter_window: 5
+    history_seconds: 10.0
+    update_period: 0.05
+    enable_visualization: true
+    publish_rate: 100.0
