@@ -3,6 +3,9 @@
 [![License](https://img.shields.io/badge/license-Apache%20License%202.0-blue)](LICENSE)
 [![Docker Pulls](https://img.shields.io/docker/pulls/your_dockerhub_username/your_image_name.svg)](https://hub.docker.com/layers/osrf/ros/jazzy-desktop-full/images/sha256-b706aba86d1be07e9dc2834bf54c9acf1be87c2bad1aea83cd2f49ff738b6f5e)
 
+## NEW
+A Franka Research 3 has been set up in the lab. Driver integration and controller development will start very soon!
+
 ## TL;DR
 End users can jump to [**Quick start**](#quick-start) to clone the repo, generate a `.env`, and bring up the stack.
 Administrators can refer to [**For administrators**](#for-administrators) for host setup details.
