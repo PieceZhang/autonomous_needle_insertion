@@ -1,0 +1,7 @@
+ati_sensor:
+  ros__parameters:
+    sensor_ip: "192.168.56.15"
+    rdt_port: 49152
+    max_retries: 3
+    timeout_seconds: 2.0
+    queue_size: 1000
