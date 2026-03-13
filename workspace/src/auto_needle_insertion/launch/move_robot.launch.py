@@ -10,6 +10,12 @@ from moveit_configs_utils import MoveItConfigsBuilder
 def generate_launch_description():
     ur_type_arg = DeclareLaunchArgument("ur_type", default_value="ur5e")
     ur_type     = LaunchConfiguration("ur_type")
+    ur_calibration_file_arg = DeclareLaunchArgument(
+        "ur_calibration_file",
+        default_value="/ani_ws/calibration/ur5e_calibration.yaml",
+        description="Path to UR calibration kinematics YAML",
+    )
+    ur_calibration_file = LaunchConfiguration("ur_calibration_file")
 
     mode_arg  = DeclareLaunchArgument("mode", default_value="ee_moveit_square")
     mode_name = LaunchConfiguration("mode")
@@ -42,7 +48,7 @@ def generate_launch_description():
     urdf_xacro = str(ur_desc_pkg / "urdf/ur.urdf.xacro")
 
     # UR xacro requires these four files; build them using substitutions so they accept ur_type at launch
-    kin_yaml  = PathJoinSubstitution([str(ur_desc_pkg), "config", ur_type, "default_kinematics.yaml"])
+    kin_yaml  = ur_calibration_file
     jl_yaml   = PathJoinSubstitution([str(ur_desc_pkg), "config", ur_type, "joint_limits.yaml"])
     phys_yaml = PathJoinSubstitution([str(ur_desc_pkg), "config", ur_type, "physical_parameters.yaml"])
     vis_yaml  = PathJoinSubstitution([str(ur_desc_pkg), "config", ur_type, "visual_parameters.yaml"])
@@ -91,4 +97,4 @@ def generate_launch_description():
         arguments=["--ros-args", "--log-level", log_level],
     )
 
-    return LaunchDescription([ur_type_arg, mode_arg, target_arg, log_level_arg, node])
+    return LaunchDescription([ur_type_arg, ur_calibration_file_arg, mode_arg, target_arg, log_level_arg, node])
