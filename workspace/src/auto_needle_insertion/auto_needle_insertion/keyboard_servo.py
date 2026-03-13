@@ -47,8 +47,10 @@ class MirrorServoNode(Node):
         self._declare_parameters()
         self._load_parameters()
 
-        self.us_probe = USProbe()
-        self.to_in_ee = self._load_transducer_calibration()
+        self.to_in_ee = np.eye(4)
+        if self.rotate_about_transducer_origin:
+            self.us_probe = USProbe()
+            self.to_in_ee = self._load_transducer_calibration()
 
         # TF setup
         self.tf_buffer = Buffer()
@@ -71,12 +73,12 @@ class MirrorServoNode(Node):
         # State
         self.last_commanded_local = np.zeros(3)
         self.key_map = {
-            "w": np.array([0.0, 1.0, 0.0]),
-            "s": np.array([0.0, -1.0, 0.0]),
+            "w": np.array([0.0, 0.0, 1.0]),
+            "s": np.array([0.0, 0.0, -1.0]),
             "d": np.array([1.0, 0.0, 0.0]),
             "a": np.array([-1.0, 0.0, 0.0]),
-            "e": np.array([0.0, 0.0, 1.0]),
-            "q": np.array([0.0, 0.0, -1.0]),
+            "e": np.array([0.0, 1.0, 0.0]),
+            "q": np.array([0.0, -1.0, 0.0]),
         }
         self.rot_key_map = {
             "r": np.array([1.0, 0.0, 0.0]),
@@ -92,16 +94,20 @@ class MirrorServoNode(Node):
 
         self.get_logger().info(
             f"Keyboard servo ready: [{self.glyph_topic}] drives "
-            f"[{self.ee_link}] about transducer origin in [{self.planning_frame}]"
+            f"[{self.ee_link}] local motion in [{self.twist_frame}]"
         )
         self.get_logger().info(
-            "Key map: W/S => +/-Y, A/D => +/-X, Q/E => +/-Z "
+            "Key map: W/S => +/-Z, A/D => +/-X, Q/E => +/-Y "
             f"at {self.key_speed:.3f} m/s."
         )
         self.get_logger().info(
             "Rotation map: R/F => +/-roll, T/G => +/-pitch, "
             f"Y/H => +/-yaw at {self.key_rot_speed:.3f} rad/s."
         )
+        if self.rotate_about_transducer_origin:
+            self.get_logger().info(
+                "Rotation compensation about transducer origin is enabled."
+            )
 
     def _declare_parameters(self) -> None:
         """Declare all ROS parameters with default values."""
@@ -113,12 +119,14 @@ class MirrorServoNode(Node):
         self.declare_parameter("servo_node_name", "servo_node")
         self.declare_parameter("servo_pose_topic", "/mirror_servo/pose_cmd")
         self.declare_parameter("servo_twist_topic", "/mirror_servo/twist_cmd")
+        self.declare_parameter("twist_frame", "ee_link")
         self.declare_parameter("twist_publish_rate_hz", 200.0)
         self.declare_parameter("speed_clamp_mps", 0.2)
         self.declare_parameter("rot_clamp_radps", 0.8)
         self.declare_parameter("hold_timeout_sec", 0.02)
         self.declare_parameter("key_speed_mps", 0.3)
         self.declare_parameter("key_rot_speed_radps", 0.3)
+        self.declare_parameter("rotate_about_transducer_origin", False)
         self.declare_parameter(
             "calibration_xml_path",
             "./calibration/PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20260111_SRIL.xml",
@@ -154,6 +162,14 @@ class MirrorServoNode(Node):
             self.get_parameter("servo_twist_topic")
             .get_parameter_value().string_value
         )
+        twist_frame_param = (
+            self.get_parameter("twist_frame")
+            .get_parameter_value().string_value.strip().lower()
+        )
+        self.twist_frame = (
+            self.planning_frame if twist_frame_param == "planning_frame"
+            else self.ee_link
+        )
         self.twist_rate = (
             self.get_parameter("twist_publish_rate_hz")
             .get_parameter_value().double_value
@@ -177,6 +193,10 @@ class MirrorServoNode(Node):
         self.key_rot_speed = (
             self.get_parameter("key_rot_speed_radps")
             .get_parameter_value().double_value
+        )
+        self.rotate_about_transducer_origin = (
+            self.get_parameter("rotate_about_transducer_origin")
+            .get_parameter_value().bool_value
         )
         self.calibration_xml_path = (
             self.get_parameter("calibration_xml_path")
@@ -242,12 +262,6 @@ class MirrorServoNode(Node):
         if key not in self.key_map and key not in self.rot_key_map:
             return
 
-        try:
-            T_base_ee = self.get_current_ee_transform()
-        except Exception as e:
-            self.get_logger().warn(f"TF lookup EE failed: {e}")
-            return
-
         v_local = np.zeros(3)
         omega_local = np.zeros(3)
         if key in self.key_map:
@@ -255,16 +269,27 @@ class MirrorServoNode(Node):
         if key in self.rot_key_map:
             omega_local = self.rot_key_map[key] * self.key_rot_speed
 
-        T_base_to = T_base_ee @ self.to_in_ee
-        R_base_to = T_base_to[:3, :3]
-        r_base = T_base_ee[:3, :3] @ self.to_in_ee[:3, 3]
+        v_cmd = v_local.copy()
+        omega_cmd = omega_local.copy()
 
-        v_base_to = R_base_to @ v_local
-        omega_base = R_base_to @ omega_local
-        v_base_ee = v_base_to - np.cross(omega_base, r_base)
+        if self.twist_frame == self.planning_frame:
+            try:
+                T_base_ee = self.get_current_ee_transform()
+            except Exception as e:
+                self.get_logger().warn(f"TF lookup EE failed: {e}")
+                return
+            R_base_ee = T_base_ee[:3, :3]
+            v_cmd = R_base_ee @ v_local
+            omega_cmd = R_base_ee @ omega_local
+            if self.rotate_about_transducer_origin and np.linalg.norm(omega_cmd) > 1e-12:
+                r_base = R_base_ee @ self.to_in_ee[:3, 3]
+                v_cmd = v_cmd - np.cross(omega_cmd, r_base)
+        elif self.rotate_about_transducer_origin and np.linalg.norm(omega_cmd) > 1e-12:
+            r_ee = self.to_in_ee[:3, 3]
+            v_cmd = v_cmd - np.cross(omega_cmd, r_ee)
 
-        v_world_for_ee = self.clamp(v_base_ee, self.speed_clamp)
-        omega_world_for_ee = self.clamp(omega_base, self.rot_clamp)
+        v_world_for_ee = self.clamp(v_cmd, self.speed_clamp)
+        omega_world_for_ee = self.clamp(omega_cmd, self.rot_clamp)
 
         self.last_commanded_local = v_local
         self.last_linear = v_world_for_ee
@@ -289,8 +314,7 @@ class MirrorServoNode(Node):
 
         msg = TwistStamped()
         msg.header.stamp = self.now_stamp()
-        # IMPORTANT: Twist must be expressed in the planning frame
-        msg.header.frame_id = self.planning_frame
+        msg.header.frame_id = self.twist_frame
         msg.twist.linear.x = float(lin[0])
         msg.twist.linear.y = float(lin[1])
         msg.twist.linear.z = float(lin[2])
