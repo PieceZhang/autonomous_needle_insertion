@@ -72,6 +72,9 @@ class MirrorServoNode(Node):
 
         # State
         self.last_commanded_local = np.zeros(3)
+        self.last_sent_frame_id = self.twist_frame
+        self._last_key_event_sec: Optional[float] = None
+        self._last_key_dt_sec: Optional[float] = None
         self.key_map = {
             "w": np.array([0.0, 0.0, 1.0]),
             "s": np.array([0.0, 0.0, -1.0]),
@@ -109,6 +112,30 @@ class MirrorServoNode(Node):
                 "Rotation compensation about transducer origin is enabled."
             )
 
+        if self.enable_axis_debug:
+            self.pub_debug_cmd_local = self.create_publisher(
+                TwistStamped, f"{self.debug_topic_prefix}/cmd_local", 10
+            )
+            self.pub_debug_actual_local = self.create_publisher(
+                TwistStamped, f"{self.debug_topic_prefix}/actual_local", 10
+            )
+            self.pub_debug_err_local = self.create_publisher(
+                TwistStamped, f"{self.debug_topic_prefix}/error_local", 10
+            )
+            self._debug_prev_T_base_ee = None
+            self._debug_prev_time_sec = None
+            self._debug_last_log_sec = -1e9
+            self._publish_prev_time_sec = None
+            self._publish_active_count = 0
+            self._publish_zero_count = 0
+            self._debug_last_publish_log_sec = -1e9
+            self.debug_timer = self.create_timer(
+                1.0 / max(self.debug_rate_hz, 1.0), self.debug_axis_cb
+            )
+            self.get_logger().info(
+                f"Axis debug enabled: publishing local twist diagnostics under [{self.debug_topic_prefix}]"
+            )
+
     def _declare_parameters(self) -> None:
         """Declare all ROS parameters with default values."""
         self.declare_parameter(
@@ -127,6 +154,11 @@ class MirrorServoNode(Node):
         self.declare_parameter("key_speed_mps", 0.3)
         self.declare_parameter("key_rot_speed_radps", 0.3)
         self.declare_parameter("rotate_about_transducer_origin", False)
+        self.declare_parameter("enable_axis_debug", True)
+        self.declare_parameter("debug_rate_hz", 30.0)
+        self.declare_parameter("debug_log_period_sec", 0.5)
+        self.declare_parameter("debug_topic_prefix", "/keyboard_servo/debug")
+        self.declare_parameter("debug_motion_epsilon", 1e-4)
         self.declare_parameter(
             "calibration_xml_path",
             "./calibration/PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20260111_SRIL.xml",
@@ -198,6 +230,26 @@ class MirrorServoNode(Node):
             self.get_parameter("rotate_about_transducer_origin")
             .get_parameter_value().bool_value
         )
+        self.enable_axis_debug = (
+            self.get_parameter("enable_axis_debug")
+            .get_parameter_value().bool_value
+        )
+        self.debug_rate_hz = (
+            self.get_parameter("debug_rate_hz")
+            .get_parameter_value().double_value
+        )
+        self.debug_log_period_sec = (
+            self.get_parameter("debug_log_period_sec")
+            .get_parameter_value().double_value
+        )
+        self.debug_topic_prefix = (
+            self.get_parameter("debug_topic_prefix")
+            .get_parameter_value().string_value
+        )
+        self.debug_motion_epsilon = (
+            self.get_parameter("debug_motion_epsilon")
+            .get_parameter_value().double_value
+        )
         self.calibration_xml_path = (
             self.get_parameter("calibration_xml_path")
             .get_parameter_value().string_value
@@ -253,6 +305,144 @@ class MirrorServoNode(Node):
             return v
         return v * (max_norm / n)
 
+    def _rotation_matrix_to_rotvec(self, R: np.ndarray) -> np.ndarray:
+        """Convert a rotation matrix to a rotation-vector (axis * angle)."""
+        tr = float(np.trace(R))
+        cos_theta = max(-1.0, min(1.0, 0.5 * (tr - 1.0)))
+        theta = float(np.arccos(cos_theta))
+        if theta < 1e-7:
+            return 0.5 * np.array([
+                R[2, 1] - R[1, 2],
+                R[0, 2] - R[2, 0],
+                R[1, 0] - R[0, 1],
+            ])
+        sin_theta = np.sin(theta)
+        if abs(sin_theta) < 1e-8:
+            # Near pi: fall back to skew approximation for numerical stability.
+            return 0.5 * np.array([
+                R[2, 1] - R[1, 2],
+                R[0, 2] - R[2, 0],
+                R[1, 0] - R[0, 1],
+            ])
+        axis = np.array([
+            R[2, 1] - R[1, 2],
+            R[0, 2] - R[2, 0],
+            R[1, 0] - R[0, 1],
+        ]) / (2.0 * sin_theta)
+        return axis * theta
+
+    def _publish_debug_twist(self, topic_pub, linear: np.ndarray, angular: np.ndarray) -> None:
+        """Publish one debug twist sample in EE-local frame."""
+        msg = TwistStamped()
+        msg.header.stamp = self.now_stamp()
+        msg.header.frame_id = self.ee_link
+        msg.twist.linear.x = float(linear[0])
+        msg.twist.linear.y = float(linear[1])
+        msg.twist.linear.z = float(linear[2])
+        msg.twist.angular.x = float(angular[0])
+        msg.twist.angular.y = float(angular[1])
+        msg.twist.angular.z = float(angular[2])
+        topic_pub.publish(msg)
+
+    def _log_coupling_metrics(self, cmd: np.ndarray, actual: np.ndarray, label: str) -> None:
+        """Log primary-axis response and orthogonal leakage."""
+        cmd_norm = np.linalg.norm(cmd)
+        if cmd_norm < 1e-6:
+            return
+        i = int(np.argmax(np.abs(cmd)))
+        axis_name = ["x", "y", "z"][i]
+        primary_cmd = float(cmd[i])
+        primary_actual = float(actual[i])
+        orth_norm = float(np.linalg.norm(np.delete(actual, i)))
+        leakage_ratio = orth_norm / max(abs(primary_cmd), 1e-9)
+        self.get_logger().info(
+            f"{label}: cmd_{axis_name}={primary_cmd:+.4f}, actual_{axis_name}={primary_actual:+.4f}, "
+            f"orth_norm={orth_norm:.4f}, leakage={100.0 * leakage_ratio:.1f}%"
+        )
+
+    def _log_cross_domain_coupling(
+        self,
+        v_local_cmd: np.ndarray,
+        omega_local_cmd: np.ndarray,
+        v_local_actual: np.ndarray,
+        omega_local_actual: np.ndarray,
+    ) -> None:
+        """Log angular leakage on linear commands and vice versa."""
+        eps = self.debug_motion_epsilon
+        lin_norm = float(np.linalg.norm(v_local_cmd))
+        ang_norm = float(np.linalg.norm(omega_local_cmd))
+        actual_lin_norm = float(np.linalg.norm(v_local_actual))
+        actual_ang_norm = float(np.linalg.norm(omega_local_actual))
+
+        if lin_norm > eps and ang_norm <= eps:
+            rot_leak_pct = 100.0 * actual_ang_norm / max(self.rot_clamp, 1e-9)
+            self.get_logger().info(
+                f"Cross coupling (linear->angular): actual_omega_norm={actual_ang_norm:.4f} rad/s ({rot_leak_pct:.1f}% of rot clamp)"
+            )
+        elif ang_norm > eps and lin_norm <= eps:
+            lin_leak_pct = 100.0 * actual_lin_norm / max(self.speed_clamp, 1e-9)
+            self.get_logger().info(
+                f"Cross coupling (angular->linear): actual_v_norm={actual_lin_norm:.4f} m/s ({lin_leak_pct:.1f}% of speed clamp)"
+            )
+
+    def debug_axis_cb(self) -> None:
+        """Publish and log commanded vs measured EE-local axis motion."""
+        try:
+            T_base_ee = self.get_current_ee_transform()
+        except Exception as e:
+            self.get_logger().warn(f"Axis debug TF lookup failed: {e}")
+            return
+
+        now_sec = self.get_clock().now().nanoseconds * 1e-9
+        R_base_ee = T_base_ee[:3, :3]
+        p_base_ee = T_base_ee[:3, 3]
+
+        if self._debug_prev_T_base_ee is None or self._debug_prev_time_sec is None:
+            self._debug_prev_T_base_ee = T_base_ee
+            self._debug_prev_time_sec = now_sec
+            return
+
+        dt = now_sec - self._debug_prev_time_sec
+        if dt <= 1e-4:
+            return
+
+        R_prev = self._debug_prev_T_base_ee[:3, :3]
+        p_prev = self._debug_prev_T_base_ee[:3, 3]
+        v_base_actual = (p_base_ee - p_prev) / dt
+        R_delta_base = R_base_ee @ R_prev.T
+        omega_base_actual = self._rotation_matrix_to_rotvec(R_delta_base) / dt
+
+        v_local_actual = R_base_ee.T @ v_base_actual
+        omega_local_actual = R_base_ee.T @ omega_base_actual
+
+        if self.last_sent_frame_id == self.planning_frame:
+            v_local_cmd = R_base_ee.T @ self.last_linear
+            omega_local_cmd = R_base_ee.T @ self.last_angular
+        else:
+            v_local_cmd = self.last_linear.copy()
+            omega_local_cmd = self.last_angular.copy()
+
+        v_local_err = v_local_actual - v_local_cmd
+        omega_local_err = omega_local_actual - omega_local_cmd
+
+        self._publish_debug_twist(self.pub_debug_cmd_local, v_local_cmd, omega_local_cmd)
+        self._publish_debug_twist(self.pub_debug_actual_local, v_local_actual, omega_local_actual)
+        self._publish_debug_twist(self.pub_debug_err_local, v_local_err, omega_local_err)
+
+        if (now_sec - self._debug_last_log_sec) >= self.debug_log_period_sec:
+            self._log_coupling_metrics(v_local_cmd, v_local_actual, "Linear coupling")
+            self._log_coupling_metrics(omega_local_cmd, omega_local_actual, "Angular coupling")
+            self._log_cross_domain_coupling(
+                v_local_cmd,
+                omega_local_cmd,
+                v_local_actual,
+                omega_local_actual,
+            )
+            self._debug_last_log_sec = now_sec
+
+        self._debug_prev_T_base_ee = T_base_ee
+        self._debug_prev_time_sec = now_sec
+
     def key_cb(self, msg: String) -> None:
         """Callback for keyboard glyph messages."""
         key = msg.data.strip().lower()
@@ -261,6 +451,11 @@ class MirrorServoNode(Node):
 
         if key not in self.key_map and key not in self.rot_key_map:
             return
+
+        now_sec = self.get_clock().now().nanoseconds * 1e-9
+        if self._last_key_event_sec is not None:
+            self._last_key_dt_sec = now_sec - self._last_key_event_sec
+        self._last_key_event_sec = now_sec
 
         v_local = np.zeros(3)
         omega_local = np.zeros(3)
@@ -294,6 +489,7 @@ class MirrorServoNode(Node):
         self.last_commanded_local = v_local
         self.last_linear = v_world_for_ee
         self.last_angular = omega_world_for_ee
+        self.last_sent_frame_id = self.twist_frame
         self.last_update_rostime = (
             self.get_clock().now().nanoseconds * 1e-9
         )
@@ -322,6 +518,36 @@ class MirrorServoNode(Node):
         msg.twist.angular.y = float(ang[1])
         msg.twist.angular.z = float(ang[2])
         self.pub_twist.publish(msg)
+
+        if self.enable_axis_debug:
+            if should_zero:
+                self._publish_zero_count += 1
+            else:
+                self._publish_active_count += 1
+
+            if self._publish_prev_time_sec is None:
+                pub_dt = 0.0
+            else:
+                pub_dt = now_sec - self._publish_prev_time_sec
+            self._publish_prev_time_sec = now_sec
+
+            if (now_sec - self._debug_last_publish_log_sec) >= self.debug_log_period_sec:
+                total = self._publish_active_count + self._publish_zero_count
+                active_pct = 100.0 * self._publish_active_count / max(total, 1)
+                cmd_age = (
+                    -1.0 if self.last_update_rostime is None
+                    else now_sec - self.last_update_rostime
+                )
+                key_dt = -1.0 if self._last_key_dt_sec is None else self._last_key_dt_sec
+                self.get_logger().info(
+                    "Command stream: "
+                    f"active={self._publish_active_count}, zero={self._publish_zero_count}, "
+                    f"active_pct={active_pct:.1f}%, hold_timeout={hold_timeout:.3f}s, "
+                    f"cmd_age={cmd_age:.3f}s, key_dt={key_dt:.3f}s, pub_dt={pub_dt:.4f}s"
+                )
+                self._publish_active_count = 0
+                self._publish_zero_count = 0
+                self._debug_last_publish_log_sec = now_sec
 
     def switch_servo_to_twist(self) -> None:
         """Switch servo node to TWIST command mode."""
