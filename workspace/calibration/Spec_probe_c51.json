@@ -1,0 +1,11 @@
+{
+  "probe_type": "Wisonic_C51",
+  "specifications": {
+    "center_frequency_mhz": "4",
+    "num_elements": "NA",
+    "imaging_depth_cm": "10",
+    "linear_fov_mm": "95",
+    "convex_radius_mm": "NA",
+    "convex_fov_deg": "NA"
+  }
+}

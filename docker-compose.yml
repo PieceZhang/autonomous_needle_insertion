@@ -268,6 +268,49 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  ati_ft_nano17_driver:
+    <<: *ros_common
+    container_name: "${COMPOSE_PROJECT_NAME:-ros2}-ati-ft-nano17-driver"
+    profiles: [ "default", "dev" ]
+    command: >
+      bash -lc "
+        set -e;
+        if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi;
+        if [ -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then source ${RUNTIME_WS_DIR}/install/setup.bash; fi;
+        echo 'Running ATI force sensor Python driver...';
+        python3 ${RUNTIME_WS_DIR}/src/needle_deflection_system/needle_deflection_system/ati_force_sensor_driver.py
+      "
+    healthcheck:
+      test: [ "CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; if [ -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then source ${RUNTIME_WS_DIR}/install/setup.bash; fi; ros2 topic list | grep -q '/force_torque'" ]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+  needle_deflection_calculator:
+    <<: *ros_common
+    container_name: "${COMPOSE_PROJECT_NAME:-ros2}-needle-deflection-calculator"
+    profiles: [ "default", "dev" ]
+    command: >
+      bash -lc "
+        set -e;
+        if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi;
+        if [ -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then source ${RUNTIME_WS_DIR}/install/setup.bash; fi;
+        echo 'Running needle deflection calculator...';
+        ros2 run needle_deflection_system needle_deflection_calculator
+      "
+    depends_on:
+      ati_ft_nano17_driver:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; if [ -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then source ${RUNTIME_WS_DIR}/install/setup.bash; fi; ros2 topic list | grep -q '/needle_deflection'" ]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
   dev:
     <<: *ros_common
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-dev"
@@ -290,6 +333,10 @@ services:
       keyboard_driver:
         condition: service_healthy
       us_visualizer:
+        condition: service_healthy
+      ati_ft_nano17_driver:
+        condition: service_healthy
+      needle_deflection_calculator:
         condition: service_healthy
     command: >
       bash -lc "
