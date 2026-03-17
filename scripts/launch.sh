@@ -3,6 +3,37 @@ set -euo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
 DEV_CONTAINER="autonomous_needle_insertion-dev"
+STARTUP_TIMEOUT_SEC=180
+
+wait_for_service_ready() {
+  local service="$1"
+  local timeout="${2:-$STARTUP_TIMEOUT_SEC}"
+  local elapsed=0
+  local cid=""
+  local state=""
+  local health=""
+
+  while (( elapsed < timeout )); do
+    cid="$(docker compose ps -q "${service}" 2>/dev/null || true)"
+    if [[ -n "${cid}" ]]; then
+      state="$(docker inspect -f '{{.State.Status}}' "${cid}" 2>/dev/null || true)"
+      health="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "${cid}" 2>/dev/null || true)"
+      if [[ "${health}" == "healthy" ]]; then
+        echo "Service '${service}' is healthy."
+        return 0
+      fi
+      if [[ -z "${health}" && "${state}" == "running" ]]; then
+        echo "Service '${service}' is running (no healthcheck configured)."
+        return 0
+      fi
+    fi
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
+
+  echo "Warning: timed out waiting for service '${service}' (state='${state}', health='${health}')." >&2
+  return 1
+}
 
 print_help() {
   cat <<EOF
@@ -52,6 +83,14 @@ echo
 echo "Starting dev stack with docker compose..."
 docker compose --profile dev up -d
 echo
+
+echo "Waiting for driver services to be ready..."
+wait_for_service_ready ur_driver
+wait_for_service_ready franka_driver
+wait_for_service_ready polaris_driver
+wait_for_service_ready polaris_camera_driver
+wait_for_service_ready ati_ft_driver
+wait_for_service_ready keyboard_driver
 
 echo "docker compose up -d completed. Checking dev container status..."
 

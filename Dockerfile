@@ -5,6 +5,7 @@ SHELL ["/bin/bash","-lc"]
 RUN printf '%s\n' \
   'if [ -f "/opt/ros/$ROS_DISTRO/setup.bash" ]; then source "/opt/ros/$ROS_DISTRO/setup.bash"; fi' \
   '[ -f /opt/ndi_ws/install/setup.bash ] && source /opt/ndi_ws/install/setup.bash' \
+  '[ -f /opt/franka_ws/install/setup.bash ] && source /opt/franka_ws/install/setup.bash' \
   '[ -f /ws/install/setup.bash ] && source /ws/install/setup.bash' \
   >> /etc/bash.bashrc
 
@@ -85,6 +86,7 @@ RUN apt-get update \
  && apt-get install -y \
       ros-$ROS_DISTRO-rmw-cyclonedds-cpp \
       python3-colcon-common-extensions \
+      python3-vcstool \
       python3-pip\
       git \
       build-essential \
@@ -140,9 +142,10 @@ RUN apt-get update \
 ARG NDI_WS=/opt/ndi_ws
 ARG ATI_WS=/opt/ati_ws
 ARG KB_WS=/opt/kb_ws
+ARG FRANKA_WS=/opt/franka_ws
 
 # Prepare workspace and copy local subtree (ensure .dockerignore does not exclude it)
-RUN mkdir -p ${NDI_WS}/src ${ATI_WS}/src ${KB_WS}/src
+RUN mkdir -p ${NDI_WS}/src ${ATI_WS}/src ${KB_WS}/src ${FRANKA_WS}/src
 # NDI Polaris drivers
 COPY ndi_ros2_driver ${NDI_WS}/src/ndi_ros2_driver
 COPY third_party/gscam2 ${NDI_WS}/src/gscam2
@@ -151,6 +154,8 @@ COPY third_party/ros2_shared ${NDI_WS}/src/ros2_shared
 COPY third_party/ros2_net_ft_driver ${ATI_WS}/src/ros2_net_ft_driver
 # Keyboard driver
 COPY third_party/keystroke ${KB_WS}/src/keystroke
+# Franka ROS2 driver
+COPY third_party/franka_ros2 ${FRANKA_WS}/src
 
 RUN set -eo pipefail \
  && rosdep init || true \
@@ -164,7 +169,11 @@ RUN set -eo pipefail \
  && colcon build --merge-install --base-paths ${ATI_WS}/src --install-base ${ATI_WS}/install \
  # Install and build keyboard workspace
  && rosdep install --from-paths ${KB_WS}/src -i -y --rosdistro $ROS_DISTRO \
- && colcon build --merge-install --base-paths ${KB_WS}/src --install-base ${KB_WS}/install
+ && colcon build --merge-install --base-paths ${KB_WS}/src --install-base ${KB_WS}/install \
+ # Install and build Franka workspace (imports dependency.repos per upstream franka_ros2 workflow)
+ && vcs import ${FRANKA_WS}/src < ${FRANKA_WS}/src/dependency.repos --recursive --skip-existing \
+ && rosdep install --from-paths ${FRANKA_WS}/src -i -y --rosdistro $ROS_DISTRO \
+ && colcon build --merge-install --base-paths ${FRANKA_WS}/src --install-base ${FRANKA_WS}/install
 
 # --- ROS-aware Python & Pip wrappers for IDEs (PyCharm) ---
 RUN set -Eeuo pipefail; \

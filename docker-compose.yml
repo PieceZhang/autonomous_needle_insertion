@@ -77,6 +77,32 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  franka_driver:
+    <<: *ros_common
+    container_name: "${COMPOSE_PROJECT_NAME:-ros2}-franka-driver"
+    profiles: ["default", "franka_test", "dev"]
+    privileged: true
+    cap_add:
+      - SYS_NICE
+    ulimits:
+      rtprio: 99
+      rttime: -1
+      memlock: 8428281856
+    command: >
+      bash -lc "
+        set -e;
+        if [ -f /opt/franka_ws/install/setup.bash ]; then source /opt/franka_ws/install/setup.bash; fi;
+        echo 'Starting Franka driver with robot type' ${FRANKA_ROBOT_TYPE:-fr3} ', robot IP' ${FRANKA_ROBOT_IP:-dont-care} ', use_fake_hardware=' ${FRANKA_USE_FAKE_HARDWARE:-true};
+        ros2 launch franka_bringup franka.launch.py robot_type:=${FRANKA_ROBOT_TYPE:-fr3} robot_ip:=${FRANKA_ROBOT_IP:-dont-care} use_fake_hardware:=${FRANKA_USE_FAKE_HARDWARE:-true} load_gripper:=${FRANKA_LOAD_GRIPPER:-false}
+      "
+    healthcheck:
+      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/franka_ws/install/setup.bash ]; then source /opt/franka_ws/install/setup.bash; fi;"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
   polaris_driver:
     <<: *ros_common
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-polaris-driver"
@@ -317,6 +343,8 @@ services:
     profiles: ["dev"]
     depends_on:
       ur_driver:
+        condition: service_healthy
+      franka_driver:
         condition: service_healthy
       polaris_driver:
         condition: service_healthy
