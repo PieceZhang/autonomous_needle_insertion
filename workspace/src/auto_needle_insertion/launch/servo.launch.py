@@ -13,6 +13,12 @@ def generate_launch_description():
     # Launch arguments
     ur_type_arg = DeclareLaunchArgument("ur_type", default_value="ur5e")
     ur_type = LaunchConfiguration("ur_type")
+    ur_calibration_file_arg = DeclareLaunchArgument(
+        "ur_calibration_file",
+        default_value="/ani_ws/calibration/ur5e_calibration.yaml",
+        description="Path to UR calibration kinematics YAML",
+    )
+    ur_calibration_file = LaunchConfiguration("ur_calibration_file")
 
     # Package paths
     ur_moveit_pkg = Path(get_package_share_directory("ur_moveit_config"))
@@ -31,7 +37,7 @@ def generate_launch_description():
     urdf_xacro = str(ur_desc_pkg / "urdf/ur.urdf.xacro")
 
     # Required xacro mappings for UR robots
-    kin_yaml  = PathJoinSubstitution([str(ur_desc_pkg), "config", ur_type, "default_kinematics.yaml"])  # per model
+    kin_yaml  = ur_calibration_file  # per-robot calibration
     jl_yaml   = PathJoinSubstitution([str(ur_desc_pkg), "config", ur_type, "joint_limits.yaml"])       # per model
     phys_yaml = PathJoinSubstitution([str(ur_desc_pkg), "config", ur_type, "physical_parameters.yaml"]) # per model
     vis_yaml  = PathJoinSubstitution([str(ur_desc_pkg), "config", ur_type, "visual_parameters.yaml"])   # per model
@@ -108,17 +114,18 @@ def generate_launch_description():
         output="screen",
     )
 
-    # Tool follower node
-    tool_follower = Node(
+    # Keyboard servo node
+    keyboard_servo = Node(
         package="auto_needle_insertion",
-        executable="tool_follower",
-        name="tool_follower",
+        executable="keyboard_servo",
+        name="keyboard_servo",
         output="screen",
     )
 
     return LaunchDescription([
         ur_type_arg,
+        ur_calibration_file_arg,
         servo,
         static_polaris_to_base,
-        tool_follower,
+        keyboard_servo,
     ])

@@ -42,7 +42,7 @@ services:
       bash -lc "
         if [ -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then source ${RUNTIME_WS_DIR}/install/setup.bash; fi;
         echo 'Starting UR driver with IP ' ${UR_ROBOT_IP};
-        ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur5e robot_ip:=${UR_ROBOT_IP} launch_rviz:=false
+        ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur5e robot_ip:=${UR_ROBOT_IP} kinematics_params_file:=${RUNTIME_WS_DIR}/calibration/ur5e_calibration.yaml launch_rviz:=false
       "
     healthcheck:
       # Real readiness = robot reachable + External Control running + robot mode RUNNING. Wait for:
@@ -66,7 +66,7 @@ services:
       bash -lc "
         if [ -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then source ${RUNTIME_WS_DIR}/install/setup.bash; fi;
         echo 'Starting UR driver with IP ' ${UR_ROBOT_IP};
-        ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur5e robot_ip:=0.0.0.0 use_mock_hardware:=true initial_joint_controller:=joint_trajectory_controller launch_rviz:=false
+        ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur5e robot_ip:=0.0.0.0 use_mock_hardware:=true initial_joint_controller:=joint_trajectory_controller kinematics_params_file:=${RUNTIME_WS_DIR}/calibration/ur5e_calibration.yaml launch_rviz:=false
       "
     healthcheck:
 #      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q /urscript_interface/script_command"]
