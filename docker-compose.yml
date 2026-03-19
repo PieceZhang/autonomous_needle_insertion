@@ -81,7 +81,6 @@ services:
     <<: *ros_common
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-franka-driver"
     profiles: ["default", "franka_test", "dev"]
-    privileged: true
     cap_add:
       - SYS_NICE
     ulimits:
