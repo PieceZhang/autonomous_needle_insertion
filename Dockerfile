@@ -173,7 +173,7 @@ RUN set -eo pipefail \
  # Install and build Franka workspace (imports dependency.repos per upstream franka_ros2 workflow)
  && vcs import ${FRANKA_WS}/src < ${FRANKA_WS}/src/dependency.repos --recursive --skip-existing \
  && rosdep install --from-paths ${FRANKA_WS}/src -i -y --rosdistro $ROS_DISTRO \
- && colcon build --merge-install --base-paths ${FRANKA_WS}/src --install-base ${FRANKA_WS}/install
+ && colcon build --merge-install --base-paths ${FRANKA_WS}/src --install-base ${FRANKA_WS}/install --cmake-args -DBUILD_TESTING=OFF
 
 # --- ROS-aware Python & Pip wrappers for IDEs (PyCharm) ---
 RUN set -Eeuo pipefail; \
