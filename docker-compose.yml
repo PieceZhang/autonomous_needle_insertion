@@ -81,7 +81,6 @@ services:
     <<: *ros_common
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-franka-driver"
     profiles: ["default", "franka-test", "dev"]
-    privileged: true
     cap_add:
       - SYS_NICE
     ulimits:
@@ -365,6 +364,26 @@ services:
       ati_ft_nano17_driver:
         condition: service_healthy
       needle_deflection_calculator:
+        condition: service_healthy
+    command: >
+      bash -lc "
+        set -e;
+        if [ ! -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then
+          cd ${RUNTIME_WS_DIR};
+          colcon build --symlink-install --packages-select ${PACKAGE_NAME:-/auto_needle_insertion};
+        fi;
+        source ${RUNTIME_WS_DIR}/install/setup.bash;
+        echo 'Development container with all drivers';
+        exec sleep infinity
+      "
+    restart: unless-stopped
+
+  franka-dev:
+    <<: *ros_common
+    container_name: "${COMPOSE_PROJECT_NAME:-ros2}-franka-dev"
+    profiles: ["franka-test"]
+    depends_on:
+      franka_driver:
         condition: service_healthy
     command: >
       bash -lc "
