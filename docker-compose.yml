@@ -80,7 +80,7 @@ services:
   franka_driver:
     <<: *ros_common
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-franka-driver"
-    profiles: ["default", "franka_test", "dev"]
+    profiles: ["default", "franka-test", "dev"]
     privileged: true
     cap_add:
       - SYS_NICE
@@ -344,16 +344,12 @@ services:
     depends_on:
       ur_driver:
         condition: service_healthy
-      franka_driver:
-        condition: service_healthy
       polaris_driver:
         condition: service_healthy
       polaris_camera_driver:
         condition: service_healthy
       polaris_image_compressed:
         condition: service_healthy
-#      realsense_driver:
-#        condition: service_healthy
       ati_ft_driver:
         condition: service_healthy
       usb_video_grabber:
@@ -362,9 +358,29 @@ services:
         condition: service_healthy
       us_visualizer:
         condition: service_healthy
-      ati_ft_nano17_driver:
-        condition: service_healthy
-      needle_deflection_calculator:
+#      ati_ft_nano17_driver:
+#        condition: service_healthy
+#      needle_deflection_calculator:
+#        condition: service_healthy
+    command: >
+      bash -lc "
+        set -e;
+        if [ ! -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then
+          cd ${RUNTIME_WS_DIR};
+          colcon build --symlink-install --packages-select ${PACKAGE_NAME:-/auto_needle_insertion};
+        fi;
+        source ${RUNTIME_WS_DIR}/install/setup.bash;
+        echo 'Development container with all drivers';
+        exec sleep infinity
+      "
+    restart: unless-stopped
+
+  franka-dev:
+    <<: *ros_common
+    container_name: "${COMPOSE_PROJECT_NAME:-ros2}-franka-dev"
+    profiles: ["franka-test"]
+    depends_on:
+      franka_driver:
         condition: service_healthy
     command: >
       bash -lc "
