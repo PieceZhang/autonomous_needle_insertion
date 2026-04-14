@@ -2,7 +2,7 @@
 # - by the prefix "ndi/", we spawn the controller manager under namespace "ndi"
 ndi/controller_manager:
   ros__parameters:
-    update_rate: 100 # Hz
+    update_rate: 20 # Hz
 
     # BEGIN: add broadcaster for each tracker here
     # - broadcaster name should be distinct
