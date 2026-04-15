@@ -1,4 +1,4 @@
-FROM osrf/ros:jazzy-desktop-full
+FROM osrf/ros:jazzy-desktop-full-noble@sha256:da0f4fadcc085bd38fc86ad531d3a8d23eab6fd575065521aee0a5dc3236a06a
 SHELL ["/bin/bash","-lc"]
 
 # Ensure ALL interactive bash shells (for any user) source ROS and local workspaces
