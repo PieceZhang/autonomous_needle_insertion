@@ -3,6 +3,40 @@ set -euo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
 DEV_CONTAINER="autonomous_needle_insertion-dev"
+DEV_IMAGE="aniros:jazzy-dev"
+DOCKERFILE_PATH="Dockerfile"
+
+image_needs_rebuild() {
+  # Rebuild is required when the target image is missing.
+  if ! docker image inspect "${DEV_IMAGE}" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if [[ ! -f "${DOCKERFILE_PATH}" ]]; then
+    return 1
+  fi
+
+  local dockerfile_mtime
+  dockerfile_mtime=$(stat -f '%m' "${DOCKERFILE_PATH}")
+
+  local image_created_epoch
+  image_created_epoch=$(docker image inspect --format '{{.Created}}' "${DEV_IMAGE}" \
+    | python3 -c 'import datetime, sys; s=sys.stdin.read().strip(); print(int(datetime.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()))')
+
+  [[ "${dockerfile_mtime}" -gt "${image_created_epoch}" ]]
+}
+
+confirm_rebuild() {
+  local answer
+  while true; do
+    read -r -p "Container image may be outdated. Rebuild now? [y/N]: " answer
+    case "${answer}" in
+      [Yy]|[Yy][Ee][Ss]) return 0 ;;
+      ""|[Nn]|[Nn][Oo]) return 1 ;;
+      *) echo "Please answer yes or no." ;;
+    esac
+  done
+}
 
 print_help() {
   cat <<EOF
@@ -14,6 +48,8 @@ Behaviour:
   - If container '${DEV_CONTAINER}' is already running:
         Directly attach an interactive bash shell inside the container.
   - If container '${DEV_CONTAINER}' is not running:
+        0. Check whether image '${DEV_IMAGE}' may be outdated (missing or older than Dockerfile).
+           If outdated, ask whether to rebuild it first.
         1. Allow local X11 clients via 'xhost +local:'.
         2. Run 'docker compose --profile dev up -d'.
         3. Check container status.
@@ -44,6 +80,23 @@ if [[ -n "$existing_cid" ]]; then
 fi
 
 echo "Container '${DEV_CONTAINER}' is not running. Starting dev stack..."
+
+if image_needs_rebuild; then
+  echo "Detected that '${DEV_IMAGE}' may need a rebuild before launch."
+
+  if [[ -t 0 ]]; then
+    if confirm_rebuild; then
+      echo "Rebuilding '${DEV_IMAGE}'..."
+      ./scripts/build.sh
+    else
+      echo "Skipping rebuild and continuing with existing image."
+    fi
+  else
+    echo "Non-interactive shell detected; skipping rebuild prompt and continuing without rebuild." >&2
+  fi
+
+  echo
+fi
 
 # Allow local X11 clients (ignore failure but warn)
 xhost +local: || echo "Warning: xhost +local: failed (X11 may not work inside the container)" >&2
