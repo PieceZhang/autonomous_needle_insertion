@@ -92,13 +92,13 @@ services:
         set -e;
         if [ -f /opt/franka_ws/install/setup.bash ]; then source /opt/franka_ws/install/setup.bash; fi;
         echo 'Starting Franka driver with robot type' ${FRANKA_ROBOT_TYPE:-fr3} ', robot IP' ${FRANKA_ROBOT_IP:-dont-care} ', use_fake_hardware=' ${FRANKA_USE_FAKE_HARDWARE:-true};
-        ros2 launch franka_bringup franka.launch.py robot_type:=${FRANKA_ROBOT_TYPE:-fr3} robot_ip:=${FRANKA_ROBOT_IP:-dont-care} use_fake_hardware:=${FRANKA_USE_FAKE_HARDWARE:-true} load_gripper:=${FRANKA_LOAD_GRIPPER:-false}
+        ros2 launch franka_bringup franka.launch.py robot_type:=${FRANKA_ROBOT_TYPE:-fr3} robot_ip:=${FRANKA_ROBOT_IP:-dont-care} use_fake_hardware:=${FRANKA_USE_FAKE_HARDWARE:-true} load_gripper:=${FRANKA_LOAD_GRIPPER:-false} namespace:=franka
       "
     healthcheck:
       test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/franka_ws/install/setup.bash ]; then source /opt/franka_ws/install/setup.bash; fi;"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 2
       start_period: 20s
     restart: unless-stopped
 
