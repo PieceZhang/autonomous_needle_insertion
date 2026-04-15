@@ -6,6 +6,30 @@ DEV_CONTAINER="autonomous_needle_insertion-dev"
 DEV_IMAGE="aniros:jazzy-dev"
 DOCKERFILE_PATH="Dockerfile"
 
+get_file_mtime_epoch() {
+  local file_path="$1"
+
+  # GNU coreutils (Linux)
+  if stat -c '%Y' "${file_path}" >/dev/null 2>&1; then
+    stat -c '%Y' "${file_path}"
+    return 0
+  fi
+
+  # BSD/macOS
+  if stat -f '%m' "${file_path}" >/dev/null 2>&1; then
+    stat -f '%m' "${file_path}"
+    return 0
+  fi
+
+  # Portable fallback
+  python3 - "${file_path}" <<'PY'
+import os
+import sys
+
+print(int(os.path.getmtime(sys.argv[1])))
+PY
+}
+
 image_needs_rebuild() {
   # Rebuild is required when the target image is missing.
   if ! docker image inspect "${DEV_IMAGE}" >/dev/null 2>&1; then
@@ -17,11 +41,20 @@ image_needs_rebuild() {
   fi
 
   local dockerfile_mtime
-  dockerfile_mtime=$(stat -f '%m' "${DOCKERFILE_PATH}")
+  dockerfile_mtime=$(get_file_mtime_epoch "${DOCKERFILE_PATH}" 2>/dev/null || true)
+  if [[ -z "${dockerfile_mtime}" || ! "${dockerfile_mtime}" =~ ^[0-9]+$ ]]; then
+    echo "Warning: unable to read mtime for '${DOCKERFILE_PATH}', skipping rebuild check." >&2
+    return 1
+  fi
 
   local image_created_epoch
   image_created_epoch=$(docker image inspect --format '{{.Created}}' "${DEV_IMAGE}" \
-    | python3 -c 'import datetime, sys; s=sys.stdin.read().strip(); print(int(datetime.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()))')
+    | python3 -c 'import datetime, sys; s=sys.stdin.read().strip(); print(int(datetime.datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()))' \
+    || true)
+  if [[ -z "${image_created_epoch}" || ! "${image_created_epoch}" =~ ^[0-9]+$ ]]; then
+    echo "Warning: unable to parse image creation time for '${DEV_IMAGE}', skipping rebuild check." >&2
+    return 1
+  fi
 
   [[ "${dockerfile_mtime}" -gt "${image_created_epoch}" ]]
 }
