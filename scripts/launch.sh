@@ -274,19 +274,9 @@ echo "Starting stack with docker compose profile '${PROFILE}'..."
 docker compose --profile "${PROFILE}" up -d
 echo
 
-echo "Waiting for driver services to be ready..."
-if [[ "${PROFILE}" == "dev" ]]; then
-  echo "PROFILE='${PROFILE}': waiting for full driver set."
-  wait_for_service_ready ur_driver
-  wait_for_service_ready franka_driver
-  wait_for_service_ready polaris_driver
-  wait_for_service_ready polaris_camera_driver
-  wait_for_service_ready ati_ft_driver
-  wait_for_service_ready keyboard_driver
-else
-  echo "PROFILE='${PROFILE}': waiting only for franka_driver."
-  wait_for_service_ready franka_driver
-fi
+echo "Waiting for attach service '${ATTACH_SERVICE}' to be ready..."
+# Keep readiness source-of-truth in docker-compose.yml via depends_on: condition: service_healthy.
+wait_for_service_ready "${ATTACH_SERVICE}"
 
 echo "docker compose up -d completed. Checking attach service status..."
 
