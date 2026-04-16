@@ -1,21 +1,19 @@
-FROM osrf/ros:jazzy-desktop-full-noble@sha256:da0f4fadcc085bd38fc86ad531d3a8d23eab6fd575065521aee0a5dc3236a06a
+###############################################################################
+# Stage 1: base – shared ROS 2 Jazzy layer (no driver-specific packages)
+###############################################################################
+FROM osrf/ros:jazzy-desktop-full-noble@sha256:da0f4fadcc085bd38fc86ad531d3a8d23eab6fd575065521aee0a5dc3236a06a AS base
 SHELL ["/bin/bash","-lc"]
 
-# Ensure ALL interactive bash shells (for any user) source ROS and local workspaces
+# Ensure ALL interactive bash shells source ROS setup
 RUN printf '%s\n' \
   'if [ -f "/opt/ros/$ROS_DISTRO/setup.bash" ]; then source "/opt/ros/$ROS_DISTRO/setup.bash"; fi' \
-  '[ -f /opt/ndi_ws/install/setup.bash ] && source /opt/ndi_ws/install/setup.bash' \
-  '[ -f /opt/franka_ws/install/setup.bash ] && source /opt/franka_ws/install/setup.bash' \
-  '[ -f /ws/install/setup.bash ] && source /ws/install/setup.bash' \
   >> /etc/bash.bashrc
 
 ARG UBUNTU_MIRRORS="https://ubuntu-archive.mirrorservice.org/ubuntu https://mirror.ox.ac.uk/sites/archive.ubuntu.com/ubuntu https://archive.ubuntu.com/ubuntu https://ftp.jaist.ac.jp/pub/Linux/ubuntu https://ftp.riken.jp/Linux/ubuntu https://ftp.kaist.ac.kr/ubuntu https://mirror.kakao.com/ubuntu https://free.nchc.org.tw/ubuntu https://mirror.xtom.com.hk/ubuntu https://mirrors.tuna.tsinghua.edu.cn/ubuntu https://mirrors.ustc.edu.cn/ubuntu https://mirrors.bfsu.edu.cn/ubuntu https://mirrors.aliyun.com/ubuntu https://mirrors.sjtug.sjtu.edu.cn/ubuntu"
 ENV UBUNTU_MIRRORS="${UBUNTU_MIRRORS}"
 RUN set -eux; \
-#  apt-get update; \
   apt-get install -y --no-install-recommends curl ca-certificates gnupg; \
   . /etc/os-release; CODENAME="${UBUNTU_CODENAME}"; \
-  # Try country-specific list (UK) briefly; fall back to curated list
   GB_LIST=$(curl -fsSL --max-time 2 https://mirrors.ubuntu.com/GB.txt || true); \
   cand="${UBUNTU_MIRRORS:-https://archive.ubuntu.com/ubuntu}"; \
   if [ -n "$GB_LIST" ]; then cand="$GB_LIST $cand"; fi; \
@@ -31,14 +29,12 @@ RUN set -eux; \
     done; \
   done; \
   : "${fastest:=https://archive.ubuntu.com/ubuntu}"; \
-  # Use deb822-style ubuntu.sources exclusively to avoid duplicates with sources.list
   rm -f /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; \
   printf 'Types: deb\nURIs: %s\nSuites: %s %s-updates %s-backports\nComponents: main restricted universe multiverse\n\nTypes: deb\nURIs: https://security.ubuntu.com/ubuntu\nSuites: %s-security\nComponents: main restricted universe multiverse\n' \
     "$fastest" "$CODENAME" "$CODENAME" "$CODENAME" "$CODENAME" > /etc/apt/sources.list.d/ubuntu.sources; \
   echo "Ubuntu archive mirror chosen: $fastest (best=${best}s)"; \
   cat /etc/apt/sources.list.d/ubuntu.sources
 
-# Reduce apt index payload to speed up `apt update`
 RUN printf '%s\n' \
   'Acquire::Languages "none";' \
   'Acquire::IndexTargets::deb::Contents-deb::DefaultEnabled "false";' \
@@ -46,16 +42,12 @@ RUN printf '%s\n' \
   'Acquire::Retries "2";' \
   > /etc/apt/apt.conf.d/99lean-apt
 
-# Detect and use the fastest ROS 2 APT mirror (with packages.ros.org as fallback)
-# Replace preconfigured ROS 2 source with a mirror (avoid Signed-By conflicts)
 ARG ROS2_MIRRORS="https://mirror.umd.edu/packages.ros.org/ros2/ubuntu http://ftp.tudelft.nl/ros2/ubuntu http://packages.ros.org/ros2/ubuntu"
 ENV ROS2_MIRRORS="${ROS2_MIRRORS}"
 RUN set -eux; \
-  # Remove any preconfigured ROS 2 sources from the base image (deb822 and legacy)
   rm -f /etc/apt/sources.list.d/ros2*.sources /etc/apt/sources.list.d/*ros2*.list \
         /etc/apt/sources.list.d/*ros*.sources /etc/apt/sources.list.d/*ros*.list \
         /usr/share/ros-apt-source/*ros2*.sources || true; \
-  # Ensure keyring directory exists and install ROS GPG key (for Signed-By below)
   mkdir -p /usr/share/keyrings; \
   curl -fsSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
     | gpg --dearmor -o /usr/share/keyrings/ros-archive-keyring.gpg; \
@@ -74,7 +66,6 @@ RUN set -eux; \
     done; \
   done; \
   if [ -z "$fastest" ]; then fastest="http://packages.ros.org/ros2/ubuntu"; fi; \
-  # Work around known TLS/SNI certificate mismatch on packages.ros.org by preferring HTTP (APT verifies package signatures) \
   case "$fastest" in \
     https://packages.ros.org/*) fastest="http://packages.ros.org/ros2/ubuntu" ;; \
   esac; \
@@ -82,12 +73,13 @@ RUN set -eux; \
   echo "ROS 2 mirror chosen: $fastest (best=${best}s)"; \
   cat /etc/apt/sources.list.d/ros2.sources
 
+# Common packages shared by ALL images (NO ros2-control, UR, MoveIt, or GStreamer)
 RUN apt-get update \
  && apt-get install -y \
       ros-$ROS_DISTRO-rmw-cyclonedds-cpp \
       python3-colcon-common-extensions \
       python3-vcstool \
-      python3-pip\
+      python3-pip \
       git \
       build-essential \
       cmake \
@@ -96,101 +88,35 @@ RUN apt-get update \
       python3-rosdep \
       python3-pyqtgraph \
       python3-pynput \
-#      iproute2 iputils-ping net-tools netcat-openbsd dnsutils traceroute tcpdump \
-      # Controller and planning packages for UR
-      ros-$ROS_DISTRO-ros2controlcli \
-      ros-$ROS_DISTRO-ros2-control \
-      ros-$ROS_DISTRO-ros2-controllers \
-      ros-$ROS_DISTRO-ur \
-      ros-$ROS_DISTRO-ur-description \
-      ros-$ROS_DISTRO-ur-moveit-config \
       ros-$ROS_DISTRO-tf2-tools \
-      ros-$ROS_DISTRO-moveit \
-      ros-$ROS_DISTRO-moveit-py \
-      ros-$ROS_DISTRO-moveit-planners-ompl \
-      ros-$ROS_DISTRO-moveit-ros-control-interface \
-      ros-$ROS_DISTRO-moveit-simple-controller-manager \
-#      ros-$ROS_DISTRO-launch-param-builder \
-#      ros-$ROS_DISTRO-moveit-configs-utils \
-      # Dependencies for GStreamer
-      libgstreamer1.0-dev \
-      libgstreamer-plugins-base1.0-dev \
-      gstreamer1.0-tools \
-      gstreamer1.0-plugins-base \
-      gstreamer1.0-plugins-good \
-      gstreamer1.0-plugins-bad \
-      gstreamer1.0-plugins-ugly \
-      gstreamer1.0-libav \
-      # Package for Intel Realsense
       ros-$ROS_DISTRO-realsense2-* \
-      # Packages for hardware acceleration
+      # Hardware acceleration / GUI
       mesa-utils \
       x11-apps \
       libgl1 \
       libgl1-mesa-dri \
-      # Packages for rosbag
+      # Rosbag
       ros-$ROS_DISTRO-ros2bag \
       ros-$ROS_DISTRO-rosbag2-storage-default-plugins \
       ros-$ROS_DISTRO-rosbag2-transport \
-      # Packages for usb video grabber
+      # USB video grabber
       ros-$ROS_DISTRO-v4l2-camera \
-      # === Added for US visualizer (OpenCV + cv_bridge) ===
+      # OpenCV + cv_bridge
       python3-opencv \
       ros-$ROS_DISTRO-cv-bridge \
       ros-$ROS_DISTRO-image-transport-plugins
-# && rm -rf /var/lib/apt/lists/* \
 
-# --- Build drivers from local source into their workspaces ---
-ARG NDI_WS=/opt/ndi_ws
-ARG ATI_WS=/opt/ati_ws
-ARG KB_WS=/opt/kb_ws
-ARG FRANKA_WS=/opt/franka_ws
-
-# Prepare workspace and copy local subtree (ensure .dockerignore does not exclude it)
-RUN mkdir -p ${NDI_WS}/src ${ATI_WS}/src ${KB_WS}/src ${FRANKA_WS}/src
-# NDI Polaris drivers
-COPY ndi_ros2_driver ${NDI_WS}/src/ndi_ros2_driver
-COPY third_party/gscam2 ${NDI_WS}/src/gscam2
-COPY third_party/ros2_shared ${NDI_WS}/src/ros2_shared
-# ATI Net F/T driver
-COPY third_party/ros2_net_ft_driver ${ATI_WS}/src/ros2_net_ft_driver
-# Keyboard driver
-COPY third_party/keystroke ${KB_WS}/src/keystroke
-# Franka ROS2 driver
-COPY third_party/franka_ros2 ${FRANKA_WS}/src
-
-RUN set -eo pipefail \
- && rosdep init || true \
- && rosdep update --rosdistro $ROS_DISTRO \
- && source /opt/ros/$ROS_DISTRO/setup.bash \
- # Install and build NDI workspace
- && rosdep install --from-paths ${NDI_WS}/src -i -y --rosdistro $ROS_DISTRO \
- && colcon build --merge-install --base-paths ${NDI_WS}/src --install-base ${NDI_WS}/install \
- # Install and build ATI workspace
- && rosdep install --from-paths ${ATI_WS}/src -i -y --rosdistro $ROS_DISTRO \
- && colcon build --merge-install --base-paths ${ATI_WS}/src --install-base ${ATI_WS}/install \
- # Install and build keyboard workspace
- && rosdep install --from-paths ${KB_WS}/src -i -y --rosdistro $ROS_DISTRO \
- && colcon build --merge-install --base-paths ${KB_WS}/src --install-base ${KB_WS}/install \
- # Install and build Franka workspace (imports dependency.repos per upstream franka_ros2 workflow)
- && vcs import ${FRANKA_WS}/src < ${FRANKA_WS}/src/dependency.repos --recursive --skip-existing \
- && rosdep install --from-paths ${FRANKA_WS}/src -i -y --rosdistro $ROS_DISTRO \
- && colcon build --merge-install --base-paths ${FRANKA_WS}/src --install-base ${FRANKA_WS}/install --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DBUILD_TESTS=OFF
+RUN rosdep init || true && rosdep update --rosdistro $ROS_DISTRO
 
 # --- ROS-aware Python & Pip wrappers for IDEs (PyCharm) ---
 RUN set -Eeuo pipefail; \
   printf '%s\n' '#!/usr/bin/env bash' 'set -Ee -o pipefail' \
-  '# Source core ROS env if available' \
   'if [ -n "${ROS_DISTRO:-}" ] && [ -f "/opt/ros/$ROS_DISTRO/setup.bash" ]; then' \
   '  source "/opt/ros/$ROS_DISTRO/setup.bash"' \
   'fi' \
-  '# Source any overlay workspaces if present' \
-  'for ws in /opt/ndi_ws /ws /root/ws; do' \
-  '  if [ -f "$NDI_WS/install/setup.bash" ]; then' \
-  '    source "$NDI_WS/install/setup.bash"' \
-  '  fi' \
+  'for ws_setup in /opt/ndi_ws/install/setup.bash /opt/franka_ws/install/setup.bash /opt/ati_ws/install/setup.bash /ws/install/setup.bash; do' \
+  '  [ -f "$ws_setup" ] && source "$ws_setup"' \
   'done' \
-  '# Hand off to the real interpreter' \
   'exec /usr/bin/python3 "$@"' \
   > /usr/local/bin/python_ros \
   && chmod 0755 /usr/local/bin/python_ros \
@@ -198,11 +124,122 @@ RUN set -Eeuo pipefail; \
   'if [ -n "${ROS_DISTRO:-}" ] && [ -f "/opt/ros/$ROS_DISTRO/setup.bash" ]; then' \
   '  source "/opt/ros/$ROS_DISTRO/setup.bash"' \
   'fi' \
-  'for ws in /opt/ndi_ws /ws /root/ws; do' \
-  '  if [ -f "$NDI_WS/install/setup.bash" ]; then' \
-  '    source "$NDI_WS/install/setup.bash"' \
-  '  fi' \
+  'for ws_setup in /opt/ndi_ws/install/setup.bash /opt/franka_ws/install/setup.bash /opt/ati_ws/install/setup.bash /ws/install/setup.bash; do' \
+  '  [ -f "$ws_setup" ] && source "$ws_setup"' \
   'done' \
   'exec /usr/bin/python3 -m pip "$@"' \
   > /usr/local/bin/pip_ros \
   && chmod 0755 /usr/local/bin/pip_ros
+
+
+###############################################################################
+# Stage 2: ur-app – UR driver (apt), ros2-control (apt), MoveIt, ATI, keyboard
+#   Serves: ur_driver, ati_ft_driver, keyboard_driver, us_visualizer,
+#           rqt_task_ui, ati_ft_nano17_driver, needle_deflection_calculator,
+#           usb_video_grabber, dev
+###############################################################################
+FROM base AS ur-app
+
+RUN apt-get update \
+ && apt-get install -y \
+      ros-$ROS_DISTRO-ros2controlcli \
+      ros-$ROS_DISTRO-ros2-control \
+      ros-$ROS_DISTRO-ros2-controllers \
+      ros-$ROS_DISTRO-ur \
+      ros-$ROS_DISTRO-ur-description \
+      ros-$ROS_DISTRO-ur-moveit-config \
+      ros-$ROS_DISTRO-moveit \
+      ros-$ROS_DISTRO-moveit-py \
+      ros-$ROS_DISTRO-moveit-planners-ompl \
+      ros-$ROS_DISTRO-moveit-ros-control-interface \
+      ros-$ROS_DISTRO-moveit-simple-controller-manager
+
+# Build ATI + keyboard workspaces (small, stable, no namespace conflict with UR)
+ARG ATI_WS=/opt/ati_ws
+ARG KB_WS=/opt/kb_ws
+RUN mkdir -p ${ATI_WS}/src ${KB_WS}/src
+COPY third_party/ros2_net_ft_driver ${ATI_WS}/src/ros2_net_ft_driver
+COPY third_party/keystroke          ${KB_WS}/src/keystroke
+
+RUN set -eo pipefail \
+ && source /opt/ros/$ROS_DISTRO/setup.bash \
+ && rosdep install --from-paths ${ATI_WS}/src -i -y --rosdistro $ROS_DISTRO \
+ && colcon build --merge-install --base-paths ${ATI_WS}/src --install-base ${ATI_WS}/install \
+ && rosdep install --from-paths ${KB_WS}/src -i -y --rosdistro $ROS_DISTRO \
+ && colcon build --merge-install --base-paths ${KB_WS}/src --install-base ${KB_WS}/install
+
+RUN printf '%s\n' \
+  '[ -f /opt/ati_ws/install/setup.bash ] && source /opt/ati_ws/install/setup.bash' \
+  '[ -f /opt/kb_ws/install/setup.bash ]  && source /opt/kb_ws/install/setup.bash' \
+  '[ -f /ws/install/setup.bash ]         && source /ws/install/setup.bash' \
+  >> /etc/bash.bashrc
+
+
+###############################################################################
+# Stage 3: ndi – NDI Polaris tracker + GStreamer camera
+#   Serves: polaris_driver, polaris_camera_driver, polaris_image_compressed
+###############################################################################
+FROM base AS ndi
+
+RUN apt-get update \
+ && apt-get install -y \
+      libgstreamer1.0-dev \
+      libgstreamer-plugins-base1.0-dev \
+      gstreamer1.0-tools \
+      gstreamer1.0-plugins-base \
+      gstreamer1.0-plugins-good \
+      gstreamer1.0-plugins-bad \
+      gstreamer1.0-plugins-ugly \
+      gstreamer1.0-libav
+
+ARG NDI_WS=/opt/ndi_ws
+RUN mkdir -p ${NDI_WS}/src
+COPY ndi_ros2_driver          ${NDI_WS}/src/ndi_ros2_driver
+COPY third_party/gscam2       ${NDI_WS}/src/gscam2
+COPY third_party/ros2_shared  ${NDI_WS}/src/ros2_shared
+
+RUN set -eo pipefail \
+ && source /opt/ros/$ROS_DISTRO/setup.bash \
+ && rosdep install --from-paths ${NDI_WS}/src -i -y --rosdistro $ROS_DISTRO \
+ && colcon build --merge-install --base-paths ${NDI_WS}/src --install-base ${NDI_WS}/install
+
+RUN printf '%s\n' \
+  '[ -f /opt/ndi_ws/install/setup.bash ] && source /opt/ndi_ws/install/setup.bash' \
+  >> /etc/bash.bashrc
+
+
+###############################################################################
+# Stage 4: franka – Franka ROS 2 driver with VENDORED ros2-control
+#   Serves: franka_driver, franka-dev
+#   NOTE: Does NOT install ros-jazzy-ros2-control from apt.  The vendored
+#         controller_manager / hardware_interface / realtime_tools from
+#         franka_ros2's dependency.repos are built from source here,
+#         completely isolated from the UR/apt versions in the ur-app image.
+###############################################################################
+FROM base AS franka
+
+# MoveIt for Franka planning; ros2-control comes from source via dependency.repos
+RUN apt-get update \
+ && apt-get install -y \
+      ros-$ROS_DISTRO-moveit \
+      ros-$ROS_DISTRO-moveit-py \
+      ros-$ROS_DISTRO-moveit-planners-ompl \
+      ros-$ROS_DISTRO-moveit-ros-control-interface \
+      ros-$ROS_DISTRO-moveit-simple-controller-manager \
+      ros-$ROS_DISTRO-ros2controlcli
+
+ARG FRANKA_WS=/opt/franka_ws
+RUN mkdir -p ${FRANKA_WS}/src
+COPY third_party/franka_ros2 ${FRANKA_WS}/src
+
+RUN set -eo pipefail \
+ && source /opt/ros/$ROS_DISTRO/setup.bash \
+ && vcs import ${FRANKA_WS}/src < ${FRANKA_WS}/src/dependency.repos --recursive --skip-existing \
+ && rosdep install --from-paths ${FRANKA_WS}/src -i -y --rosdistro $ROS_DISTRO \
+ && colcon build --merge-install --base-paths ${FRANKA_WS}/src --install-base ${FRANKA_WS}/install \
+      --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DBUILD_TESTS=OFF
+
+RUN printf '%s\n' \
+  '[ -f /opt/franka_ws/install/setup.bash ] && source /opt/franka_ws/install/setup.bash' \
+  >> /etc/bash.bashrc
+

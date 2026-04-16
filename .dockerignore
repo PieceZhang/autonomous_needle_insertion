@@ -1,0 +1,19 @@
+# Directories not COPY'd by any Dockerfile stage
+data/
+meta_marker/
+post_processing/
+registration/
+results/
+scripts/
+workspace/
+zed2_docker/
+
+# Build artefacts & IDE settings
+**/__pycache__
+**/*.pyc
+.git
+.env
+*.md
+!third_party/franka_ros2/*.md
+LICENSE
+

@@ -6,14 +6,19 @@ x-ros-base-env: &ros_base_env
   ROS_HOME: /ani_ws/.ros
   ROS_LOG_DIR: /ani_ws/.ros/log
 
-x-ros-common: &ros_common
+# ── Shared volumes & runtime settings ──────────────────────────────────────
+x-ros-volumes: &ros_volumes
+  - ${HOST_WS_DIR:-${PWD}/workspace}:/ani_ws:rw
+  - ${HOST_ROSBAG_DIR:-${PWD}/workspace/rosbag_recording}:/ani_ws/rosbag_recording:rw
+  - /tmp/.X11-unix:/tmp/.X11-unix:rw
+  - /etc/passwd:/etc/passwd:ro
+  - /etc/group:/etc/group:ro
+  - /dev:/dev
+
+x-ros-base: &ros_base
   user: "${UID:-1000}:${GID:-1000}"
   group_add:
     - "${DOCKER_GID}"
-  build:
-    context: .
-    dockerfile: Dockerfile
-  image: aniros:jazzy-dev
   network_mode: "host"
   ipc: "host"
   working_dir: /ani_ws
@@ -25,19 +30,42 @@ x-ros-common: &ros_common
   device_cgroup_rules:
     - "c 81:* rmw"
     - "c 189:* rmw"
-  volumes:
-    - ${HOST_WS_DIR:-${PWD}/workspace}:/ani_ws:rw
-    - ${HOST_ROSBAG_DIR:-${PWD}/workspace/rosbag_recording}:/ani_ws/rosbag_recording:rw
-    - /tmp/.X11-unix:/tmp/.X11-unix:rw
-    - /etc/passwd:/etc/passwd:ro
-    - /etc/group:/etc/group:ro
-    - /dev:/dev
+  volumes: *ros_volumes
+
+# ── Per-image anchors (one per Dockerfile stage) ──────────────────────────
+x-ros-ur-app: &ros_ur_app
+  <<: *ros_base
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: ur-app
+  image: aniros-ur-app:jazzy
+
+x-ros-ndi: &ros_ndi
+  <<: *ros_base
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: ndi
+  image: aniros-ndi:jazzy
+
+x-ros-franka: &ros_franka
+  <<: *ros_base
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: franka
+  image: aniros-franka:jazzy
 
 services:
+  # ─── UR Robot Arm ──────────────────────────────────────────────────────
   ur_driver:
-    <<: *ros_common
+    <<: *ros_ur_app
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-ur5e-driver"
     profiles: ["default", "ur_test", "dev"]
+    environment:
+      <<: *ros_base_env
+      ROS_NAMESPACE: /ur
     command: >
       bash -lc "
         if [ -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then source ${RUNTIME_WS_DIR}/install/setup.bash; fi;
@@ -45,12 +73,6 @@ services:
         ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur5e robot_ip:=${UR_ROBOT_IP} kinematics_params_file:=${RUNTIME_WS_DIR}/calibration/ur5e_calibration.yaml launch_rviz:=false
       "
     healthcheck:
-      # Real readiness = robot reachable + External Control running + robot mode RUNNING. Wait for:
-      #  1) /io_and_status_controller/robot_program_running == true (External Control)
-      #  2) /io_and_status_controller/robot_mode contains "RUNNING" (motors on, brakes released)
-      # If the robot is off/unreachable, the timeouts will fail and the service is UNHEALTHY.
-#      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; timeout 5s ros2 topic echo -n 1 /io_and_status_controller/robot_program_running | grep -q 'data: true' && timeout 5s ros2 topic echo -n 1 /io_and_status_controller/robot_mode | grep -q 'RUNNING'"]
-#      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; timeout 5s ros2 topic echo -n 1 /io_and_status_controller/robot_mode | grep -q 'RUNNING'"]
       test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi;"]
       interval: 5s
       timeout: 5s
@@ -59,9 +81,12 @@ services:
     restart: unless-stopped
 
   ur_driver_mock:
-    <<: *ros_common
+    <<: *ros_ur_app
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-ur5e-driver-mock"
     profiles: ["default"]
+    environment:
+      <<: *ros_base_env
+      ROS_NAMESPACE: /ur
     command: >
       bash -lc "
         if [ -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then source ${RUNTIME_WS_DIR}/install/setup.bash; fi;
@@ -69,7 +94,6 @@ services:
         ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur5e robot_ip:=0.0.0.0 use_mock_hardware:=true initial_joint_controller:=joint_trajectory_controller kinematics_params_file:=${RUNTIME_WS_DIR}/calibration/ur5e_calibration.yaml launch_rviz:=false
       "
     healthcheck:
-#      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q /urscript_interface/script_command"]
       test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi;"]
       interval: 5s
       timeout: 3s
@@ -77,10 +101,14 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  # ─── Franka Robot Arm ─────────────────────────────────────────────────
   franka_driver:
-    <<: *ros_common
+    <<: *ros_franka
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-franka-driver"
     profiles: ["default", "franka-test", "dev"]
+    environment:
+      <<: *ros_base_env
+      ROS_NAMESPACE: /franka
     cap_add:
       - SYS_NICE
     ulimits:
@@ -92,7 +120,7 @@ services:
         set -e;
         if [ -f /opt/franka_ws/install/setup.bash ]; then source /opt/franka_ws/install/setup.bash; fi;
         echo 'Starting Franka driver with robot type' ${FRANKA_ROBOT_TYPE:-fr3} ', robot IP' ${FRANKA_ROBOT_IP:-dont-care} ', use_fake_hardware=' ${FRANKA_USE_FAKE_HARDWARE:-true};
-        ros2 launch franka_bringup franka.launch.py robot_type:=${FRANKA_ROBOT_TYPE:-fr3} robot_ip:=${FRANKA_ROBOT_IP:-dont-care} use_fake_hardware:=${FRANKA_USE_FAKE_HARDWARE:-true} load_gripper:=${FRANKA_LOAD_GRIPPER:-false} namespace:=franka
+        ros2 launch franka_bringup franka.launch.py robot_type:=${FRANKA_ROBOT_TYPE:-fr3} robot_ip:=${FRANKA_ROBOT_IP:-dont-care} use_fake_hardware:=${FRANKA_USE_FAKE_HARDWARE:-true} load_gripper:=${FRANKA_LOAD_GRIPPER:-false}
       "
     healthcheck:
       test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/franka_ws/install/setup.bash ]; then source /opt/franka_ws/install/setup.bash; fi;"]
@@ -102,8 +130,9 @@ services:
       start_period: 20s
     restart: unless-stopped
 
+  # ─── NDI Polaris Tracker ──────────────────────────────────────────────
   polaris_driver:
-    <<: *ros_common
+    <<: *ros_ndi
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-polaris-driver"
     profiles: ["default", "polaris_test", "dev"]
     command: >
@@ -121,7 +150,7 @@ services:
     restart: unless-stopped
 
   polaris_camera_driver:
-    <<: *ros_common
+    <<: *ros_ndi
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-polaris-camera-driver"
     profiles: ["default", "gscam2-test", "dev"]
     environment:
@@ -143,7 +172,7 @@ services:
     restart: unless-stopped
 
   polaris_image_compressed:
-    <<: *ros_common
+    <<: *ros_ndi
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-polaris-image-compressed"
     profiles: ["default", "gscam2-test", "dev"]
     depends_on:
@@ -164,25 +193,9 @@ services:
       start_period: 15s
     restart: unless-stopped
 
-#  realsense_driver:
-#    <<: *ros_common
-#    container_name: "${COMPOSE_PROJECT_NAME:-ros2}-realsense-driver"
-#    profiles: ["default", "dev"]
-#    command: >
-#      bash -lc "
-#        echo 'Starting RealSense driver';
-#        ros2 launch realsense2_camera rs_launch.py
-#      "
-#    healthcheck:
-#      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q '/camera/color/image_raw'"]
-#      interval: 5s
-#      timeout: 3s
-#      retries: 5
-#      start_period: 15s
-#    restart: unless-stopped
-
+  # ─── ATI Force/Torque Sensor ──────────────────────────────────────────
   ati_ft_driver:
-    <<: *ros_common
+    <<: *ros_ur_app
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-ati-ft-driver"
     profiles: ["default", "dev"]
     command: >
@@ -199,21 +212,18 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  # ─── USB Video Grabber ────────────────────────────────────────────────
   usb_video_grabber:
-    <<: *ros_common
+    <<: *ros_ur_app
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-usb-video-grabber"
     profiles: [ "default", "dev" ]
-    # Give this container access to /dev/video* via the 'video' group
     group_add:
       - "video"
-    # Override volumes: same as ros_common, but WITHOUT /dev:/dev
     volumes:
       - ${HOST_WS_DIR:-${PWD}/workspace}:/ani_ws:rw
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /etc/passwd:/etc/passwd:ro
       - /etc/group:/etc/group:ro
-    # Map exactly one host V4L2 device into the container as /dev/usb_grabber
-    # Set USB_VIDEO_DEVICE in your .env file, e.g. USB_VIDEO_DEVICE=/dev/video3
     devices:
       - "${USB_VIDEO_DEVICE:-/dev/video0}:/dev/usb_grabber"
     command: >
@@ -233,8 +243,9 @@ services:
       start_period: 3s
     restart: unless-stopped
 
+  # ─── Application-layer Services ───────────────────────────────────────
   rqt_task_ui:
-    <<: *ros_common
+    <<: *ros_ur_app
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-rqt-task-ui"
     profiles: ["default", "dev"]
     command: >
@@ -252,7 +263,7 @@ services:
     restart: unless-stopped
 
   us_visualizer:
-    <<: *ros_common
+    <<: *ros_ur_app
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-us-visualizer"
     profiles: ["default", "dev"]
     depends_on:
@@ -276,7 +287,7 @@ services:
     restart: unless-stopped
 
   keyboard_driver:
-    <<: *ros_common
+    <<: *ros_ur_app
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-keyboard-driver"
     profiles: ["default", "dev"]
     command: >
@@ -294,7 +305,7 @@ services:
     restart: unless-stopped
 
   ati_ft_nano17_driver:
-    <<: *ros_common
+    <<: *ros_ur_app
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-ati-ft-nano17-driver"
     profiles: [ "default", "dev" ]
     command: >
@@ -314,7 +325,7 @@ services:
     restart: unless-stopped
 
   needle_deflection_calculator:
-    <<: *ros_common
+    <<: *ros_ur_app
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-needle-deflection-calculator"
     profiles: [ "default", "dev" ]
     command: >
@@ -336,8 +347,9 @@ services:
       start_period: 15s
     restart: unless-stopped
 
+  # ─── Dev Containers ───────────────────────────────────────────────────
   dev:
-    <<: *ros_common
+    <<: *ros_ur_app
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-dev"
     profiles: ["dev"]
     depends_on:
@@ -351,8 +363,6 @@ services:
         condition: service_healthy
       polaris_image_compressed:
         condition: service_healthy
-#      realsense_driver:
-#        condition: service_healthy
       ati_ft_driver:
         condition: service_healthy
       usb_video_grabber:
@@ -379,7 +389,7 @@ services:
     restart: unless-stopped
 
   franka-dev:
-    <<: *ros_common
+    <<: *ros_franka
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-franka-dev"
     profiles: ["franka-test"]
     depends_on:
@@ -397,3 +407,4 @@ services:
         exec sleep infinity
       "
     restart: unless-stopped
+
