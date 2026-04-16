@@ -154,6 +154,31 @@ RUN apt-get update \
       ros-$ROS_DISTRO-moveit-ros-control-interface \
       ros-$ROS_DISTRO-moveit-simple-controller-manager
 
+# --- Patch ur_client_library: increase configuration package timeout from 1s to 10s ---
+# The apt-installed ur_client_library 2.x has a hardcoded 1-second timeout in
+# UrDriver::init() for receiving the configuration package from the robot's primary
+# interface. On some network setups this is too short and causes a fatal crash.
+# We rebuild the library from source with the timeout raised to 10 seconds.
+RUN set -ex \
+ && URCL_TAG="2.9.0" \
+ && echo "Patching ur_client_library ${URCL_TAG} configuration timeout..." \
+ && cd /tmp && git clone --depth 1 --branch ${URCL_TAG} \
+      https://github.com/UniversalRobots/Universal_Robots_Client_Library.git urcl_src \
+ && sed -i 's/std::chrono::milliseconds timeout(1000)/std::chrono::milliseconds timeout(10000)/' \
+      /tmp/urcl_src/src/ur/ur_driver.cpp \
+ && grep -q 'timeout(10000)' /tmp/urcl_src/src/ur/ur_driver.cpp \
+ && mkdir /tmp/urcl_build && cd /tmp/urcl_build \
+ && cmake /tmp/urcl_src \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX=/opt/ros/$ROS_DISTRO \
+      -DCMAKE_INSTALL_LIBDIR=lib/x86_64-linux-gnu \
+      -DCMAKE_PREFIX_PATH=/opt/ros/$ROS_DISTRO \
+      -DBUILD_TESTING=OFF \
+ && make -j$(nproc) \
+ && make install \
+ && rm -rf /tmp/urcl_src /tmp/urcl_build \
+ && echo "ur_client_library patched and installed successfully"
+
 # Build ATI + keyboard workspaces (small, stable, no namespace conflict with UR)
 ARG ATI_WS=/opt/ati_ws
 ARG KB_WS=/opt/kb_ws
