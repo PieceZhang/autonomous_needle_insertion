@@ -65,7 +65,6 @@ services:
     profiles: ["default", "ur_test", "dev"]
     environment:
       <<: *ros_base_env
-      ROS_NAMESPACE: /ur
     command: >
       bash -lc "
         if [ -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then source ${RUNTIME_WS_DIR}/install/setup.bash; fi;
@@ -73,11 +72,11 @@ services:
         ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur5e robot_ip:=${UR_ROBOT_IP} kinematics_params_file:=${RUNTIME_WS_DIR}/calibration/ur5e_calibration.yaml launch_rviz:=false
       "
     healthcheck:
-      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi;"]
+      test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; timeout 2 ros2 topic echo /joint_states --once > /dev/null 2>&1"]
       interval: 5s
       timeout: 5s
       retries: 5
-      start_period: 30s
+      start_period: 15s
     restart: unless-stopped
 
   ur_driver_mock:
@@ -86,7 +85,6 @@ services:
     profiles: ["default"]
     environment:
       <<: *ros_base_env
-      ROS_NAMESPACE: /ur
     command: >
       bash -lc "
         if [ -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then source ${RUNTIME_WS_DIR}/install/setup.bash; fi;
@@ -105,7 +103,7 @@ services:
   franka_driver:
     <<: *ros_franka
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-franka-driver"
-    profiles: ["default", "franka-test", "dev"]
+    profiles: ["default", "franka-test"]
     environment:
       <<: *ros_base_env
       ROS_NAMESPACE: /franka
@@ -355,8 +353,8 @@ services:
     depends_on:
       ur_driver:
         condition: service_healthy
-      franka_driver:
-        condition: service_healthy
+#      franka_driver:
+#        condition: service_healthy
       polaris_driver:
         condition: service_healthy
       polaris_camera_driver:
@@ -371,10 +369,10 @@ services:
         condition: service_healthy
       us_visualizer:
         condition: service_healthy
-      ati_ft_nano17_driver:
-        condition: service_healthy
-      needle_deflection_calculator:
-        condition: service_healthy
+#      ati_ft_nano17_driver:
+#        condition: service_healthy
+#      needle_deflection_calculator:
+#        condition: service_healthy
     command: >
       bash -lc "
         set -e;
