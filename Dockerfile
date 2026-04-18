@@ -205,6 +205,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     set -eo pipefail \
  && source /opt/ros/$ROS_DISTRO/setup.bash \
+ && apt-get update \
  && rosdep install --from-paths ${ATI_WS}/src -i -y --rosdistro $ROS_DISTRO \
  && colcon build --merge-install --base-paths ${ATI_WS}/src --install-base ${ATI_WS}/install \
  && rosdep install --from-paths ${KB_WS}/src -i -y --rosdistro $ROS_DISTRO \
@@ -246,6 +247,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     set -eo pipefail \
  && source /opt/ros/$ROS_DISTRO/setup.bash \
+ && apt-get update \
  && rosdep install --from-paths ${NDI_WS}/src -i -y --rosdistro $ROS_DISTRO \
  && colcon build --merge-install --base-paths ${NDI_WS}/src --install-base ${NDI_WS}/install
 
@@ -284,6 +286,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     set -eo pipefail \
  && source /opt/ros/$ROS_DISTRO/setup.bash \
+ && apt-get update \
  && vcs import ${FRANKA_WS}/src < ${FRANKA_WS}/src/dependency.repos --recursive --skip-existing \
  && rosdep install --from-paths ${FRANKA_WS}/src -i -y --rosdistro $ROS_DISTRO \
  && colcon build --merge-install --base-paths ${FRANKA_WS}/src --install-base ${FRANKA_WS}/install \
