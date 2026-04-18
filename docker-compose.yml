@@ -33,13 +33,13 @@ x-ros-base: &ros_base
   volumes: *ros_volumes
 
 # ── Per-image anchors (one per Dockerfile stage) ──────────────────────────
-x-ros-ur-app: &ros_ur_app
+x-ros-app: &ros_app
   <<: *ros_base
   build:
     context: .
     dockerfile: Dockerfile
-    target: ur-app
-  image: aniros-ur-app:jazzy
+    target: app
+  image: aniros-app:jazzy
 
 x-ros-ndi: &ros_ndi
   <<: *ros_base
@@ -58,9 +58,33 @@ x-ros-franka: &ros_franka
   image: aniros-franka:jazzy
 
 services:
+  # ─── Topic-conflict resolution strategy ────────────────────────────────
+  #  Multiple ros2_control drivers (UR, Franka, ATI) share a single DDS
+  #  domain (ROS_DOMAIN_ID).  To avoid /robot_description, /controller_manager
+  #  and /joint_states collisions:
+  #
+  #  1. If the driver's launch file has a `namespace:=` parameter, use it.
+  #     (Franka does: namespace:=franka)
+  #
+  #  2. If the driver provides an "isolated" launch variant with unique node
+  #     names, use that.  (ATI: net_ft_broadcaster_isolated.launch.py)
+  #
+  #  3. If neither (a) nor (b) is available (driver hardcodes absolute topic
+  #     names), add --ros-args remaps in the compose command, e.g.:
+  #       ros2 launch pkg driver.launch.py ... \
+  #         --ros-args \
+  #         --remap /robot_description:=/my_prefix/robot_description \
+  #         --remap /controller_manager:=/my_prefix/controller_manager \
+  #         --remap /joint_states:=/my_prefix/joint_states
+  #     This works on ANY ROS 2 node at the RCL layer — no source changes needed.
+  #
+  #  Do NOT use separate ROS_DOMAIN_IDs + a bridge container — it adds
+  #  latency, complexity, and maintenance burden for no real benefit.
+  # ───────────────────────────────────────────────────────────────────────
+
   # ─── UR Robot Arm ──────────────────────────────────────────────────────
   ur_driver:
-    <<: *ros_ur_app
+    <<: *ros_app
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-ur5e-driver"
     profiles: ["default", "ur_test", "dev"]
     environment:
@@ -80,7 +104,7 @@ services:
     restart: unless-stopped
 
   ur_driver_mock:
-    <<: *ros_ur_app
+    <<: *ros_app
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-ur5e-driver-mock"
     profiles: ["default"]
     environment:
@@ -192,7 +216,7 @@ services:
 
   # ─── ATI Force/Torque Sensor ──────────────────────────────────────────
   ati_ft_driver:
-    <<: *ros_ur_app
+    <<: *ros_app
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-ati-ft-driver"
     profiles: ["default", "dev", "ati_test"]
     command: >
@@ -211,7 +235,7 @@ services:
 
   # ─── USB Video Grabber ────────────────────────────────────────────────
   usb_video_grabber:
-    <<: *ros_ur_app
+    <<: *ros_app
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-usb-video-grabber"
     profiles: [ "default", "dev" ]
     group_add:
@@ -242,7 +266,7 @@ services:
 
   # ─── Application-layer Services ───────────────────────────────────────
   rqt_task_ui:
-    <<: *ros_ur_app
+    <<: *ros_app
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-rqt-task-ui"
     profiles: ["default", "dev"]
     command: >
@@ -260,7 +284,7 @@ services:
     restart: unless-stopped
 
   us_visualizer:
-    <<: *ros_ur_app
+    <<: *ros_app
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-us-visualizer"
     profiles: ["default", "dev"]
     depends_on:
@@ -284,7 +308,7 @@ services:
     restart: unless-stopped
 
   keyboard_driver:
-    <<: *ros_ur_app
+    <<: *ros_app
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-keyboard-driver"
     profiles: ["default", "dev"]
     command: >
@@ -302,7 +326,7 @@ services:
     restart: unless-stopped
 
   ati_ft_nano17_driver:
-    <<: *ros_ur_app
+    <<: *ros_app
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-ati-ft-nano17-driver"
     profiles: [ "default", "dev" ]
     command: >
@@ -322,7 +346,7 @@ services:
     restart: unless-stopped
 
   needle_deflection_calculator:
-    <<: *ros_ur_app
+    <<: *ros_app
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-needle-deflection-calculator"
     profiles: [ "default", "dev" ]
     command: >
@@ -346,7 +370,7 @@ services:
 
   # ─── Dev Containers ───────────────────────────────────────────────────
   dev:
-    <<: *ros_ur_app
+    <<: *ros_app
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-dev"
     profiles: ["dev"]
     depends_on:

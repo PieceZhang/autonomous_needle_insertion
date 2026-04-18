@@ -4,13 +4,13 @@ set -euo pipefail
 help() {
   cat <<'EOF'
 Usage:
-  build.sh              Build all three images (ur-app, ndi, franka) for the dev profile
-  build.sh -t TARGET    Build only the specified target (ur-app | ndi | franka)
+  build.sh              Build all three images (app, ndi, franka) for the dev profile
+  build.sh -t TARGET    Build only the specified target (app | ndi | franka)
   build.sh -f           Force a clean rebuild (no cache)
   build.sh -p           Build all targets in parallel
 
 Options:
-  -t TARGET   Build a single Dockerfile stage: ur-app, ndi, or franka
+  -t TARGET   Build a single Dockerfile stage: app, ndi, or franka
   -f          Force a clean rebuild (no cache)
   -p          Build all targets in parallel (docker buildx bake)
   -h          Show this help
@@ -47,7 +47,7 @@ fi
 
 # Map target name → representative compose service(s)
 declare -A TARGET_SERVICES=(
-  [ur-app]="ur_driver"
+  [app]="ur_driver"
   [ndi]="polaris_driver"
   [franka]="franka_driver"
 )
@@ -78,7 +78,7 @@ elif [[ "${parallel}" == "true" ]]; then
   echo "All parallel builds finished."
 else
   # ── Sequential build of all targets ──
-  for tgt in ur-app ndi franka; do
+  for tgt in app ndi franka; do
     svc="${TARGET_SERVICES[$tgt]}"
     cmd=(docker compose build "${cache_flag[@]}" "${svc}")
     echo "+ ${cmd[*]}"

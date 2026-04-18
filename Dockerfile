@@ -133,12 +133,13 @@ RUN set -Eeuo pipefail; \
 
 
 ###############################################################################
-# Stage 2: ur-app – UR driver (apt), ros2-control (apt), MoveIt, ATI, keyboard
+# Stage 2: app – general-purpose image with apt ros2-control, UR, MoveIt, ATI,
+#   keyboard.  Used by any service compatible with the apt ros2-control ABI.
 #   Serves: ur_driver, ati_ft_driver, keyboard_driver, us_visualizer,
 #           rqt_task_ui, ati_ft_nano17_driver, needle_deflection_calculator,
 #           usb_video_grabber, dev
 ###############################################################################
-FROM base AS ur-app
+FROM base AS app
 
 RUN apt-get update \
  && apt-get install -y \
