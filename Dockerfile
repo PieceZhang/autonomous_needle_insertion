@@ -201,7 +201,9 @@ RUN mkdir -p ${ATI_WS}/src ${KB_WS}/src
 COPY third_party/ros2_net_ft_driver ${ATI_WS}/src/ros2_net_ft_driver
 COPY third_party/keystroke          ${KB_WS}/src/keystroke
 
-RUN set -eo pipefail \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    set -eo pipefail \
  && source /opt/ros/$ROS_DISTRO/setup.bash \
  && rosdep install --from-paths ${ATI_WS}/src -i -y --rosdistro $ROS_DISTRO \
  && colcon build --merge-install --base-paths ${ATI_WS}/src --install-base ${ATI_WS}/install \
@@ -240,7 +242,9 @@ COPY ndi_ros2_driver          ${NDI_WS}/src/ndi_ros2_driver
 COPY third_party/gscam2       ${NDI_WS}/src/gscam2
 COPY third_party/ros2_shared  ${NDI_WS}/src/ros2_shared
 
-RUN set -eo pipefail \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    set -eo pipefail \
  && source /opt/ros/$ROS_DISTRO/setup.bash \
  && rosdep install --from-paths ${NDI_WS}/src -i -y --rosdistro $ROS_DISTRO \
  && colcon build --merge-install --base-paths ${NDI_WS}/src --install-base ${NDI_WS}/install
@@ -276,7 +280,9 @@ ARG FRANKA_WS=/opt/franka_ws
 RUN mkdir -p ${FRANKA_WS}/src
 COPY third_party/franka_ros2 ${FRANKA_WS}/src
 
-RUN set -eo pipefail \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    set -eo pipefail \
  && source /opt/ros/$ROS_DISTRO/setup.bash \
  && vcs import ${FRANKA_WS}/src < ${FRANKA_WS}/src/dependency.repos --recursive --skip-existing \
  && rosdep install --from-paths ${FRANKA_WS}/src -i -y --rosdistro $ROS_DISTRO \
