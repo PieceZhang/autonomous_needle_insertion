@@ -259,14 +259,14 @@ RUN printf '%s\n' \
 ###############################################################################
 # Stage 4: franka – Franka ROS 2 driver with VENDORED ros2-control
 #   Serves: franka_driver, franka-dev
-#   NOTE: Does NOT install ros-jazzy-ros2-control from apt.  The vendored
-#         controller_manager / hardware_interface / realtime_tools from
-#         franka_ros2's dependency.repos are built from source here,
-#         completely isolated from the UR/apt versions in the ur-app image.
+#   NOTE: Does NOT install ros-jazzy-ros2-control/ros2-controllers from apt.
+#         The vendored controller_manager / hardware_interface / realtime_tools
+#         AND ros2_controllers (joint_state_broadcaster etc.) from
+#         dependency.repos are all built from source here.
 ###############################################################################
 FROM base AS franka
 
-# MoveIt for Franka planning; ros2-control comes from source via dependency.repos
+# MoveIt for Franka planning; ros2-control comes entirely from source
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update \

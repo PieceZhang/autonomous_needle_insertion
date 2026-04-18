@@ -127,7 +127,7 @@ services:
   franka_driver:
     <<: *ros_franka
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-franka-driver"
-    profiles: ["default", "franka-test"]
+    profiles: ["default", "franka_test", "dev"]
     environment:
       <<: *ros_base_env
     cap_add:
