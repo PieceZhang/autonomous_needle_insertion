@@ -9,26 +9,31 @@ RUN printf '%s\n' \
   'if [ -f "/opt/ros/$ROS_DISTRO/setup.bash" ]; then source "/opt/ros/$ROS_DISTRO/setup.bash"; fi' \
   >> /etc/bash.bashrc
 
+# Pass UBUNTU_MIRROR (singular) to skip probing; leave empty to auto-detect.
+ARG UBUNTU_MIRROR=""
 ARG UBUNTU_MIRRORS="https://ubuntu-archive.mirrorservice.org/ubuntu https://mirror.ox.ac.uk/sites/archive.ubuntu.com/ubuntu https://archive.ubuntu.com/ubuntu https://ftp.jaist.ac.jp/pub/Linux/ubuntu https://ftp.riken.jp/Linux/ubuntu https://ftp.kaist.ac.kr/ubuntu https://mirror.kakao.com/ubuntu https://free.nchc.org.tw/ubuntu https://mirror.xtom.com.hk/ubuntu https://mirrors.tuna.tsinghua.edu.cn/ubuntu https://mirrors.ustc.edu.cn/ubuntu https://mirrors.bfsu.edu.cn/ubuntu https://mirrors.aliyun.com/ubuntu https://mirrors.sjtug.sjtu.edu.cn/ubuntu"
-ENV UBUNTU_MIRRORS="${UBUNTU_MIRRORS}"
 RUN set -eux; \
   apt-get install -y --no-install-recommends curl ca-certificates gnupg; \
   . /etc/os-release; CODENAME="${UBUNTU_CODENAME}"; \
-  GB_LIST=$(curl -fsSL --max-time 2 https://mirrors.ubuntu.com/GB.txt || true); \
-  cand="${UBUNTU_MIRRORS:-https://archive.ubuntu.com/ubuntu}"; \
-  if [ -n "$GB_LIST" ]; then cand="$GB_LIST $cand"; fi; \
-  fastest=""; best=999999; \
-  for m in $cand; do \
-    for f in InRelease Release; do \
-      url="$m/dists/$CODENAME/$f"; \
-      t=$(curl -o /dev/null -s -w '%{time_total}' --max-time 2 "$url" || true); \
-      if [ -n "$t" ]; then \
-        if awk "BEGIN{exit !($t < $best)}"; then best="$t"; fastest="$m"; fi; \
-        break; \
-      fi; \
+  if [ -n "${UBUNTU_MIRROR}" ]; then \
+    fastest="${UBUNTU_MIRROR}"; best="skip"; \
+  else \
+    GB_LIST=$(curl -fsSL --max-time 2 https://mirrors.ubuntu.com/GB.txt || true); \
+    cand="${UBUNTU_MIRRORS:-https://archive.ubuntu.com/ubuntu}"; \
+    if [ -n "$GB_LIST" ]; then cand="$GB_LIST $cand"; fi; \
+    fastest=""; best=999999; \
+    for m in $cand; do \
+      for f in InRelease Release; do \
+        url="$m/dists/$CODENAME/$f"; \
+        t=$(curl -o /dev/null -s -w '%{time_total}' --max-time 2 "$url" || true); \
+        if [ -n "$t" ]; then \
+          if awk "BEGIN{exit !($t < $best)}"; then best="$t"; fastest="$m"; fi; \
+          break; \
+        fi; \
+      done; \
     done; \
-  done; \
-  : "${fastest:=https://archive.ubuntu.com/ubuntu}"; \
+    : "${fastest:=https://archive.ubuntu.com/ubuntu}"; \
+  fi; \
   rm -f /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list; \
   printf 'Types: deb\nURIs: %s\nSuites: %s %s-updates %s-backports\nComponents: main restricted universe multiverse\n\nTypes: deb\nURIs: https://security.ubuntu.com/ubuntu\nSuites: %s-security\nComponents: main restricted universe multiverse\n' \
     "$fastest" "$CODENAME" "$CODENAME" "$CODENAME" "$CODENAME" > /etc/apt/sources.list.d/ubuntu.sources; \
@@ -42,8 +47,9 @@ RUN printf '%s\n' \
   'Acquire::Retries "2";' \
   > /etc/apt/apt.conf.d/99lean-apt
 
+# Pass ROS2_MIRROR (singular) to skip probing; leave empty to auto-detect.
+ARG ROS2_MIRROR=""
 ARG ROS2_MIRRORS="https://mirror.umd.edu/packages.ros.org/ros2/ubuntu http://ftp.tudelft.nl/ros2/ubuntu http://packages.ros.org/ros2/ubuntu"
-ENV ROS2_MIRRORS="${ROS2_MIRRORS}"
 RUN set -eux; \
   rm -f /etc/apt/sources.list.d/ros2*.sources /etc/apt/sources.list.d/*ros2*.list \
         /etc/apt/sources.list.d/*ros*.sources /etc/apt/sources.list.d/*ros*.list \
@@ -52,29 +58,35 @@ RUN set -eux; \
   curl -fsSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
     | gpg --dearmor -o /usr/share/keyrings/ros-archive-keyring.gpg; \
   . /etc/os-release; CODENAME="${UBUNTU_CODENAME}"; \
-  fastest=""; best=999999; \
-  for m in $ROS2_MIRRORS; do \
-    for f in InRelease Release; do \
-      url="$m/dists/$CODENAME/$f"; \
-      resp=$(curl -s -o /dev/null -w '%{http_code} %{time_total}' --max-time 5 "$url" || echo '000 999999'); \
-      code="${resp%% *}"; \
-      time="${resp#* }"; \
-      if [ "$code" = "200" ]; then \
-        if awk "BEGIN{exit !($time < $best)}"; then best="$time"; fastest="$m"; fi; \
-        break; \
-      fi; \
+  if [ -n "${ROS2_MIRROR}" ]; then \
+    fastest="${ROS2_MIRROR}"; best="skip"; \
+  else \
+    fastest=""; best=999999; \
+    for m in $ROS2_MIRRORS; do \
+      for f in InRelease Release; do \
+        url="$m/dists/$CODENAME/$f"; \
+        resp=$(curl -s -o /dev/null -w '%{http_code} %{time_total}' --max-time 5 "$url" || echo '000 999999'); \
+        code="${resp%% *}"; \
+        time="${resp#* }"; \
+        if [ "$code" = "200" ]; then \
+          if awk "BEGIN{exit !($time < $best)}"; then best="$time"; fastest="$m"; fi; \
+          break; \
+        fi; \
+      done; \
     done; \
-  done; \
-  if [ -z "$fastest" ]; then fastest="http://packages.ros.org/ros2/ubuntu"; fi; \
-  case "$fastest" in \
-    https://packages.ros.org/*) fastest="http://packages.ros.org/ros2/ubuntu" ;; \
-  esac; \
+    if [ -z "$fastest" ]; then fastest="http://packages.ros.org/ros2/ubuntu"; fi; \
+    case "$fastest" in \
+      https://packages.ros.org/*) fastest="http://packages.ros.org/ros2/ubuntu" ;; \
+    esac; \
+  fi; \
   printf 'Types: deb\nURIs: %s\nSuites: %s\nComponents: main\nSigned-By: /usr/share/keyrings/ros-archive-keyring.gpg\n' "$fastest" "$CODENAME" > /etc/apt/sources.list.d/ros2.sources; \
   echo "ROS 2 mirror chosen: $fastest (best=${best}s)"; \
   cat /etc/apt/sources.list.d/ros2.sources
 
 # Common packages shared by ALL images (NO ros2-control, UR, MoveIt, or GStreamer)
-RUN apt-get update \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
  && apt-get install -y \
       ros-$ROS_DISTRO-rmw-cyclonedds-cpp \
       python3-colcon-common-extensions \
@@ -141,7 +153,9 @@ RUN set -Eeuo pipefail; \
 ###############################################################################
 FROM base AS app
 
-RUN apt-get update \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
  && apt-get install -y \
       ros-$ROS_DISTRO-ros2controlcli \
       ros-$ROS_DISTRO-ros2-control \
@@ -207,7 +221,9 @@ RUN printf '%s\n' \
 ###############################################################################
 FROM base AS ndi
 
-RUN apt-get update \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
  && apt-get install -y \
       libgstreamer1.0-dev \
       libgstreamer-plugins-base1.0-dev \
@@ -245,7 +261,9 @@ RUN printf '%s\n' \
 FROM base AS franka
 
 # MoveIt for Franka planning; ros2-control comes from source via dependency.repos
-RUN apt-get update \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
  && apt-get install -y \
       ros-$ROS_DISTRO-moveit \
       ros-$ROS_DISTRO-moveit-py \
