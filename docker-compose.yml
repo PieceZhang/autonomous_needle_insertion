@@ -376,8 +376,8 @@ services:
     depends_on:
       ur_driver:
         condition: service_healthy
-#      franka_driver:
-#        condition: service_healthy
+      franka_driver:
+        condition: service_healthy
       polaris_driver:
         condition: service_healthy
       polaris_camera_driver:

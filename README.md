@@ -4,7 +4,7 @@
 [![Docker Pulls](https://img.shields.io/docker/pulls/your_dockerhub_username/your_image_name.svg)](https://hub.docker.com/layers/osrf/ros/jazzy-desktop-full/images/sha256-b706aba86d1be07e9dc2834bf54c9acf1be87c2bad1aea83cd2f49ff738b6f5e)
 
 ## NEW
-A Franka Research 3 has been set up in the lab. Driver integration and controller development will start very soon!
+The Franka Research 3 driver has been fully integrated and tested on a machine with a real-time kernel.
 
 ## TL;DR
 End users can jump to [**Quick start**](#quick-start) to clone the repo, generate a `.env`, and bring up the stack.
@@ -33,7 +33,7 @@ The workspace includes MoveItPy‑based robot motion control, RGB data collectio
   - `ur_driver_mock` (mock hardware)
   - `polaris_driver` (optical tracking with NDI Polaris)
   - `polaris_camera_driver` (RGB camera with NDI Polaris Vega VT)
-  - `realsense_driver` (Intel Realsense)
+  - `franka_driver` (Franka Research 3)
   - `ati_ft_driver` (ATI F/T sensor)
   - `dev` (interactive shell with the workspace mounted)
 
