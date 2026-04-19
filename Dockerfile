@@ -203,13 +203,18 @@ COPY third_party/keystroke          ${KB_WS}/src/keystroke
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    --mount=type=cache,target=/tmp/colcon_app_build,sharing=locked \
     set -eo pipefail \
  && source /opt/ros/$ROS_DISTRO/setup.bash \
  && apt-get update \
  && rosdep install --from-paths ${ATI_WS}/src -i -y --rosdistro $ROS_DISTRO \
  && colcon build --merge-install --base-paths ${ATI_WS}/src --install-base ${ATI_WS}/install \
+      --build-base /tmp/colcon_app_build/ati \
+      --parallel-workers $(nproc) \
  && rosdep install --from-paths ${KB_WS}/src -i -y --rosdistro $ROS_DISTRO \
- && colcon build --merge-install --base-paths ${KB_WS}/src --install-base ${KB_WS}/install
+ && colcon build --merge-install --base-paths ${KB_WS}/src --install-base ${KB_WS}/install \
+      --build-base /tmp/colcon_app_build/kb \
+      --parallel-workers $(nproc)
 
 RUN printf '%s\n' \
   '[ -f /opt/ati_ws/install/setup.bash ] && source /opt/ati_ws/install/setup.bash' \
@@ -245,11 +250,14 @@ COPY third_party/ros2_shared  ${NDI_WS}/src/ros2_shared
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    --mount=type=cache,target=/tmp/colcon_ndi_build,sharing=locked \
     set -eo pipefail \
  && source /opt/ros/$ROS_DISTRO/setup.bash \
  && apt-get update \
  && rosdep install --from-paths ${NDI_WS}/src -i -y --rosdistro $ROS_DISTRO \
- && colcon build --merge-install --base-paths ${NDI_WS}/src --install-base ${NDI_WS}/install
+ && colcon build --merge-install --base-paths ${NDI_WS}/src --install-base ${NDI_WS}/install \
+      --build-base /tmp/colcon_ndi_build \
+      --parallel-workers $(nproc)
 
 RUN printf '%s\n' \
   '[ -f /opt/ndi_ws/install/setup.bash ] && source /opt/ndi_ws/install/setup.bash' \
@@ -284,12 +292,15 @@ COPY third_party/franka_ros2 ${FRANKA_WS}/src
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    --mount=type=cache,target=/tmp/colcon_franka_build,sharing=locked \
     set -eo pipefail \
  && source /opt/ros/$ROS_DISTRO/setup.bash \
  && apt-get update \
  && vcs import ${FRANKA_WS}/src < ${FRANKA_WS}/src/dependency.repos --recursive --skip-existing \
  && rosdep install --from-paths ${FRANKA_WS}/src -i -y --rosdistro $ROS_DISTRO \
  && colcon build --merge-install --base-paths ${FRANKA_WS}/src --install-base ${FRANKA_WS}/install \
+      --build-base /tmp/colcon_franka_build \
+      --parallel-workers $(nproc) \
       --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -DBUILD_TESTS=OFF
 
 RUN printf '%s\n' \
