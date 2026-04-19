@@ -385,6 +385,8 @@ echo
 
 echo "Starting stack with docker compose profile '${PROFILE}'..."
 docker compose --profile "${PROFILE}" up -d
+# Record the active profile so stop.sh knows what to tear down
+printf '%s\n' "${PROFILE}" > .active_profile
 echo
 
 echo "Waiting for attach service '${ATTACH_SERVICE}' to be ready..."

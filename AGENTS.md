@@ -22,22 +22,37 @@ RUGANI (Robotic Ultrasound-Guided Autonomous Needle Insertion) — a Dockerized 
 | `ndi_ros2_driver/` | NDI Polaris ROS 2 hardware interface (C++, colcon/CMake) |
 | `third_party/` | Vendored dependencies: `franka_ros2`, `gscam2`, `keystroke`, `ros2_net_ft_driver`, `ros2_shared` |
 | `scripts/` | Host-side automation: `launch.sh`, `build.sh`, `stop.sh` |
+| `docker-bake.hcl` | Buildx bake definition — declares all three image targets for parallel DAG builds |
+| `.build_stamps/` | Per-target mtime stamps used by `launch.sh` to detect stale images |
+| `.active_profile` | Records the compose profile started by `launch.sh`; read by `stop.sh` to tear down only that profile |
 
 ## Build & Run
 ```bash
 ./gen-dotenv.sh                    # generate .env (interactive, prompts if exists)
-./scripts/build.sh                 # build all 3 images (app, ndi, franka)
+./scripts/build.sh                 # build all 3 images sequentially (app, ndi, franka)
+./scripts/build.sh -p              # parallel build via docker buildx bake (recommended)
 ./scripts/build.sh -t ndi          # rebuild single target
-./scripts/build.sh -p              # parallel build
+./scripts/build.sh -t app -t ndi -p  # parallel build of a subset
+./scripts/build.sh -f              # force clean rebuild (no cache)
+./scripts/build.sh -M              # enable mirror probing (slow networks only)
 ./scripts/launch.sh                # bring up dev profile, attach to dev container
 ./scripts/launch.sh franka-test    # bring up franka-test profile
-./scripts/stop.sh                  # stop all containers
+./scripts/stop.sh                  # stop the profile that launch.sh started
+./scripts/stop.sh dev              # stop a specific profile explicitly
+./scripts/stop.sh -f               # force-stop ALL running Docker containers
 ```
 Inside the dev container, the workspace is at `/ani_ws`. The main package rebuilds with:
 ```bash
 cd /ani_ws && colcon build --symlink-install --packages-select auto_needle_insertion
 source install/setup.bash
 ```
+
+### Build Performance
+The build system uses several optimizations to minimize rebuild time:
+- **`docker buildx bake`** (`-p` flag): builds all three images in a single DAG, so the shared `base` stage is built only once instead of three times. Defined in `docker-bake.hcl`.
+- **Colcon/CMake cache mounts** (`--mount=type=cache`): the Dockerfile uses BuildKit cache mounts for colcon build directories, so C++ object files persist across Docker rebuilds — incremental rebuilds skip recompilation of unchanged packages.
+- **Mirror probing disabled by default**: the build skips the ~10–30s mirror speed-test and uses `archive.ubuntu.com` / `packages.ros.org` directly. Use `-M` to opt-in on slow networks.
+- **Build stamps** (`.build_stamps/`): `build.sh` records the Dockerfile mtime after each successful build. `launch.sh` compares stamps to detect stale images and prompts for a selective rebuild of only the outdated targets.
 
 ## Conventions
 - **Python ROS 2 package** (`auto_needle_insertion`): uses `setup.py` with `entry_points` for console_scripts — add new nodes there, not as standalone scripts.
@@ -54,4 +69,7 @@ source install/setup.bash
 - USB video grabber device path (`/dev/video*`) is **not stable** across reboots — `gen-dotenv.sh` auto-detects "Hagibis" devices, but may need manual override.
 - Experiment notes in `exp_note.md` track data quality issues per recording session — check before using collected rosbags.
 - ROS 2 DDS middleware is CycloneDDS (`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`), set in compose YAML anchors.
+- **BuildKit cache mounts** in the Dockerfile (`--mount=type=cache,target=...`) store colcon/cmake build artifacts across rebuilds. Do not remove these mounts — they are critical for incremental build speed.
+- **`docker-bake.hcl`** must stay in sync with the Dockerfile stage names and image tags. If you add/rename a Dockerfile stage, update the bake file and the `PROFILE_IMAGES` / `IMAGE_TO_TARGET` maps in `launch.sh`.
+- **`stop.sh` is profile-aware**: `launch.sh` writes the active profile to `.active_profile`; `stop.sh` reads it and runs `docker compose --profile <profile> down` so only project containers are stopped. Use `stop.sh -f` to force-stop all Docker containers system-wide.
 
