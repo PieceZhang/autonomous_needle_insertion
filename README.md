@@ -131,15 +131,14 @@ POLARIS_IP=192.168.56.5
 ### 3) Build images (first run)
 Download and build the images:
 ```bash
-docker compose --profile dev build
-# It might take a while depending on your internet connection.
-
-# Optional: Sometimes you may want to get the latest base docker image and rebuild completely with:
-docker compose --profile dev build --no-cache
+./script/build.sh -f
+# It might take a while depending on your internet connection and your machine specification.
 ```
 
 ### 4) Fire up hardware
-**Power on devices.** Ensure the UR arm and NDI Polaris are powered on and connected to the lab LAN. On the UR pendent:
+**Power on devices.** Ensure the **UR arm**, **Franka FR3**, and **NDI Polaris** are all powered on and connected to the lab LAN.
+
+- On the **UR pendant**:
 
 > Click Open -> Installation and select `ani.installation`.
 > 
@@ -147,9 +146,12 @@ docker compose --profile dev build --no-cache
 > 
 > Enable the robot.
 
-**Verify network access.** From the host machine, ping the devices:
+- Ensure the **Franka FR3** is powered on and released from E-stop. On the **Franka Desktop**, unlock the joints and activate FCI.
+
+**Verify network access.** From the host machine, ping all three devices:
 ```bash
 ping -c 3 <UR_ROBOT_IP>
+ping -c 3 <FRANKA_ROBOT_IP>
 ping -c 3 <POLARIS_IP>
 ```
 
