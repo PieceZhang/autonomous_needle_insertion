@@ -4,7 +4,7 @@
 [![Docker Pulls](https://img.shields.io/docker/pulls/your_dockerhub_username/your_image_name.svg)](https://hub.docker.com/layers/osrf/ros/jazzy-desktop-full/images/sha256-b706aba86d1be07e9dc2834bf54c9acf1be87c2bad1aea83cd2f49ff738b6f5e)
 
 ## NEW
-A Franka Research 3 has been set up in the lab. Driver integration and controller development will start very soon!
+The Franka Research 3 driver has been fully integrated and tested on a machine with a real-time kernel.
 
 ## TL;DR
 End users can jump to [**Quick start**](#quick-start) to clone the repo, generate a `.env`, and bring up the stack.
@@ -33,7 +33,7 @@ The workspace includes MoveItPy‑based robot motion control, RGB data collectio
   - `ur_driver_mock` (mock hardware)
   - `polaris_driver` (optical tracking with NDI Polaris)
   - `polaris_camera_driver` (RGB camera with NDI Polaris Vega VT)
-  - `realsense_driver` (Intel Realsense)
+  - `franka_driver` (Franka Research 3)
   - `ati_ft_driver` (ATI F/T sensor)
   - `dev` (interactive shell with the workspace mounted)
 
@@ -131,15 +131,14 @@ POLARIS_IP=192.168.56.5
 ### 3) Build images (first run)
 Download and build the images:
 ```bash
-docker compose --profile dev build
-# It might take a while depending on your internet connection.
-
-# Optional: Sometimes you may want to get the latest base docker image and rebuild completely with:
-docker compose --profile dev build --no-cache
+./script/build.sh -f
+# It might take a while depending on your internet connection and your machine specification.
 ```
 
 ### 4) Fire up hardware
-**Power on devices.** Ensure the UR arm and NDI Polaris are powered on and connected to the lab LAN. On the UR pendent:
+**Power on devices.** Ensure the **UR arm**, **Franka FR3**, and **NDI Polaris** are all powered on and connected to the lab LAN.
+
+- On the **UR pendant**:
 
 > Click Open -> Installation and select `ani.installation`.
 > 
@@ -147,9 +146,12 @@ docker compose --profile dev build --no-cache
 > 
 > Enable the robot.
 
-**Verify network access.** From the host machine, ping the devices:
+- Ensure the **Franka FR3** is powered on and released from E-stop. On the **Franka Desktop**, unlock the joints and activate FCI.
+
+**Verify network access.** From the host machine, ping all three devices:
 ```bash
 ping -c 3 <UR_ROBOT_IP>
+ping -c 3 <FRANKA_ROBOT_IP>
 ping -c 3 <POLARIS_IP>
 ```
 

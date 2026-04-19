@@ -1,0 +1,21 @@
+repositories:
+  franka_description:
+    type: git
+    url: https://github.com/frankarobotics/franka_description.git
+    version: 2.6.0
+  libfranka:
+    type: git
+    url: https://github.com/frankarobotics/libfranka.git
+    version: 0.20.4
+  ros2_controllers:
+    type: git
+    url: https://github.com/ros-controls/ros2_controllers.git
+    version: 4.39.0
+  gz-ros2-control:
+    type: git
+    url: https://github.com/ros-controls/gz_ros2_control.git
+    version: jazzy
+  olvx_descriptions_module:
+    type: git
+    url: https://github.com/olive-robotics/olvx_descriptions_module.git
+    version: main

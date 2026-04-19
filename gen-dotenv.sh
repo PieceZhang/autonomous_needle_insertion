@@ -12,6 +12,7 @@
 #   Group 4: GSCAM_LATENCY, GSCAM_PROTOCOL, GSCAM_VIDEO_WIDTH, GSCAM_VIDEO_HEIGHT
 #   Group 5: ATI_SENSOR_IP, ATI_SENSOR_TYPE, ATI_SAMPLING_RATE
 #   Group 6: USB_VIDEO_DEVICE, USB_VIDEO_WIDTH, USB_VIDEO_HEIGHT, USB_VIDEO_FPS
+#   Group 7: FRANKA_ROBOT_TYPE, FRANKA_ROBOT_IP, FRANKA_USE_FAKE_HARDWARE, FRANKA_LOAD_GRIPPER
 #
 # Example overrides:
 #   HOST_WS_DIR=/custom_ws UR_ROBOT_IP=10.0.0.5 ATI_SENSOR_IP=10.0.0.10 ./gen-dotenv.sh
@@ -174,6 +175,14 @@ fi
   echo "USB_VIDEO_HEIGHT=${USB_VIDEO_HEIGHT:-1080}"
   echo "USB_VIDEO_FPS=${USB_VIDEO_FPS:-30.0}"
 
+  echo
+
+  # Group 7: Franka driver
+  echo "FRANKA_ROBOT_TYPE=${FRANKA_ROBOT_TYPE:-fr3}"
+  echo "FRANKA_ROBOT_IP=${FRANKA_ROBOT_IP:-192.168.56.4}"
+  echo "FRANKA_USE_FAKE_HARDWARE=${FRANKA_USE_FAKE_HARDWARE:-false}"
+  echo "FRANKA_LOAD_GRIPPER=${FRANKA_LOAD_GRIPPER:-false}"
+
 } > "${ENV_FILE}"
 
 echo "Wrote ${ENV_FILE} with:"
@@ -183,3 +192,4 @@ echo "  [Group 3] Polaris tracker"
 echo "  [Group 4] GSCAM configuration"
 echo "  [Group 5] ATI force/torque sensor"
 echo "  [Group 6] USB video grabber"
+echo "  [Group 7] Franka driver"
