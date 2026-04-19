@@ -226,16 +226,27 @@ image_needs_rebuild() {
   [[ ${#STALE_TARGETS[@]} -gt 0 ]]
 }
 
-# After a selective rebuild, refresh stamps for images that were NOT rebuilt
-# but still exist.  Since they share the same Dockerfile and Docker's layer
-# cache guarantees unchanged stages produce identical images, they are valid.
+# After a selective rebuild, refresh stamps for images that were checked
+# (part of the current profile) but found to be up-to-date.
+# IMPORTANT: only touch images that were in the check set — never bump stamps
+# for images belonging to other profiles that were not inspected at all.
 refresh_untouched_stamps() {
   local dockerfile_mtime
   dockerfile_mtime=$(get_file_mtime_epoch "${DOCKERFILE_PATH}" 2>/dev/null || true)
   [[ -z "${dockerfile_mtime}" ]] && return
 
   mkdir -p "${BUILD_STAMP_DIR}"
-  for img in "${ALL_IMAGES[@]}"; do
+
+  # Only consider images that were actually checked for the current profile
+  local images_str="${PROFILE_IMAGES[${PROFILE}]:-}"
+  local -a checked_images=()
+  if [[ -n "${images_str}" ]]; then
+    read -ra checked_images <<< "${images_str}"
+  else
+    checked_images=("${ALL_IMAGES[@]}")
+  fi
+
+  for img in "${checked_images[@]}"; do
     local tgt="${IMAGE_TO_TARGET[$img]}"
     # Skip targets that were just rebuilt (build.sh already wrote their stamps)
     local was_rebuilt=false
