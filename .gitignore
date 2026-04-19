@@ -12,6 +12,9 @@ zed2_docker/rosbag_recording/
 # OS specific
 .DS_Store
 
+# Docker build stamps (per-machine state, written by scripts/build.sh)
+.build_stamps/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
