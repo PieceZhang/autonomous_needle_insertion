@@ -3,6 +3,9 @@ set -euo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
 PROFILE=""
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ENV_FILE_DEFAULT="${PROJECT_ROOT}/.env"
 
 as_bool() {
   local v="${1:-}"
@@ -21,6 +24,33 @@ warn() {
 die() {
   printf '[preflight][error] %s\n' "$*" >&2
   exit 1
+}
+
+# Compose loads .env automatically, but this standalone script does not.
+# Load KEY=VALUE pairs from .env as defaults (do not overwrite already-exported vars).
+load_env_defaults() {
+  local env_file="$1"
+  [[ -f "${env_file}" ]] || return 0
+
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line%$'\r'}"
+    [[ -z "${line}" ]] && continue
+    [[ "${line}" =~ ^[[:space:]]*# ]] && continue
+    [[ "${line}" =~ ^[[:space:]]*$ ]] && continue
+    [[ "${line}" =~ ^[[:space:]]*export[[:space:]]+ ]] && line="${line#export }"
+
+    if [[ "${line}" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+      local key="${BASH_REMATCH[1]}"
+      local value="${BASH_REMATCH[2]}"
+      key="${key#"${key%%[![:space:]]*}"}"
+      key="${key%"${key##*[![:space:]]}"}"
+      value="${value#"${value%%[![:space:]]*}"}"
+      value="${value%"${value##*[![:space:]]}"}"
+      if [[ -z "${!key+x}" ]]; then
+        export "${key}=${value}"
+      fi
+    fi
+  done < "${env_file}"
 }
 
 services_for_profile() {
@@ -269,7 +299,7 @@ Options:
   -h, --help          Show help and exit
 
 Environment (high-level):
-  AUTO_ROBOT_PREFLIGHT=true|false   Master switch (default: true)
+  AUTO_ROBOT_PREFLIGHT=true|false   Master switch (default: false)
   AUTO_UR_DASHBOARD=true|false      Enable UR dashboard preflight (default: true)
   AUTO_FRANKA_DESK=true|false       Enable Franka Desk preflight (default: true)
 
@@ -306,7 +336,9 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-if ! as_bool "${AUTO_ROBOT_PREFLIGHT:-true}"; then
+load_env_defaults "${ROBOT_PREFLIGHT_ENV_FILE:-${ENV_FILE_DEFAULT}}"
+
+if ! as_bool "${AUTO_ROBOT_PREFLIGHT:-false}"; then
   info "Robot preflight disabled (AUTO_ROBOT_PREFLIGHT=false)."
   exit 0
 fi
@@ -335,4 +367,3 @@ if ! "${run_ur}" && ! "${run_franka}"; then
 fi
 
 info "Robot preflight done."
-

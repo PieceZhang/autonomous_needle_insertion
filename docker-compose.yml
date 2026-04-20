@@ -276,7 +276,7 @@ services:
         if [ ! -f ${RUNTIME_WS_DIR:-/ani_ws}/rqt_task_interface/setup.py ]; then
           echo 'rqt_task_interface package not found at /ani_ws/rqt_task_interface. Please place the files and retry.'; exit 1;
         fi;
-        colcon build --symlink-install --base-paths ${RUNTIME_WS_DIR:-/ani_ws}/rqt_task_interface --packages-select rqt_task_interface;
+        colcon build --symlink-install --packages-select rqt_task_interface;
         source install/setup.bash;
         echo 'Starting RQT Task Interface (publishing /task_info @1Hz)...';
         exec rqt --standalone rqt_task_interface
@@ -332,12 +332,10 @@ services:
     command: >
       bash -lc "
         set -e;
+        cd ${RUNTIME_WS_DIR:-/ani_ws};
         if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi;
-        if [ ! -f ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash ]; then
-          echo 'Workspace install not found. Building needle_deflection_system...';
-          colcon build --symlink-install --base-paths ${RUNTIME_WS_DIR:-/ani_ws}/needle_deflection_system --packages-select needle_deflection_system;
-        fi;
-        source ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash;
+        colcon build --symlink-install --packages-select needle_deflection_system;
+        source install/setup.bash;
         echo 'Running ATI force sensor driver...';
         ros2 run needle_deflection_system ati_force_sensor_driver
       "
@@ -357,10 +355,6 @@ services:
       bash -lc "
         set -e;
         if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi;
-        if [ ! -f ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash ]; then
-          echo 'Workspace install not found. Building needle_deflection_system...';
-          colcon build --symlink-install --base-paths ${RUNTIME_WS_DIR:-/ani_ws}/needle_deflection_system --packages-select needle_deflection_system;
-        fi;
         source ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash;
         echo 'Running needle deflection calculator...';
         ros2 run needle_deflection_system needle_deflection_calculator
@@ -407,10 +401,9 @@ services:
     command: >
       bash -lc "
         set -e;
-        if [ ! -f ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash ]; then
-          colcon build --symlink-install --base-paths ${RUNTIME_WS_DIR:-/ani_ws}/auto_needle_insertion ${RUNTIME_WS_DIR:-/ani_ws}/needle_deflection_system ${RUNTIME_WS_DIR:-/ani_ws}/rqt_task_interface;
-        fi;
-        source ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash;
+        cd ${RUNTIME_WS_DIR:-/ani_ws};
+        colcon build --symlink-install --packages-select auto_needle_insertion;
+        source install/setup.bash;
         echo 'Development container with all drivers';
         exec sleep infinity
       "
@@ -426,10 +419,9 @@ services:
     command: >
       bash -lc "
         set -e;
-        if [ ! -f ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash ]; then
-          colcon build --symlink-install --base-paths ${RUNTIME_WS_DIR:-/ani_ws}/auto_needle_insertion ${RUNTIME_WS_DIR:-/ani_ws}/needle_deflection_system ${RUNTIME_WS_DIR:-/ani_ws}/rqt_task_interface;
-        fi;
-        source ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash;
+        cd ${RUNTIME_WS_DIR:-/ani_ws};
+        colcon build --symlink-install --packages-select auto_needle_insertion;
+        source install/setup.bash;
         echo 'Development container with all drivers';
         exec sleep infinity
       "

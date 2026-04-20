@@ -299,7 +299,7 @@ Options:
 
 Environment:
   LAUNCH_ATTACH_SERVICE   Force the service name to attach to.
-  AUTO_ROBOT_PREFLIGHT    Master preflight switch (default true).
+  AUTO_ROBOT_PREFLIGHT    Master preflight switch (default false).
   AUTO_UR_DASHBOARD       UR dashboard automation switch (default true).
   AUTO_FRANKA_DESK        Franka Desk automation switch (default true).
 
