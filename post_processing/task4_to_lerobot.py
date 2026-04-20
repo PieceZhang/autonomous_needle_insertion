@@ -708,7 +708,7 @@ def main():
                         help="Compute action delta at this rate (Hz) using frame stride based on OUTPUT fps. Default=15.")
 
     parser.add_argument("--workspace_root", type=str, required=True,
-                        help="Path to your workspace that contains calibration/, e.g. workspace/")
+                        help="Path to your workspace that contains calibration/, e.g. ./")
     parser.add_argument("--calib_xml", type=str, required=True,
                         help="Path to PlusDeviceSet*.xml (for LocalTimeOffsetSec)")
     parser.add_argument("--offset_device_id", type=str, default="TrackerDevice",

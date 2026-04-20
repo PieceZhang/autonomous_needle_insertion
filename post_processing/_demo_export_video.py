@@ -359,7 +359,7 @@ if __name__ == "__main__":
 
 """
 python post_processing/_demo_export_video.py \
-    --bag workspace/rosbag2_2025_12_19-05_24_17/rosbag2_2025_12_19-05_24_17_0.mcap \
+    --bag rosbag_recording/rosbag2_2025_12_19-05_24_17/rosbag2_2025_12_19-05_24_17_0.mcap \
     --topic /camera/camera/depth/image_rect_raw/compressedDepth \
     --out image_rect_raw_compressedDepth.mp4 
 """

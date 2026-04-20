@@ -8,8 +8,8 @@ x-ros-base-env: &ros_base_env
 
 # ── Shared volumes & runtime settings ──────────────────────────────────────
 x-ros-volumes: &ros_volumes
-  - ${HOST_WS_DIR:-${PWD}/workspace}:/ani_ws:rw
-  - ${HOST_ROSBAG_DIR:-${PWD}/workspace/rosbag_recording}:/ani_ws/rosbag_recording:rw
+  - ${HOST_WS_DIR:-${PWD}}:/ani_ws:rw
+  - ${HOST_ROSBAG_DIR:-${PWD}/rosbag_recording}:/ani_ws/rosbag_recording:rw
   - /tmp/.X11-unix:/tmp/.X11-unix:rw
   - /etc/passwd:/etc/passwd:ro
   - /etc/group:/etc/group:ro
@@ -91,9 +91,9 @@ services:
       <<: *ros_base_env
     command: >
       bash -lc "
-        if [ -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then source ${RUNTIME_WS_DIR}/install/setup.bash; fi;
+        if [ -f ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash ]; then source ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash; fi;
         echo 'Starting UR driver with IP ' ${UR_ROBOT_IP};
-        ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur5e robot_ip:=${UR_ROBOT_IP} kinematics_params_file:=${RUNTIME_WS_DIR}/calibration/ur5e_calibration.yaml launch_rviz:=false
+        ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur5e robot_ip:=${UR_ROBOT_IP} kinematics_params_file:=${RUNTIME_WS_DIR:-/ani_ws}/calibration/ur5e_calibration.yaml launch_rviz:=false
       "
     healthcheck:
       test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; timeout 2 ros2 topic echo /joint_states --once > /dev/null 2>&1"]
@@ -111,9 +111,9 @@ services:
       <<: *ros_base_env
     command: >
       bash -lc "
-        if [ -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then source ${RUNTIME_WS_DIR}/install/setup.bash; fi;
+        if [ -f ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash ]; then source ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash; fi;
         echo 'Starting UR driver with IP ' ${UR_ROBOT_IP};
-        ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur5e robot_ip:=0.0.0.0 use_mock_hardware:=true initial_joint_controller:=joint_trajectory_controller kinematics_params_file:=${RUNTIME_WS_DIR}/calibration/ur5e_calibration.yaml launch_rviz:=false
+        ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur5e robot_ip:=0.0.0.0 use_mock_hardware:=true initial_joint_controller:=joint_trajectory_controller kinematics_params_file:=${RUNTIME_WS_DIR:-/ani_ws}/calibration/ur5e_calibration.yaml launch_rviz:=false
       "
     healthcheck:
       test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi;"]
@@ -182,7 +182,7 @@ services:
         set -e;
         if [ -f /opt/ndi_ws/install/setup.bash ]; then source /opt/ndi_ws/install/setup.bash; fi;
         echo 'Starting gscam2 for Polaris Vega VT camera ...';
-        ros2 run gscam2 gscam_main --ros-args -p frame_id:=vega_vt_camera -p camera_name:=vega_vt_visible -p image_encoding:=rgb8 -p use_gst_timestamps:=false -p sync_sink:=false -p use_sensor_data_qos:=true -p reopen_on_eof:=true -p camera_info_url:='file:///${RUNTIME_WS_DIR}/calibration/polaris_camera_cali_dummy.yaml' -r image_raw:=vega_vt/image_raw -r camera_info:=vega_vt/camera_info
+        ros2 run gscam2 gscam_main --ros-args -p frame_id:=vega_vt_camera -p camera_name:=vega_vt_visible -p image_encoding:=rgb8 -p use_gst_timestamps:=false -p sync_sink:=false -p use_sensor_data_qos:=true -p reopen_on_eof:=true -p camera_info_url:='file:///${RUNTIME_WS_DIR:-/ani_ws}/calibration/polaris_camera_cali_dummy.yaml' -r image_raw:=vega_vt/image_raw -r camera_info:=vega_vt/camera_info
       "
     healthcheck:
       test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q '/vega_vt/image_raw'"]
@@ -241,7 +241,7 @@ services:
     group_add:
       - "video"
     volumes:
-      - ${HOST_WS_DIR:-${PWD}/workspace}:/ani_ws:rw
+      - ${HOST_WS_DIR:-${PWD}}:/ani_ws:rw
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /etc/passwd:/etc/passwd:ro
       - /etc/group:/etc/group:ro
@@ -253,7 +253,7 @@ services:
         if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi;
         echo 'Host device' ${USB_VIDEO_DEVICE} 'is mapped to /dev/usb_grabber in container';
         echo 'Running v4l2_camera_node on /dev/usb_grabber...';
-        ros2 run v4l2_camera v4l2_camera_node --ros-args -p video_device:=/dev/usb_grabber -p image_size:=[$USB_VIDEO_WIDTH,$USB_VIDEO_HEIGHT] -p framerate:=$USB_VIDEO_FPS -p camera_info_url:='file:///${RUNTIME_WS_DIR}/calibration/usb_grabber_cali_dummy.yaml' -r image_raw:=/usb_grabber/image_raw
+        ros2 run v4l2_camera v4l2_camera_node --ros-args -p video_device:=/dev/usb_grabber -p image_size:=[$USB_VIDEO_WIDTH,$USB_VIDEO_HEIGHT] -p framerate:=$USB_VIDEO_FPS -p camera_info_url:='file:///${RUNTIME_WS_DIR:-/ani_ws}/calibration/usb_grabber_cali_dummy.yaml' -r image_raw:=/usb_grabber/image_raw
       "
     healthcheck:
       test:
@@ -272,11 +272,11 @@ services:
     command: >
       bash -lc "
         set -e;
-        cd ${RUNTIME_WS_DIR};
-        if [ ! -f src/rqt_task_interface/setup.py ]; then
-          echo 'rqt_task_interface package not found in workspace/src. Please place the files and retry.'; exit 1;
+        cd ${RUNTIME_WS_DIR:-/ani_ws};
+        if [ ! -f ${RUNTIME_WS_DIR:-/ani_ws}/rqt_task_interface/setup.py ]; then
+          echo 'rqt_task_interface package not found at /ani_ws/rqt_task_interface. Please place the files and retry.'; exit 1;
         fi;
-        colcon build --symlink-install --packages-select rqt_task_interface;
+        colcon build --symlink-install --base-paths ${RUNTIME_WS_DIR:-/ani_ws}/rqt_task_interface --packages-select rqt_task_interface;
         source install/setup.bash;
         echo 'Starting RQT Task Interface (publishing /task_info @1Hz)...';
         exec rqt --standalone rqt_task_interface
@@ -296,8 +296,8 @@ services:
       bash -lc "
         set -e;
         if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi;
-        if [ -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then source ${RUNTIME_WS_DIR}/install/setup.bash; fi;
-        python3 ${RUNTIME_WS_DIR}/src/us_coor_decode_visualizer_useNeedle.py
+        if [ -f ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash ]; then source ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash; fi;
+        python3 ${RUNTIME_WS_DIR:-/ani_ws}/tools/us_coor_decode_visualizer_useNeedle.py
       "
     healthcheck:
       test: ["CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; ros2 topic list | grep -q '/visualize/us_imaging'"]
@@ -333,12 +333,12 @@ services:
       bash -lc "
         set -e;
         if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi;
-        if [ -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then source ${RUNTIME_WS_DIR}/install/setup.bash; fi;
+        if [ -f ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash ]; then source ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash; fi;
         echo 'Running ATI force sensor Python driver...';
-        python3 ${RUNTIME_WS_DIR}/src/needle_deflection_system/needle_deflection_system/ati_force_sensor_driver.py
+        ros2 run needle_deflection_system ati_force_sensor_driver
       "
     healthcheck:
-      test: [ "CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; if [ -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then source ${RUNTIME_WS_DIR}/install/setup.bash; fi; ros2 topic list | grep -q '/force_torque'" ]
+      test: [ "CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; if [ -f ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash ]; then source ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash; fi; ros2 topic list | grep -q '/force_torque'" ]
       interval: 3s
       timeout: 3s
       retries: 5
@@ -353,7 +353,7 @@ services:
       bash -lc "
         set -e;
         if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi;
-        if [ -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then source ${RUNTIME_WS_DIR}/install/setup.bash; fi;
+        if [ -f ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash ]; then source ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash; fi;
         echo 'Running needle deflection calculator...';
         ros2 run needle_deflection_system needle_deflection_calculator
       "
@@ -361,7 +361,7 @@ services:
       ati_ft_nano17_driver:
         condition: service_healthy
     healthcheck:
-      test: [ "CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; if [ -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then source ${RUNTIME_WS_DIR}/install/setup.bash; fi; ros2 topic list | grep -q '/needle_deflection'" ]
+      test: [ "CMD", "bash", "-lc", "set -e; if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi; if [ -f ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash ]; then source ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash; fi; ros2 topic list | grep -q '/needle_deflection'" ]
       interval: 3s
       timeout: 3s
       retries: 5
@@ -399,11 +399,10 @@ services:
     command: >
       bash -lc "
         set -e;
-        if [ ! -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then
-          cd ${RUNTIME_WS_DIR};
-          colcon build --symlink-install --packages-select ${PACKAGE_NAME:-/auto_needle_insertion};
+        if [ ! -f ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash ]; then
+          colcon build --symlink-install --base-paths ${RUNTIME_WS_DIR:-/ani_ws}/auto_needle_insertion ${RUNTIME_WS_DIR:-/ani_ws}/needle_deflection_system ${RUNTIME_WS_DIR:-/ani_ws}/rqt_task_interface;
         fi;
-        source ${RUNTIME_WS_DIR}/install/setup.bash;
+        source ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash;
         echo 'Development container with all drivers';
         exec sleep infinity
       "
@@ -419,13 +418,11 @@ services:
     command: >
       bash -lc "
         set -e;
-        if [ ! -f ${RUNTIME_WS_DIR}/install/setup.bash ]; then
-          cd ${RUNTIME_WS_DIR};
-          colcon build --symlink-install --packages-select ${PACKAGE_NAME:-/auto_needle_insertion};
+        if [ ! -f ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash ]; then
+          colcon build --symlink-install --base-paths ${RUNTIME_WS_DIR:-/ani_ws}/auto_needle_insertion ${RUNTIME_WS_DIR:-/ani_ws}/needle_deflection_system ${RUNTIME_WS_DIR:-/ani_ws}/rqt_task_interface;
         fi;
-        source ${RUNTIME_WS_DIR}/install/setup.bash;
+        source ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash;
         echo 'Development container with all drivers';
         exec sleep infinity
       "
     restart: unless-stopped
-

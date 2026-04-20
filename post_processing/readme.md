@@ -34,11 +34,10 @@ The pipeline is organized around **multiple surgical robotics tasks**, while sha
 ├── task1_to_lerobot.sh
 ├── task4_to_lerobot.sh
 ├── README.md
-└── workspace/
-    └── calibration/
-        └── PlusDeviceSet_*.xml      # Probe / tracker / camera calibration
-        └── hand_eye_20251231_075559.json
-        └── hand_eye_20260112_071955.json
+└── calibration/
+    └── PlusDeviceSet_*.xml      # Probe / tracker / camera calibration
+    └── hand_eye_20251231_075559.json
+    └── hand_eye_20260112_071955.json
 ````
 
 ---

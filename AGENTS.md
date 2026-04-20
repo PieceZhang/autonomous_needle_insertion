@@ -14,9 +14,9 @@ RUGANI (Robotic Ultrasound-Guided Autonomous Needle Insertion) — a Dockerized 
 ## Key Directories
 | Path | Purpose |
 |------|---------|
-| `workspace/src/auto_needle_insertion/` | Main ROS 2 Python package — MoveItPy motion control, calibration, task scripts |
-| `workspace/scripts/` | In-container automation scripts (task execution, calibration, data collection) |
-| `workspace/calibration/` | UR5e calibration YAML, camera calibration files |
+| `auto_needle_insertion/` | Main ROS 2 Python package — MoveItPy motion control, calibration, task scripts |
+| `task_scripts/` | In-container automation scripts (task execution, calibration, data collection) |
+| `calibration/` | UR5e calibration YAML, camera calibration files |
 | `post_processing/` | Offline pipeline: rosbag MCAP → decoded NDJSON/MP4 → LeRobot dataset format |
 | `registration/` | Pre-op to intra-op point set registration (Blossom matching + Kabsch/SVD) |
 | `ndi_ros2_driver/` | NDI Polaris ROS 2 hardware interface (C++, colcon/CMake) |
@@ -56,9 +56,9 @@ The build system uses several optimizations to minimize rebuild time:
 
 ## Conventions
 - **Python ROS 2 package** (`auto_needle_insertion`): uses `setup.py` with `entry_points` for console_scripts — add new nodes there, not as standalone scripts.
-- **Launch files** live in `workspace/src/auto_needle_insertion/launch/*.launch.py`; motion modes are selected via `mode:=` arg (e.g., `mode:=keyboard`, `mode:=ee_moveit_square`).
-- **Config YAML** in `workspace/src/auto_needle_insertion/config/` — MoveIt/servo params (`moveit_py_ur_ompl.yaml`, `servo_params.yaml`).
-- **Task scripts** follow a naming pattern: `task{N}_{description}.py` in the package, with matching shell wrappers in `workspace/scripts/` (e.g., `task1_auto.sh`).
+- **Launch files** live in `auto_needle_insertion/launch/*.launch.py`; motion modes are selected via `mode:=` arg (e.g., `mode:=keyboard`, `mode:=ee_moveit_square`).
+- **Config YAML** in `auto_needle_insertion/config/` — MoveIt/servo params (`moveit_py_ur_ompl.yaml`, `servo_params.yaml`).
+- **Task scripts** follow a naming pattern: `task{N}_{description}.py` in the package, with matching shell wrappers in `task_scripts/` (e.g., `task1_auto.sh`).
 - **Post-processing pipeline**: rosbag MCAP → `rosbag_decode.py` (decodes to NDJSON + MP4) → `task{N}_to_lerobot.py` (converts to LeRobot HDF5 format). Each `.py` has a companion `.sh` wrapper.
 - **Utility modules** in `auto_needle_insertion/utils/` provide reusable components: `needle.py`, `optical_tracking.py`, `pose_representations.py`, `us_probe.py`, `transducer_motions.py`.
 
@@ -72,4 +72,3 @@ The build system uses several optimizations to minimize rebuild time:
 - **BuildKit cache mounts** in the Dockerfile (`--mount=type=cache,target=...`) store colcon/cmake build artifacts across rebuilds. Do not remove these mounts — they are critical for incremental build speed.
 - **`docker-bake.hcl`** must stay in sync with the Dockerfile stage names and image tags. If you add/rename a Dockerfile stage, update the bake file and the `PROFILE_IMAGES` / `IMAGE_TO_TARGET` maps in `launch.sh`.
 - **`stop.sh` is profile-aware**: `launch.sh` writes the active profile to `.active_profile`; `stop.sh` reads it and runs `docker compose --profile <profile> down` so only project containers are stopped. Use `stop.sh -f` to force-stop all Docker containers system-wide.
-

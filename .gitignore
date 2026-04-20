@@ -2,11 +2,11 @@
 results/
 
 # ROS related
-workspace/.ros/
-workspace/build/
-workspace/install/
-workspace/log/
-workspace/rosbag_recording/
+.ros/
+build/
+install/
+log/
+rosbag_recording/
 zed2_docker/rosbag_recording/
 
 # OS specific

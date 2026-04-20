@@ -1,5 +1,5 @@
 source ./install/setup.bash
-python3 src/auto_needle_insertion/auto_needle_insertion/task3manual_record.py
+python3 auto_needle_insertion/auto_needle_insertion/task3manual_record.py
 pkill -INT -f "ros2 bag record"
 bash ./scripts/send_rosbag_stop_command.sh
 echo "All ros bag recording processes have been terminated."

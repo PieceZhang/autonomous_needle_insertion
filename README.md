@@ -44,8 +44,8 @@ The workspace includes MoveItPy‑based robot motion control, RGB data collectio
 | **Host**                   | The physical machine where Docker runs and this repository is cloned.                                                          |
 | **Container**              | An isolated runtime for a packaged app (an image) used for dev and runtime reproducibility.                                    |
 | **Docker Compose profile** | A named grouping of services you activate selectively (e.g., `--profile dev`).                                                 |
-| **`.env` file**            | Key–value config read by Compose to parameterize services (e.g., `WS_DIR`, `UR_ROBOT_IP`).                                     |
-| **ROS 2 workspace**        | The mounted colcon workspace at `$WS_DIR` containing your packages.                                                            |
+| **`.env` file**            | Key–value config read by Compose to parameterize services (e.g., `RUNTIME_WS_DIR`, `UR_ROBOT_IP`).                             |
+| **ROS 2 workspace**        | The mounted colcon workspace at `$RUNTIME_WS_DIR` containing your packages.                                                    |
 | **Motion profile**         | Plan a trajectory with MoveIt and execute it (as opposed to continuous servoing).                                              |
 | **Hand–eye calibration**   | The fixed transform between the robot “hand” and the “eye” (camera/tracker), typically via OpenCV’s `calibrateHandEye`.        |
 | **Probe calibration**      | The fixed transform between the ultrasound imaging plane and the tracker, typically via the PLUS Toolkit and a N-wire phantom. |
@@ -119,7 +119,8 @@ The generated `.env` will include example values such as:
 ```dotenv
 UID=1001
 GID=1001
-WS_DIR=/ani_ws
+HOST_WS_DIR=/path/to/this/repo
+RUNTIME_WS_DIR=/ani_ws
 PACKAGE_NAME=auto_needle_insertion
 UR_ROBOT_IP=192.168.56.2
 USE_MOCK_HARDWARE=true
@@ -206,11 +207,11 @@ ros2 run rqt_image_view rqt_image_view /vega_vt/image_raw
 #### 6.3) Automation scripts
 Begin dataset collection for OpenH:
 ```bash
-./scripts/run_openh_collection.sh
+./task_scripts/run_openh_collection.sh
 ```
 Run keyboard control of the robotic end effector:
 ```bash
-./scripts/run_keyboard_control.sh
+./task_scripts/run_keyboard_control.sh
 ```
 
 #### 6.4) Record ROS bag
@@ -257,15 +258,15 @@ Stop all the containers in one go:
 ## Under the hood
 ### Repository & runtime layout
 - **Docker Compose orchestration.** `docker-compose.yaml` declares several services that you enable via profiles and `.env` flags:
-  - **`dev`** – an interactive development container with the ROS 2 workspace mounted at `$WS_DIR`.
+  - **`dev`** – an interactive development container with the ROS 2 workspace mounted at `$RUNTIME_WS_DIR`.
   - **`ur_driver`** – Universal Robots ROS 2 driver for the **physical** UR arm; enabled when `USE_MOCK_HARDWARE=false` and `UR_ROBOT_IP` is reachable.
   - **`ur_driver_mock`** – mock hardware for local development; enabled when `USE_MOCK_HARDWARE=true`.
   - **`polaris_driver`** –  service that publishes tracked tool poses from NDI Polaris; enabled when `POLARIS_IP` is set.
   - **`polaris_camera_driver`** – Service that publishes camera stream from the NDI Polaris Vega VT; enabled when `POLARIS_IP` is set.
   - **`realsense_driver`** – Service that publishes camera stream from Realsense.
   - **`ati_ft_driver`** – Service that publishes force and torque from ATI F/T sensors.
-- **Environment configuration.** `gen-dotenv.sh` generates a project `.env` (UID/GID, `WS_DIR`, `PACKAGE_NAME`, device IPs, and flags). Docker Compose reads these at launch to parameterize services.
-- **ROS 2 workspace.** The workspace mounted at `$WS_DIR` contains the package `${PACKAGE_NAME}` under development. Within it you will find:
+- **Environment configuration.** `gen-dotenv.sh` generates a project `.env` (UID/GID, `HOST_WS_DIR`, `RUNTIME_WS_DIR`, `PACKAGE_NAME`, device IPs, and flags). Docker Compose reads these at launch to parameterize services.
+- **ROS 2 workspace.** The workspace mounted at `$RUNTIME_WS_DIR` contains the package `${PACKAGE_NAME}` under development. Within it you will find:
   - **Motion modules** based on *MoveItPy* for trajectory (“profile”) planning/execution, real‑time servo control, and keyboard control.
   - **Calibration utilities** for hand–eye (robot↔tracker) and ultrasound probe/image plane.
   - **Monitoring tools** including a lightweight PoseStamped/TF tool‑pose reporter for downstream consumers.
@@ -307,7 +308,7 @@ Stop all the containers in one go:
 - `USE_MOCK_HARDWARE=true|false` — toggle between mock and physical robot arm.
 - `UR_ROBOT_IP` — IP of the UR controller.
 - `POLARIS_IP` — IP of the NDI Polaris sensor.
-- `WS_DIR`, `PACKAGE_NAME` — ROS 2 workspace mount and package name used inside the dev container.
+- `HOST_WS_DIR`, `RUNTIME_WS_DIR`, `PACKAGE_NAME` — host repo path, in-container workspace path, and package name used inside the dev container.
  
 ### Service lifecycle & health
 - Bring services up with `docker compose up --profile dev -d`; health checks ensure dependencies are ready.

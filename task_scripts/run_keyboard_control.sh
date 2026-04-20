@@ -12,7 +12,7 @@ if [ -f "../install/setup.bash" ]; then
 fi
 
 # --- Start the 2nd long-living command in the background ---
-python3 /ani_ws/src/auto_needle_insertion/auto_needle_insertion/rosbag_recorder_control.py &
+python3 /ani_ws/auto_needle_insertion/auto_needle_insertion/rosbag_recorder_control.py &
 REC_PID=$!
 
 cleanup() {

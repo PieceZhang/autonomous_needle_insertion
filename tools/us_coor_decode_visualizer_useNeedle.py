@@ -215,7 +215,7 @@ class USVisualizer(Node):
 
     def load_calibration_xml(self):
         """Load the unique PlusDeviceSet_fCal*.xml and parse required transforms (in mm) and LocalTimeOffsetSec."""
-        ws_dir = os.environ.get("WS_DIR", "/ani_ws")
+        ws_dir = os.environ.get("RUNTIME_WS_DIR", os.environ.get("WS_DIR", "/ani_ws"))
         calib_dir = os.path.join(ws_dir, "calibration")
         pattern = os.path.join(calib_dir, "PlusDeviceSet_fCal*.xml")
         files = glob.glob(pattern)
@@ -278,7 +278,7 @@ class USVisualizer(Node):
         Load tip_offset_mm (length 3, mm) from calibration/needle_1_tip_offset.json,
         representing NeedleBody -> NeedleTip translation (rotation = identity).
         """
-        ws_dir = os.environ.get("WS_DIR", "/ani_ws")
+        ws_dir = os.environ.get("RUNTIME_WS_DIR", os.environ.get("WS_DIR", "/ani_ws"))
         json_path = os.path.join(ws_dir, "calibration", "needle_1_tip_offset.json")
         if not os.path.isfile(json_path):
             msg = f"Tip offset JSON not found: {json_path}"
@@ -298,11 +298,11 @@ class USVisualizer(Node):
 
     def load_handeye_json(self):
         """
-        Locate the newest hand_eye_*.json under <WS_DIR>/calibration, load T_c2g and save to:
+        Locate the newest hand_eye_*.json under <RUNTIME_WS_DIR>/calibration, load T_c2g and save to:
           self.T_c2g (numpy 4x4 float)
           self.hand_eye_json_path (string)
         """
-        ws_dir = os.environ.get("WS_DIR", "/ani_ws")
+        ws_dir = os.environ.get("RUNTIME_WS_DIR", os.environ.get("WS_DIR", "/ani_ws"))
         calib_dir = os.path.join(ws_dir, "calibration")
         pattern = os.path.join(calib_dir, "hand_eye_*.json")
         files = glob.glob(pattern)

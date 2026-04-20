@@ -5,7 +5,6 @@ post_processing/
 registration/
 results/
 scripts/
-workspace/
 zed2_docker/
 
 # Build artefacts & IDE settings
@@ -16,4 +15,3 @@ zed2_docker/
 *.md
 !third_party/franka_ros2/*.md
 LICENSE
-
