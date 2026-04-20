@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 set -e
 
-cd "$(dirname "$0")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+cd "${SCRIPT_DIR}"
 
 if [ -f "/opt/ros/jazzy/setup.bash" ]; then
   source /opt/ros/jazzy/setup.bash
 fi
 
-if [ -f "../install/setup.bash" ]; then
-  source "../install/setup.bash"
+if [ -f "${REPO_ROOT}/install/setup.bash" ]; then
+  source "${REPO_ROOT}/install/setup.bash"
 fi
 
 # --- Start the 2nd long-living command in the background ---
-python3 /ani_ws/auto_needle_insertion/auto_needle_insertion/rosbag_recorder_control.py &
+python3 "${REPO_ROOT}/auto_needle_insertion/auto_needle_insertion/rosbag_recorder_control.py" &
 REC_PID=$!
 
 cleanup() {
