@@ -13,6 +13,7 @@
 #   Group 5: ATI_SENSOR_IP, ATI_SENSOR_TYPE, ATI_SAMPLING_RATE
 #   Group 6: USB_VIDEO_DEVICE, USB_VIDEO_WIDTH, USB_VIDEO_HEIGHT, USB_VIDEO_FPS
 #   Group 7: FRANKA_ROBOT_TYPE, FRANKA_ROBOT_IP, FRANKA_USE_FAKE_HARDWARE, FRANKA_LOAD_GRIPPER
+#   Group 8: Robot preflight automation switches and endpoints
 #
 # Example overrides:
 #   HOST_WS_DIR=/path/to/repo UR_ROBOT_IP=10.0.0.5 ATI_SENSOR_IP=10.0.0.10 ./gen-dotenv.sh
@@ -183,6 +184,36 @@ fi
   echo "FRANKA_USE_FAKE_HARDWARE=${FRANKA_USE_FAKE_HARDWARE:-false}"
   echo "FRANKA_LOAD_GRIPPER=${FRANKA_LOAD_GRIPPER:-false}"
 
+  echo
+
+  # Group 8: Robot preflight automation
+  echo "AUTO_ROBOT_PREFLIGHT=${AUTO_ROBOT_PREFLIGHT:-true}"
+  echo "AUTO_UR_DASHBOARD=${AUTO_UR_DASHBOARD:-true}"
+  echo "AUTO_FRANKA_DESK=${AUTO_FRANKA_DESK:-true}"
+
+  # UR dashboard preflight
+  echo "UR_DASHBOARD_PORT=${UR_DASHBOARD_PORT:-29999}"
+  echo "UR_DASHBOARD_TIMEOUT_SEC=${UR_DASHBOARD_TIMEOUT_SEC:-3}"
+  echo "UR_WAIT_RUNNING_SEC=${UR_WAIT_RUNNING_SEC:-90}"
+  echo "UR_WAIT_PLAYING_SEC=${UR_WAIT_PLAYING_SEC:-90}"
+  echo "UR_INSTALLATION_FILE=${UR_INSTALLATION_FILE:-}"
+  echo "UR_EXTERNAL_CONTROL_PROGRAM=${UR_EXTERNAL_CONTROL_PROGRAM:-}"
+  echo "UR_AUTO_POWER_ON=${UR_AUTO_POWER_ON:-true}"
+  echo "UR_AUTO_BRAKE_RELEASE=${UR_AUTO_BRAKE_RELEASE:-true}"
+  echo "UR_AUTO_PLAY=${UR_AUTO_PLAY:-true}"
+
+  # Franka Desk preflight
+  echo "FRANKA_DESK_BACKEND=${FRANKA_DESK_BACKEND:-api}"
+  echo "FRANKA_DESK_TIMEOUT_SEC=${FRANKA_DESK_TIMEOUT_SEC:-8}"
+  echo "FRANKA_WAIT_FCI_SEC=${FRANKA_WAIT_FCI_SEC:-60}"
+  echo "FRANKA_DESK_TOKEN=${FRANKA_DESK_TOKEN:-}"
+  echo "FRANKA_DESK_BASE_URL=${FRANKA_DESK_BASE_URL:-}"
+  echo "FRANKA_DESK_UNLOCK_ENDPOINT=${FRANKA_DESK_UNLOCK_ENDPOINT:-/desk/api/joints/unlock}"
+  echo "FRANKA_DESK_FCI_ON_ENDPOINT=${FRANKA_DESK_FCI_ON_ENDPOINT:-/desk/api/system/fci/enable}"
+  echo "FRANKA_DESK_STATUS_ENDPOINT=${FRANKA_DESK_STATUS_ENDPOINT:-}"
+  echo "FRANKA_DESK_STATUS_EXPECT_REGEX=${FRANKA_DESK_STATUS_EXPECT_REGEX:-active[[:space:]]*\"?[[:space:]]*:[[:space:]]*true|fci[[:space:]]*\"?[[:space:]]*:[[:space:]]*true}"
+  echo "FRANKA_DESK_PLAYWRIGHT_CMD=${FRANKA_DESK_PLAYWRIGHT_CMD:-node scripts/franka_desk_playwright.mjs}"
+
 } > "${ENV_FILE}"
 
 echo "Wrote ${ENV_FILE} with:"
@@ -193,3 +224,4 @@ echo "  [Group 4] GSCAM configuration"
 echo "  [Group 5] ATI force/torque sensor"
 echo "  [Group 6] USB video grabber"
 echo "  [Group 7] Franka driver"
+echo "  [Group 8] Robot preflight automation"

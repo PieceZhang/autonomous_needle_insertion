@@ -288,16 +288,20 @@ Behaviour:
   - If that service is not running:
         0. Check whether any required image (aniros-app, aniros-ndi, aniros-franka)
            is missing or older than the Dockerfile.  If so, ask whether to rebuild.
-        1. Allow local X11 clients via 'xhost +local:'.
-        2. Run 'docker compose --profile <profile> up -d' (defaults to 'dev').
-        3. Check service container status.
-        4. If running, attach an interactive bash shell.
+        1. Run robot preflight automation (UR dashboard / Franka Desk) if enabled.
+        2. Allow local X11 clients via 'xhost +local:'.
+        3. Run 'docker compose --profile <profile> up -d' (defaults to 'dev').
+        4. Check service container status.
+        5. If running, attach an interactive bash shell.
 
 Options:
   -h, --help    Show this help message and exit.
 
 Environment:
   LAUNCH_ATTACH_SERVICE   Force the service name to attach to.
+  AUTO_ROBOT_PREFLIGHT    Master preflight switch (default true).
+  AUTO_UR_DASHBOARD       UR dashboard automation switch (default true).
+  AUTO_FRANKA_DESK        Franka Desk automation switch (default true).
 
 Examples:
   ${SCRIPT_NAME}
@@ -377,6 +381,15 @@ if image_needs_rebuild; then
   fi
 
   echo
+fi
+
+# Robot preflight automation (UR dashboard / Franka Desk) before starting drivers
+if [[ -x "./scripts/robot_preflight.sh" ]]; then
+  echo "Running robot preflight for profile '${PROFILE}'..."
+  ./scripts/robot_preflight.sh --profile "${PROFILE}"
+  echo
+else
+  echo "Warning: ./scripts/robot_preflight.sh is missing or not executable; skipping robot preflight." >&2
 fi
 
 # Allow local X11 clients (ignore failure but warn)
