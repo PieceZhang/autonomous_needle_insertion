@@ -333,8 +333,12 @@ services:
       bash -lc "
         set -e;
         if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi;
-        if [ -f ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash ]; then source ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash; fi;
-        echo 'Running ATI force sensor Python driver...';
+        if [ ! -f ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash ]; then
+          echo 'Workspace install not found. Building needle_deflection_system...';
+          colcon build --symlink-install --base-paths ${RUNTIME_WS_DIR:-/ani_ws}/needle_deflection_system --packages-select needle_deflection_system;
+        fi;
+        source ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash;
+        echo 'Running ATI force sensor driver...';
         ros2 run needle_deflection_system ati_force_sensor_driver
       "
     healthcheck:
@@ -353,7 +357,11 @@ services:
       bash -lc "
         set -e;
         if [ -f /opt/ros/$$ROS_DISTRO/setup.bash ]; then source /opt/ros/$$ROS_DISTRO/setup.bash; fi;
-        if [ -f ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash ]; then source ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash; fi;
+        if [ ! -f ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash ]; then
+          echo 'Workspace install not found. Building needle_deflection_system...';
+          colcon build --symlink-install --base-paths ${RUNTIME_WS_DIR:-/ani_ws}/needle_deflection_system --packages-select needle_deflection_system;
+        fi;
+        source ${RUNTIME_WS_DIR:-/ani_ws}/install/setup.bash;
         echo 'Running needle deflection calculator...';
         ros2 run needle_deflection_system needle_deflection_calculator
       "

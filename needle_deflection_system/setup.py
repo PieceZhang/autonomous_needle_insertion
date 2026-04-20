@@ -13,8 +13,10 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
-        (os.path.join('share', package_name, 'params'), glob('params/*.yaml')),
-        (os.path.join('share', package_name, 'msg'), glob('msg/*.msg')),
+        (
+            os.path.join('share', package_name, 'params'),
+            glob(os.path.join(package_name, 'params', '*.yaml')),
+        ),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -25,7 +27,9 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'ati_ft_nano17_driver = needle_deflection_system.ati_ft_nano17_driver:main',
+            'ati_force_sensor_driver = needle_deflection_system.ati_force_sensor_driver:main',
+            # Keep a backward-compatible alias for existing scripts/service names.
+            'ati_ft_nano17_driver = needle_deflection_system.ati_force_sensor_driver:main',
             'needle_deflection_calculator = needle_deflection_system.needle_deflection_calculator:main',
         ],
     },

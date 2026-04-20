@@ -187,7 +187,7 @@ fi
   echo
 
   # Group 8: Robot preflight automation
-  echo "AUTO_ROBOT_PREFLIGHT=${AUTO_ROBOT_PREFLIGHT:-true}"
+  echo "AUTO_ROBOT_PREFLIGHT=${AUTO_ROBOT_PREFLIGHT:-false}"
   echo "AUTO_UR_DASHBOARD=${AUTO_UR_DASHBOARD:-true}"
   echo "AUTO_FRANKA_DESK=${AUTO_FRANKA_DESK:-true}"
 
