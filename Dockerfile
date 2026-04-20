@@ -244,7 +244,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 
 ARG NDI_WS=/opt/ndi_ws
 RUN mkdir -p ${NDI_WS}/src
-COPY ndi_ros2_driver          ${NDI_WS}/src/ndi_ros2_driver
+COPY third_party/ndi_ros2_driver ${NDI_WS}/src/ndi_ros2_driver
 COPY third_party/gscam2       ${NDI_WS}/src/gscam2
 COPY third_party/ros2_shared  ${NDI_WS}/src/ros2_shared
 
@@ -306,4 +306,3 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 RUN printf '%s\n' \
   '[ -f /opt/franka_ws/install/setup.bash ] && source /opt/franka_ws/install/setup.bash' \
   >> /etc/bash.bashrc
-

@@ -19,7 +19,7 @@ RUGANI (Robotic Ultrasound-Guided Autonomous Needle Insertion) — a Dockerized 
 | `calibration/` | UR5e calibration YAML, camera calibration files |
 | `post_processing/` | Offline pipeline: rosbag MCAP → decoded NDJSON/MP4 → LeRobot dataset format |
 | `registration/` | Pre-op to intra-op point set registration (Blossom matching + Kabsch/SVD) |
-| `ndi_ros2_driver/` | NDI Polaris ROS 2 hardware interface (C++, colcon/CMake) |
+| `third_party/ndi_ros2_driver/` | NDI Polaris ROS 2 hardware interface (C++, colcon/CMake) |
 | `third_party/` | Vendored dependencies: `franka_ros2`, `gscam2`, `keystroke`, `ros2_net_ft_driver`, `ros2_shared` |
 | `scripts/` | Host-side automation: `launch.sh`, `build.sh`, `stop.sh` |
 | `docker-bake.hcl` | Buildx bake definition — declares all three image targets for parallel DAG builds |
