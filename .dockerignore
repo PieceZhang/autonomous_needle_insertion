@@ -1,6 +1,6 @@
 # Directories not COPY'd by any Dockerfile stage
 data/
-meta_marker/
+registration/meta_marker/
 post_processing/
 registration/
 results/

@@ -7,7 +7,7 @@ import csv
 import datetime
 from typing import List, Tuple
 # from calib_test import connect_to, set_up_tool
-from meta_marker.calib_test import connect_to, set_up_tool
+from registration.meta_marker.calib_test import connect_to, set_up_tool
 
 def connect_to(ip_addr: str, port: int):
     dev = ndicapy.ndiOpenNetwork(ip_addr, port)

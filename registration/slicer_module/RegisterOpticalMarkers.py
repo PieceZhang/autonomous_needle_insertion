@@ -9,17 +9,17 @@ import itertools
 from slicer.ScriptedLoadableModule import *
 
 # ----------------------------------------------------------
-# 加载你的 meta_marker 包路径（按你的实际路径写）
+# 加载你的 registration 包路径（按你的实际路径写）
 # ----------------------------------------------------------
 PROJECT_ROOT = "/Users/leo17/Desktop/surgical_robotics/equipment/autonomous_needle_insertion/"
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 import ndicapy
-from meta_marker.calib_test import set_up_tool
-from meta_marker.read_stray_markers import connect_to, parse_tx1000_reply
+from registration.meta_marker.calib_test import set_up_tool
+from registration.meta_marker.read_stray_markers import connect_to, parse_tx1000_reply
 
-ROM_PATH = PROJECT_ROOT + "meta_marker/8700340.rom"
+ROM_PATH = PROJECT_ROOT + "registration/meta_marker/8700340.rom"
 
 
 # -------------------------------------------------------------------------
