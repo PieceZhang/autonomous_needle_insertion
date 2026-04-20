@@ -184,7 +184,7 @@ class RegisterOpticalMarkersWidget(ScriptedLoadableModuleWidget):
         结果会打印在 Python console。
         """
         # 1. CT 文件路径
-        ct_path = "/Users/leo17/Desktop/surgical_robotics/equipment/autonomous_needle_insertion/data/registration/preop/lumbar_MRI.tsv"
+        ct_path = PROJECT_ROOT + "registration/data/preop/lumbar_MRI.tsv"
 
         # 2. 从 Markups 读取当前 live marker
         markups = self._getMarkups()

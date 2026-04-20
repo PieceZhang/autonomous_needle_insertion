@@ -1,29 +1,26 @@
 """
-Register two 3D point sets with unknown correspondences where the MRI set
-contains 9 *meta-fiducials*, each built from two visible markers (18 points total).
+Register two 3D point sets with unknown correspondences where the image set
+contains 9 meta-fiducials, each represented by two visible markers (18 points total).
 
-Steps:
-A) MRI pairing: pair 18 points into 9 meta-fiducials via minimum-sum perfect matching
-   on the complete graph (Blossom). Optionally constrain edges around a known pair distance.
-B) Collapse each pair to its midpoint (virtual fiducial center).
-C) Solve unlabeled 9↔9 correspondences by matching pairwise-distance signatures (Hungarian).
-D) Estimate rigid (or similarity) transform via Kabsch/Umeyama (SVD).
+Pipeline:
+1) Pair 18 image points into 9 meta-fiducials via minimum-sum perfect matching
+   (NetworkX Blossom), optionally constrained by a known intra-pair distance.
+2) Collapse each pair to its midpoint (virtual fiducial center).
+3) Match unlabeled 9↔9 centers via distance-signature costs (Hungarian).
+4) Estimate rigid transform (Kabsch) or similarity transform (Umeyama).
 
-# Known intra-meta spacing (recommended if you know it)
-python register_meta_fids.py mri_18.tsv sensor_9.tsv \
-  --pair-dist 12.5 --pair-tol 1.0 \
-  --save-tsv matched.tsv --out-npz reg_meta.npz
+Typical usage (from repo root):
+python registration/register_points.py \
+  registration/data/preop/lumbar_MRI.tsv \
+  registration/data/offline_polaris/lumbar_20250727_150034.csv \
+  --pair-dist 65 --pair-tol 5 \
+  --save-tsv results/matched.tsv \
+  --out-npz results/registration_result.npz
 
-# If spacing unknown (works well when each pair is much closer than inter-fiducial gaps)
-python register_meta_fids.py mri_18.tsv sensor_9.tsv \
-  --save-tsv matched.tsv --out-npz reg_meta.npz
-
-References:
-- Max-/min-weight matching (Blossom): NetworkX docs. 
-- Hungarian algorithm (SciPy): linear_sum_assignment.
-- Kabsch / Umeyama: rigid/similarity least-squares alignment with SVD.
-- Euclidean distance matrices & rigid-motion invariance.
-
+Notes:
+- This script name is `register_points.py` (not `register_meta_fids.py`).
+- `--pair-dist` / `--pair-tol` default to 65 / 5 in this file.
+- Output defaults to `results/registration_result.npz`.
 """
 
 import argparse
