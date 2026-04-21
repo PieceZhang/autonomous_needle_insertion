@@ -8,7 +8,7 @@ from moveit_configs_utils import MoveItConfigsBuilder
 
 
 MOVE_ROBOT_MODES = [
-    "ee_moveit_square",
+    "ee_moveit",
     "ee_moveit_keyboard",
     "ee_pose_logger",
     "hand_eye_calib",
@@ -30,13 +30,16 @@ def generate_launch_description():
 
     mode_arg  = DeclareLaunchArgument(
         "mode",
-        default_value="ee_moveit_square",
+        default_value="ee_moveit",
         choices=MOVE_ROBOT_MODES,
     )
     mode_name = LaunchConfiguration("mode")
 
     target_arg = DeclareLaunchArgument("target", default_value="us_probe")
     target_name = LaunchConfiguration("target")
+
+    trajectory_arg = DeclareLaunchArgument("trajectory", default_value="square")
+    trajectory_name = LaunchConfiguration("trajectory")
 
     # Control ROS 2 log verbosity for this node (affects all loggers in-process)
     log_level_arg = DeclareLaunchArgument(
@@ -108,8 +111,17 @@ def generate_launch_description():
             moveit_config.to_dict(),
             {"publish_robot_description_semantic": True},
             {"calibration_target": target_name},
+            {"trajectory": trajectory_name},
         ],
         arguments=["--ros-args", "--log-level", log_level],
     )
 
-    return LaunchDescription([ur_type_arg, ur_calibration_file_arg, mode_arg, target_arg, log_level_arg, node])
+    return LaunchDescription([
+        ur_type_arg,
+        ur_calibration_file_arg,
+        mode_arg,
+        target_arg,
+        trajectory_arg,
+        log_level_arg,
+        node,
+    ])

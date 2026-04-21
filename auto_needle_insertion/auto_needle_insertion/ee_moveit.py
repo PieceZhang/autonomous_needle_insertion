@@ -30,6 +30,7 @@ from moveit.planning import MoveItPy, PlanRequestParameters
 
 # Module constants
 NODE_NAME = "auto_needle_insertion"
+DEFAULT_TRAJECTORY = "square"
 SQUARE_EDGE_LENGTH = 0.2  # meters
 MAX_VELOCITY_SCALING = 0.2
 MAX_ACCELERATION_SCALING = 0.2
@@ -192,12 +193,21 @@ def execute_trajectory_with_fallback(
     return False
 
 
+def get_trajectory_parameter(robot: MoveItPy) -> str:
+    """Read the requested trajectory type from the MoveItPy node."""
+    node = robot.get_node()
+    node.declare_parameter("trajectory", DEFAULT_TRAJECTORY)
+    return node.get_parameter("trajectory").get_parameter_value().string_value
+
+
 def main() -> None:
-    """Main execution function for square trajectory."""
+    """Main execution function for the selected trajectory."""
     rclpy.init()
 
     try:
         robot = MoveItPy(node_name=NODE_NAME)
+        trajectory_name = get_trajectory_parameter(robot)
+        logger.info(f"Selected trajectory: {trajectory_name}")
 
         # Allow time for joint states to populate the planning scene
         time.sleep(PLANNING_SCENE_SYNC_DELAY)
@@ -236,8 +246,10 @@ def main() -> None:
         y_axis = rotation_matrix[:, 1] / np.linalg.norm(rotation_matrix[:, 1])
         origin = transform_matrix[:3, 3]
 
-        # Generate square waypoints
-        local_waypoints = generate_square_waypoints(SQUARE_EDGE_LENGTH)
+        if trajectory_name == "square":
+            local_waypoints = generate_square_waypoints(SQUARE_EDGE_LENGTH)
+        else:
+            raise ValueError(f"Unsupported trajectory: {trajectory_name}")
 
         # Create pose messages for each waypoint
         waypoint_poses = [
@@ -248,7 +260,7 @@ def main() -> None:
             for dx, dy in local_waypoints
         ]
 
-        # Execute square trajectory
+        # Execute selected trajectory
         for i, waypoint_pose in enumerate(waypoint_poses):
             arm.set_start_state_to_current_state()
             arm.set_goal_state(pose_stamped_msg=waypoint_pose, pose_link=tip_link)
@@ -271,10 +283,10 @@ def main() -> None:
 
             logger.info(f"Reached waypoint {i + 1}/{len(waypoint_poses)}")
 
-        logger.info("Square trajectory completed successfully")
+        logger.info(f"{trajectory_name} trajectory completed successfully")
 
     except Exception as e:
-        logger.error(f"Square trajectory execution failed: {e}")
+        logger.error(f"Trajectory execution failed: {e}")
         raise
     finally:
         rclpy.shutdown()
@@ -282,4 +294,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
