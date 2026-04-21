@@ -1,6 +1,5 @@
-import nibabel as nib
 import numpy as np
-import matplotlib.pyplot as plt
+import cv2
 
 from scipy.ndimage import gaussian_filter, binary_fill_holes, binary_erosion
 from skimage.morphology import (
@@ -453,6 +452,137 @@ def find_best_exit_start_from_target_by_angle(target,
     return best["start_inside"], best["start_outside"], best["ray_inside"]
 
 
+def choose_default_target(workspace_mask, obstacle_mask=None):
+    """
+    Pick a valid target near the centroid of the available workspace.
+    """
+    valid = np.asarray(workspace_mask, dtype=bool).copy()
+    if obstacle_mask is not None:
+        valid &= ~np.asarray(obstacle_mask, dtype=bool)
+
+    coords = np.argwhere(valid)
+    if coords.size == 0:
+        raise RuntimeError("No valid target point is available inside the workspace.")
+
+    centroid = coords.mean(axis=0)
+    best_idx = int(np.argmin(np.sum((coords - centroid[None, :]) ** 2, axis=1)))
+    row, col = coords[best_idx]
+    return int(row), int(col)
+
+
+def plan_path_from_masks(workspace_mask,
+                         obstacle_mask,
+                         target,
+                         margin=3,
+                         outside_offset=8,
+                         n_angles=360,
+                         inward_start_offset=20):
+    """
+    Plan a straight line on precomputed masks.
+    """
+    target = tuple(int(v) for v in target)
+    h, w = workspace_mask.shape
+    row = int(np.clip(target[0], 0, h - 1))
+    col = int(np.clip(target[1], 0, w - 1))
+    target = (row, col)
+
+    if not workspace_mask[target]:
+        raise ValueError("Target must lie inside workspace.")
+
+    if obstacle_mask[target]:
+        raise ValueError("Target must not lie inside an obstacle.")
+
+    obstacle_check = binary_dilation(
+        obstacle_mask.astype(bool),
+        footprint=disk(int(max(0, margin)))
+    )
+
+    start_inside, start_outside, ray_inside = find_best_exit_start_from_target_by_angle(
+        target=target,
+        workspace_mask=workspace_mask.astype(bool),
+        obstacle_check=obstacle_check,
+        outside_offset=outside_offset,
+        n_angles=n_angles,
+        inward_start_offset=inward_start_offset,
+    )
+
+    return {
+        "target": target,
+        "start_inside": start_inside,
+        "start_outside": start_outside,
+        "ray_inside": ray_inside,
+    }
+
+
+def _gray_to_rgb_uint8(gray_img):
+    gray_img = np.asarray(gray_img)
+    if gray_img.ndim != 2:
+        raise ValueError("Expected a 2D grayscale image.")
+    if gray_img.dtype != np.uint8:
+        gray_img = normalize_slice(gray_img)
+        gray_img = np.clip(gray_img * 255.0, 0.0, 255.0).astype(np.uint8)
+    return np.repeat(gray_img[:, :, None], 3, axis=2)
+
+
+def render_planning_result_image(background_img,
+                                 dark_region_mask,
+                                 bright_region_mask,
+                                 workspace_mask=None,
+                                 target=None,
+                                 start_inside=None,
+                                 start_outside=None,
+                                 ray_inside=None):
+    """
+    Render a planning overlay as an RGB uint8 image.
+    """
+    rgb = _gray_to_rgb_uint8(background_img).copy()
+    rgb[dark_region_mask] = np.array([0, 255, 255], dtype=np.uint8)
+    rgb[bright_region_mask] = np.array([255, 0, 0], dtype=np.uint8)
+
+    if workspace_mask is not None:
+        contours = find_contours(np.asarray(workspace_mask, dtype=float), level=0.5)
+        if contours:
+            outer = max(contours, key=lambda x: len(x))
+            contour_pts = np.round(outer[:, ::-1]).astype(np.int32).reshape(-1, 1, 2)
+            cv2.polylines(rgb, [contour_pts], isClosed=True, color=(255, 255, 0), thickness=1, lineType=cv2.LINE_AA)
+
+    if ray_inside is not None and len(ray_inside) > 1:
+        ray_pts = np.round(np.asarray(ray_inside)[:, ::-1]).astype(np.int32).reshape(-1, 1, 2)
+        cv2.polylines(rgb, [ray_pts], isClosed=False, color=(255, 255, 255), thickness=2, lineType=cv2.LINE_AA)
+
+    if target is not None and start_inside is not None:
+        cv2.line(
+            rgb,
+            (int(round(target[1])), int(round(target[0]))),
+            (int(round(start_inside[1])), int(round(start_inside[0]))),
+            color=(0, 255, 0),
+            thickness=2,
+            lineType=cv2.LINE_AA,
+        )
+
+    if start_inside is not None:
+        center = (int(round(start_inside[1])), int(round(start_inside[0])))
+        cv2.circle(rgb, center, 6, color=(255, 0, 0), thickness=2, lineType=cv2.LINE_AA)
+
+    if start_outside is not None:
+        center = (int(round(start_outside[1])), int(round(start_outside[0])))
+        cv2.circle(rgb, center, 4, color=(0, 165, 255), thickness=2, lineType=cv2.LINE_AA)
+
+    if target is not None:
+        center = (int(round(target[1])), int(round(target[0])))
+        cv2.drawMarker(
+            rgb,
+            center,
+            color=(255, 0, 255),
+            markerType=cv2.MARKER_TILTED_CROSS,
+            markerSize=14,
+            thickness=2,
+            line_type=cv2.LINE_AA,
+        )
+
+    return rgb
+
+
 # =========================================================
 # Visualization and interaction
 # =========================================================
@@ -476,6 +606,7 @@ def choose_target_interactively(background_img,
     left: raw image
     right: overlay
     """
+    plt = _require_pyplot()
     overlay = np.dstack([background_img, background_img, background_img]).copy()
     overlay[dark_region_mask] = [0.0, 1.0, 1.0]   # cyan
     overlay[bright_region_mask] = [1.0, 0.0, 0.0] # red
@@ -549,6 +680,7 @@ def draw_result_on_existing_axes(ax_raw,
     left: original slice with target/start/ray
     right: segmentation overlay with contour + target/start/ray
     """
+    plt = _require_pyplot()
     overlay = np.dstack([background_img, background_img, background_img]).copy()
     overlay[dark_region_mask] = [0.0, 1.0, 1.0]   # cyan
     overlay[bright_region_mask] = [1.0, 0.0, 0.0] # red
@@ -652,8 +784,16 @@ def draw_result_on_existing_axes(ax_raw,
     plt.pause(0.01)
 
 
+def _require_pyplot():
+    import matplotlib.pyplot as plt
+    return plt
+
+
 def main():
-    nii_path = "D:/MRI Phantom/abdominal.nii.gz"
+    import nibabel as nib
+
+    plt = _require_pyplot()
+    nii_path = "phantom_imaging_data/abdominal.nii.gz"
     k = 230     # choose which slice to show, suggest view0: 90-290, view1:180-300
 
     img = nib.load(nii_path)

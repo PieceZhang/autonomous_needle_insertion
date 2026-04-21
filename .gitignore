@@ -1,5 +1,6 @@
 .idea/
 results/
+/data/
 
 # ROS related
 .ros/

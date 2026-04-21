@@ -29,17 +29,19 @@ except Exception as exc:
     straight_line_planner_module = None
     STRAIGHT_LINE_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+MODULE_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = MODULE_ROOT.parent
 DATA_ROOT = Path(os.environ.get("UI_DATA_ROOT", str(PROJECT_ROOT))).expanduser().resolve()
-MRI_DIR = DATA_ROOT / "phantom_imaging_data" / "MRI" / "SE16"
-PROBE_STEP = DATA_ROOT / "needle_and_probe" / "C5-1.step"
-PROBE_STL_FALLBACK = DATA_ROOT / "needle_and_probe" / "c5-1.STL"
-AFFINE_NPZ = DATA_ROOT / "affine_matrix" / "registration_result_MRI.npz"
-CALIB_XML = DATA_ROOT / "PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20260111_SRIL.xml"
-POSE_NDJSON = DATA_ROOT / "rosbag2_20260319_083246_rigidregistration_unknown" / "ndi__us_probe_pose" / "messages.ndjson"
-VIDEO_INFO = DATA_ROOT / "rosbag2_20260319_083246_rigidregistration_unknown" / "image_raw__compressed" / "video_info.json"
-VIDEO_PATH = DATA_ROOT / "rosbag2_20260319_083246_rigidregistration_unknown" / "image_raw__compressed" / "video.mp4"
-MRI_MARKERS_TSV = DATA_ROOT / "abdominal_MRI_markers.tsv"
+MRI_DIR = DATA_ROOT / "data" / "preop" / "MRI" / "SE16"
+PROBE_STEP = MODULE_ROOT / "needle_and_probe" / "C5-1.step"
+PROBE_STL_FALLBACK = MODULE_ROOT / "needle_and_probe" / "c5-1.STL"
+AFFINE_NPZ = MODULE_ROOT / "affine_matrix" / "registration_result_MRI.npz"
+CALIB_XML = DATA_ROOT / "calibration" / "PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20260111_SRIL.xml"
+INTROOP_RECORDING_DIR = DATA_ROOT / "data" / "intraop_recording" / "rosbag2_20260319_083246_rigidregistration_unknown"
+POSE_NDJSON = INTROOP_RECORDING_DIR / "ndi__us_probe_pose" / "messages.ndjson"
+VIDEO_INFO = INTROOP_RECORDING_DIR / "image_raw__compressed" / "video_info.json"
+VIDEO_PATH = INTROOP_RECORDING_DIR / "image_raw__compressed" / "video.mp4"
+MRI_MARKERS_TSV = DATA_ROOT / "registration" / "data" / "preop" / "abdominal_MRI_paired.tsv"
 
 
 @dataclass
