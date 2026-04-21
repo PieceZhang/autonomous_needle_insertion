@@ -49,6 +49,13 @@ resolve_attach_service() {
     return 0
   fi
 
+  case "${profile}" in
+    console-test)
+      printf '%s' "guidance-console"
+      return 0
+      ;;
+  esac
+
   if ! raw_services="$(docker compose --profile "${profile}" config --services 2>/dev/null)"; then
     echo "Error: failed to discover services for profile '${profile}' via docker compose." >&2
     return 1
@@ -108,7 +115,7 @@ declare -A PROFILE_IMAGES=(
   [dev]="aniros-app:jazzy aniros-ndi:jazzy"
   [default]="aniros-app:jazzy aniros-ndi:jazzy aniros-franka:jazzy"
   [franka-test]="aniros-franka:jazzy"
-  [console-test]="aniros-guidance-console:latest"
+  [console-test]="aniros-guidance-console:latest aniros-ndi:jazzy"
   [ur_test]="aniros-app:jazzy"
   [polaris_test]="aniros-ndi:jazzy"
   [gscam2-test]="aniros-ndi:jazzy"

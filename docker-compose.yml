@@ -57,6 +57,14 @@ x-ros-franka: &ros_franka
     target: franka
   image: aniros-franka:jazzy
 
+x-ros-console: &ros_console
+  <<: *ros_base
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: console
+  image: aniros-guidance-console:latest
+
 services:
   # ─── Topic-conflict resolution strategy ────────────────────────────────
   #  Multiple ros2_control drivers (UR, Franka, ATI) share a single DDS
@@ -155,7 +163,7 @@ services:
   polaris_driver:
     <<: *ros_ndi
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-polaris-driver"
-    profiles: ["default", "polaris_test", "dev"]
+    profiles: ["default", "polaris_test", "dev", "console-test"]
     command: >
       bash -lc "
         if [ -f /opt/ndi_ws/install/setup.bash ]; then source /opt/ndi_ws/install/setup.bash; fi;
@@ -371,24 +379,21 @@ services:
     restart: unless-stopped
 
   guidance-console:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: console
+    <<: *ros_console
     image: aniros-guidance-console:latest
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-console"
     profiles: ["console-test"]
     working_dir: /ani_ws/guidance_console
-    ports:
-      - "${GUIDANCE_CONSOLE_PORT:-8050}:${GUIDANCE_CONSOLE_PORT:-8050}"
     environment:
+      <<: *ros_base_env
       UI_HOST: 0.0.0.0
       UI_PORT: ${GUIDANCE_CONSOLE_PORT:-8050}
       UI_DATA_ROOT: ${RUNTIME_WS_DIR:-/ani_ws}
       PYTHONUNBUFFERED: 1
-    volumes:
-      - ${HOST_WS_DIR:-${PWD}}:/ani_ws:rw
     command: ["python", "app.py"]
+    depends_on:
+      polaris_driver:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "bash", "-lc", "python - <<'PY'\nimport os, urllib.request\nport = os.environ.get('UI_PORT', '8050')\nurllib.request.urlopen(f'http://127.0.0.1:{port}/', timeout=2).read(1)\nPY"]
       interval: 5s
