@@ -102,12 +102,13 @@ resolve_attach_service() {
   return 1
 }
 # All images built from the shared Dockerfile (one per stage)
-ALL_IMAGES=("aniros-app:jazzy" "aniros-ndi:jazzy" "aniros-franka:jazzy")
+ALL_IMAGES=("aniros-app:jazzy" "aniros-ndi:jazzy" "aniros-franka:jazzy" "aniros-guidance-console:latest")
 # Map profiles to the subset of images they actually need
 declare -A PROFILE_IMAGES=(
   [dev]="aniros-app:jazzy aniros-ndi:jazzy"
   [default]="aniros-app:jazzy aniros-ndi:jazzy aniros-franka:jazzy"
   [franka-test]="aniros-franka:jazzy"
+  [console-test]="aniros-guidance-console:latest"
   [ur_test]="aniros-app:jazzy"
   [polaris_test]="aniros-ndi:jazzy"
   [gscam2-test]="aniros-ndi:jazzy"
@@ -118,6 +119,7 @@ declare -A IMAGE_TO_TARGET=(
   [aniros-app:jazzy]="app"
   [aniros-ndi:jazzy]="ndi"
   [aniros-franka:jazzy]="franka"
+  [aniros-guidance-console:latest]="console"
 )
 DOCKERFILE_PATH="Dockerfile"
 # Directory storing per-target build stamps (one file per target).

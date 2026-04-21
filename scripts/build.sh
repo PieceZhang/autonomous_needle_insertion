@@ -8,14 +8,14 @@ export COMPOSE_DOCKER_CLI_BUILD=1
 help() {
   cat <<'EOF'
 Usage:
-  build.sh              Build all three images (app, ndi, franka)
-  build.sh -t TARGET    Build only the specified target(s) (app | ndi | franka)
+  build.sh              Build all images (app, ndi, franka, console)
+  build.sh -t TARGET    Build only the specified target(s) (app | ndi | franka | console)
   build.sh -f           Force a clean rebuild (no cache)
   build.sh -p           Build targets in parallel (uses docker buildx bake)
   build.sh -M           Enable mirror speed-test (slower but may pick a faster mirror)
 
 Options:
-  -t TARGET   Build a Dockerfile stage: app, ndi, or franka.
+  -t TARGET   Build a Dockerfile stage: app, ndi, franka, or console.
               Can be repeated: -t app -t ndi
   -f          Force a clean rebuild (no cache)
   -p          Build targets in parallel via docker buildx bake
@@ -26,8 +26,9 @@ Options:
   -h          Show this help
 
 Examples:
-  build.sh                       # sequential build of all three images
+  build.sh                       # sequential build of all images
   build.sh -t ndi                # rebuild only the NDI/Polaris image
+  build.sh -t console            # rebuild only the guidance console image
   build.sh -t app -t ndi         # rebuild app and ndi images
   build.sh -t franka -f          # force-rebuild the Franka image
   build.sh -p                    # parallel build of all images (recommended)
@@ -65,6 +66,7 @@ declare -A TARGET_SERVICES=(
   [app]="ur_driver"
   [ndi]="polaris_driver"
   [franka]="franka_driver"
+  [console]="guidance-console"
 )
 
 DOCKERFILE_PATH="Dockerfile"
@@ -98,7 +100,7 @@ done
 
 # Default to all targets if none specified
 if [[ ${#targets[@]} -eq 0 ]]; then
-  targets=(app ndi franka)
+  targets=(app ndi franka console)
 fi
 
 cache_flag=()

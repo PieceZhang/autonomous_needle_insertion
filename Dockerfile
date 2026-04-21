@@ -145,7 +145,31 @@ RUN set -Eeuo pipefail; \
 
 
 ###############################################################################
-# Stage 2: app – general-purpose image with apt ros2-control, UR, MoveIt, ATI,
+# Stage 2: console – Dash UI on the ROS 2 base image
+#   Serves: guidance-console
+###############################################################################
+FROM base AS console
+
+COPY guidance_console/requirements.txt /tmp/guidance_console_requirements.txt
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
+ && apt-get install -y python3-venv \
+ && python3 -m venv --system-site-packages /opt/guidance_console_venv \
+ && /opt/guidance_console_venv/bin/python -m pip install --no-cache-dir \
+      -r /tmp/guidance_console_requirements.txt
+
+ENV UI_HOST=0.0.0.0 \
+    UI_PORT=8050 \
+    UI_DATA_ROOT=/ani_ws \
+    VIRTUAL_ENV=/opt/guidance_console_venv \
+    PATH=/opt/guidance_console_venv/bin:$PATH \
+    PYTHONUNBUFFERED=1
+
+
+###############################################################################
+# Stage 3: app – general-purpose image with apt ros2-control, UR, MoveIt, ATI,
 #   keyboard.  Used by any service compatible with the apt ros2-control ABI.
 #   Serves: ur_driver, ati_ft_driver, keyboard_driver, us_visualizer,
 #           rqt_task_ui, ati_ft_nano17_driver, needle_deflection_calculator,
@@ -224,7 +248,7 @@ RUN printf '%s\n' \
 
 
 ###############################################################################
-# Stage 3: ndi – NDI Polaris tracker + GStreamer camera
+# Stage 4: ndi – NDI Polaris tracker + GStreamer camera
 #   Serves: polaris_driver, polaris_camera_driver, polaris_image_compressed
 ###############################################################################
 FROM base AS ndi
@@ -265,7 +289,7 @@ RUN printf '%s\n' \
 
 
 ###############################################################################
-# Stage 4: franka – Franka ROS 2 driver with VENDORED ros2-control
+# Stage 5: franka – Franka ROS 2 driver with VENDORED ros2-control
 #   Serves: franka_driver, franka-dev
 #   NOTE: Does NOT install ros-jazzy-ros2-control/ros2-controllers from apt.
 #         The vendored controller_manager / hardware_interface / realtime_tools
