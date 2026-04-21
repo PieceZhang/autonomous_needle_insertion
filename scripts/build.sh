@@ -61,13 +61,19 @@ if [[ "$#" -ne 0 ]]; then
   exit 2
 fi
 
-# Map target name → representative compose service
-declare -A TARGET_SERVICES=(
-  [app]="ur_driver"
-  [ndi]="polaris_driver"
-  [franka]="franka_driver"
-  [console]="guidance-console"
-)
+VALID_TARGETS=(app ndi franka console)
+
+# Map target name → representative compose service.
+# Keep this Bash 3.2-compatible for macOS's default /bin/bash.
+target_to_service() {
+  case "$1" in
+    app) printf '%s\n' "ur_driver" ;;
+    ndi) printf '%s\n' "polaris_driver" ;;
+    franka) printf '%s\n' "franka_driver" ;;
+    console) printf '%s\n' "guidance-console" ;;
+    *) return 1 ;;
+  esac
+}
 
 DOCKERFILE_PATH="Dockerfile"
 BUILD_STAMP_DIR=".build_stamps"
@@ -92,8 +98,8 @@ write_build_stamp() {
 
 # Validate all supplied targets
 for t in "${targets[@]}"; do
-  if [[ -z "${TARGET_SERVICES[$t]+_}" ]]; then
-    echo "Error: Unknown target '${t}'. Choose from: ${!TARGET_SERVICES[*]}" >&2
+  if ! target_to_service "${t}" >/dev/null; then
+    echo "Error: Unknown target '${t}'. Choose from: ${VALID_TARGETS[*]}" >&2
     exit 2
   fi
 done
@@ -103,17 +109,28 @@ if [[ ${#targets[@]} -eq 0 ]]; then
   targets=(app ndi franka console)
 fi
 
-cache_flag=()
-if [[ "${force_no_cache}" == "true" ]]; then
-  cache_flag=(--no-cache)
-fi
-
-build_args=()
 if [[ "${enable_mirrors}" != "true" ]]; then
   echo "Mirror probing disabled (default). Use -M to enable."
-  build_args+=(--build-arg UBUNTU_MIRROR=https://archive.ubuntu.com/ubuntu)
-  build_args+=(--build-arg ROS2_MIRROR=http://packages.ros.org/ros2/ubuntu)
 fi
+
+docker_compose_build() {
+  local svc="$1"
+  local -a cmd
+  cmd=(docker compose build)
+
+  if [[ "${force_no_cache}" == "true" ]]; then
+    cmd+=(--no-cache)
+  fi
+
+  if [[ "${enable_mirrors}" != "true" ]]; then
+    cmd+=(--build-arg UBUNTU_MIRROR=https://archive.ubuntu.com/ubuntu)
+    cmd+=(--build-arg ROS2_MIRROR=http://packages.ros.org/ros2/ubuntu)
+  fi
+
+  cmd+=("${svc}")
+  echo "+ ${cmd[*]}"
+  "${cmd[@]}"
+}
 
 # Check whether docker buildx bake is available
 has_buildx_bake() {
@@ -146,17 +163,16 @@ if [[ "${parallel}" == "true" && ${#targets[@]} -gt 1 ]]; then
     echo "Building shared base stage first…"
     # Build one target to warm the base cache, then the rest in parallel
     first_tgt="${targets[0]}"
-    first_svc="${TARGET_SERVICES[$first_tgt]}"
-    docker compose build "${cache_flag[@]}" "${build_args[@]}" "${first_svc}"
+    first_svc="$(target_to_service "${first_tgt}")"
+    docker_compose_build "${first_svc}"
     write_build_stamp "${first_tgt}"
 
     remaining=("${targets[@]:1}")
     if [[ ${#remaining[@]} -gt 0 ]]; then
       echo "Building remaining target(s) in parallel: ${remaining[*]} …"
       for tgt in "${remaining[@]}"; do
-        svc="${TARGET_SERVICES[$tgt]}"
-        echo "+ docker compose build ${cache_flag[*]:-} ${build_args[*]:-} ${svc} &"
-        docker compose build "${cache_flag[@]}" "${build_args[@]}" "${svc}" &
+        svc="$(target_to_service "${tgt}")"
+        docker_compose_build "${svc}" &
       done
       wait
       for tgt in "${remaining[@]}"; do
@@ -168,10 +184,8 @@ if [[ "${parallel}" == "true" && ${#targets[@]} -gt 1 ]]; then
 else
   # ── Sequential build ──
   for tgt in "${targets[@]}"; do
-    svc="${TARGET_SERVICES[$tgt]}"
-    cmd=(docker compose build "${cache_flag[@]}" "${build_args[@]}" "${svc}")
-    echo "+ ${cmd[*]}"
-    "${cmd[@]}"
+    svc="$(target_to_service "${tgt}")"
+    docker_compose_build "${svc}"
     write_build_stamp "${tgt}"
   done
 fi
