@@ -11,6 +11,7 @@ Key behaviors:
 
 Notes:
     - Edge length currently set to 0.2 m (200 mm)
+    - Approach distance currently set to 0.3 m
     - Orientation is locked to initial orientation
     - No Cartesian path interpolation; each corner is a separate pose plan
 
@@ -19,19 +20,26 @@ Safety:
 """
 
 import logging
+import threading
 import time
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 import numpy as np
 import rclpy
+from action_msgs.srv import CancelGoal
 from geometry_msgs.msg import PoseStamped
 from moveit.core.robot_state import RobotState
 from moveit.planning import MoveItPy, PlanRequestParameters
+from rclpy.executors import SingleThreadedExecutor
+from std_msgs.msg import Float64
 
 # Module constants
 NODE_NAME = "auto_needle_insertion"
 DEFAULT_TRAJECTORY = "square"
 SQUARE_EDGE_LENGTH = 0.2  # meters
+APPROACH_DISTANCE = 0.3  # meters
+APPROACH_FORCE_Z_TOPIC = "/ati_ft_broadcaster/wrench/force/z"
+APPROACH_FORCE_Z_LIMIT = 10.0  # N
 MAX_VELOCITY_SCALING = 0.2
 MAX_ACCELERATION_SCALING = 0.2
 PLANNING_SCENE_SYNC_DELAY = 0.5  # seconds
@@ -46,9 +54,81 @@ CONTROLLER_NAMES = [
 # Preferred tip link names in order of preference
 PREFERRED_TIP_LINKS = ["tool0", "ee_link"]
 
+TRAJECTORY_CANCEL_SERVICES = [
+    "/execute_trajectory/_action/cancel_goal",
+    "/move_group/execute_trajectory/_action/cancel_goal",
+    "/scaled_joint_trajectory_controller/follow_joint_trajectory/_action/cancel_goal",
+    "/joint_trajectory_controller/follow_joint_trajectory/_action/cancel_goal",
+]
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+class ForceZMonitor:
+    """Monitor scalar force Z and cancel active trajectory goals above a limit."""
+
+    def __init__(
+        self,
+        topic_name: str = APPROACH_FORCE_Z_TOPIC,
+        force_limit: float = APPROACH_FORCE_Z_LIMIT,
+        cancel_services: List[str] = TRAJECTORY_CANCEL_SERVICES,
+    ) -> None:
+        self.topic_name = topic_name
+        self.force_limit = force_limit
+        self._triggered = threading.Event()
+        self._node = rclpy.create_node("ee_moveit_force_z_monitor")
+        self._executor = SingleThreadedExecutor()
+        self._executor.add_node(self._node)
+        self._stop_spin = threading.Event()
+        self._cancel_clients = [
+            self._node.create_client(CancelGoal, service_name)
+            for service_name in cancel_services
+        ]
+        self._sub = self._node.create_subscription(Float64, topic_name, self._force_cb, 10)
+        self._spin_thread = threading.Thread(target=self._spin, daemon=True)
+
+    @property
+    def triggered(self) -> bool:
+        return self._triggered.is_set()
+
+    def start(self) -> None:
+        self._spin_thread.start()
+        logger.info(
+            f"Monitoring {self.topic_name}; approach stops above {self.force_limit:.1f} N"
+        )
+
+    def stop(self) -> None:
+        self._stop_spin.set()
+        self._executor.wake()
+        if self._spin_thread.is_alive():
+            self._spin_thread.join(timeout=1.0)
+        self._executor.remove_node(self._node)
+        self._node.destroy_subscription(self._sub)
+        self._node.destroy_node()
+
+    def _spin(self) -> None:
+        while not self._stop_spin.is_set() and rclpy.ok():
+            self._executor.spin_once(timeout_sec=0.05)
+
+    def _force_cb(self, msg: Float64) -> None:
+        if msg.data <= self.force_limit or self._triggered.is_set():
+            return
+
+        self._triggered.set()
+        logger.warning(
+            f"Force Z {msg.data:.3f} N exceeded {self.force_limit:.3f} N; "
+            "canceling active approach trajectory"
+        )
+        self._cancel_active_goals()
+
+    def _cancel_active_goals(self) -> None:
+        request = CancelGoal.Request()
+        for client in self._cancel_clients:
+            if not client.service_is_ready():
+                continue
+            client.call_async(request)
 
 
 def get_planning_group_name(robot: MoveItPy) -> str:
@@ -128,12 +208,19 @@ def generate_square_waypoints(edge_length: float) -> List[Tuple[float, float]]:
     ]
 
 
+def generate_approach_waypoints(distance: float) -> List[Tuple[float, float, float]]:
+    """Generate waypoints for an approach move along local Z."""
+    return [(0.0, 0.0, distance)]
+
+
 def create_pose_stamped(
     origin: np.ndarray,
     x_axis: np.ndarray,
     y_axis: np.ndarray,
+    z_axis: np.ndarray,
     dx: float,
     dy: float,
+    dz: float,
     orientation,
     planning_frame: str
 ) -> PoseStamped:
@@ -143,15 +230,17 @@ def create_pose_stamped(
         origin: Origin position in global frame
         x_axis: Normalized X-axis of local frame
         y_axis: Normalized Y-axis of local frame
+        z_axis: Normalized Z-axis of local frame
         dx: Displacement along local X-axis
         dy: Displacement along local Y-axis
+        dz: Displacement along local Z-axis
         orientation: Original orientation to maintain
         planning_frame: Planning frame ID
 
     Returns:
         PoseStamped message for the waypoint
     """
-    position = origin + dx * x_axis + dy * y_axis
+    position = origin + dx * x_axis + dy * y_axis + dz * z_axis
 
     pose_stamped = PoseStamped()
     pose_stamped.header.frame_id = planning_frame
@@ -166,7 +255,7 @@ def create_pose_stamped(
 def execute_trajectory_with_fallback(
     robot: MoveItPy,
     trajectory,
-    controllers: List[str] = CONTROLLER_NAMES
+    controllers: List[str] = CONTROLLER_NAMES,
 ) -> bool:
     """Execute trajectory with controller fallback strategy.
 
@@ -191,6 +280,44 @@ def execute_trajectory_with_fallback(
 
     logger.error("All controllers failed")
     return False
+
+
+def execute_trajectory_with_force_stop(
+    robot: MoveItPy,
+    trajectory,
+    force_monitor: ForceZMonitor,
+    controllers: List[str] = CONTROLLER_NAMES,
+) -> bool:
+    """Execute a trajectory while allowing force-triggered cancellation."""
+    for controller in controllers:
+        try:
+            if controller:
+                robot.execute(trajectory, controllers=[controller])
+            else:
+                robot.execute(trajectory)
+            if force_monitor.triggered:
+                logger.info("Trajectory execution stopped after force threshold was reached")
+            return True
+        except Exception as e:
+            if force_monitor.triggered:
+                logger.info("Trajectory execution canceled after force threshold was reached")
+                return True
+            logger.warning(f"Controller '{controller}' failed: {e}")
+            continue
+
+    logger.error("All controllers failed")
+    return False
+
+
+def plan_waypoint(robot: MoveItPy, arm, waypoint_pose: PoseStamped, tip_link: str):
+    arm.set_start_state_to_current_state()
+    arm.set_goal_state(pose_stamped_msg=waypoint_pose, pose_link=tip_link)
+
+    plan_params = PlanRequestParameters(robot, "")
+    plan_params.max_velocity_scaling_factor = MAX_VELOCITY_SCALING
+    plan_params.max_acceleration_scaling_factor = MAX_ACCELERATION_SCALING
+
+    return arm.plan(single_plan_parameters=plan_params)
 
 
 def get_trajectory_parameter(robot: MoveItPy) -> str:
@@ -244,46 +371,78 @@ def main() -> None:
         rotation_matrix = transform_matrix[:3, :3]
         x_axis = rotation_matrix[:, 0] / np.linalg.norm(rotation_matrix[:, 0])
         y_axis = rotation_matrix[:, 1] / np.linalg.norm(rotation_matrix[:, 1])
+        z_axis = rotation_matrix[:, 2] / np.linalg.norm(rotation_matrix[:, 2])
         origin = transform_matrix[:3, 3]
 
         if trajectory_name == "square":
-            local_waypoints = generate_square_waypoints(SQUARE_EDGE_LENGTH)
+            local_waypoints = [
+                (dx, dy, 0.0)
+                for dx, dy in generate_square_waypoints(SQUARE_EDGE_LENGTH)
+            ]
+        elif trajectory_name == "approach":
+            local_waypoints = generate_approach_waypoints(APPROACH_DISTANCE)
         else:
             raise ValueError(f"Unsupported trajectory: {trajectory_name}")
 
         # Create pose messages for each waypoint
         waypoint_poses = [
             create_pose_stamped(
-                origin, x_axis, y_axis, dx, dy,
+                origin, x_axis, y_axis, z_axis, dx, dy, dz,
                 current_pose.orientation, planning_frame
             )
-            for dx, dy in local_waypoints
+            for dx, dy, dz in local_waypoints
         ]
 
-        # Execute selected trajectory
-        for i, waypoint_pose in enumerate(waypoint_poses):
-            arm.set_start_state_to_current_state()
-            arm.set_goal_state(pose_stamped_msg=waypoint_pose, pose_link=tip_link)
+        if trajectory_name == "approach":
+            force_monitor = ForceZMonitor()
+            force_monitor.start()
+            stopped_by_force = False
+            try:
+                for i, waypoint_pose in enumerate(waypoint_poses):
+                    plan_result = plan_waypoint(robot, arm, waypoint_pose, tip_link)
+                    if not plan_result:
+                        logger.error(f"Planning to waypoint {i} failed; aborting")
+                        break
 
-            # Setup conservative planning parameters
-            plan_params = PlanRequestParameters(robot, "")
-            plan_params.max_velocity_scaling_factor = MAX_VELOCITY_SCALING
-            plan_params.max_acceleration_scaling_factor = MAX_ACCELERATION_SCALING
+                    if force_monitor.triggered:
+                        logger.info("Approach force threshold already reached; skipping execution")
+                        stopped_by_force = True
+                        break
 
-            # Plan trajectory
-            plan_result = arm.plan(single_plan_parameters=plan_params)
-            if not plan_result:
-                logger.error(f"Planning to waypoint {i} failed; aborting")
-                break
+                    if not execute_trajectory_with_force_stop(
+                        robot,
+                        plan_result.trajectory,
+                        force_monitor,
+                    ):
+                        logger.error(f"Execution to waypoint {i} failed; aborting")
+                        break
 
-            # Execute with fallback
-            if not execute_trajectory_with_fallback(robot, plan_result.trajectory):
-                logger.error(f"Execution to waypoint {i} failed; aborting")
-                break
+                    if force_monitor.triggered:
+                        logger.info(f"Approach stopped at force threshold after waypoint {i + 1}")
+                        stopped_by_force = True
+                        break
 
-            logger.info(f"Reached waypoint {i + 1}/{len(waypoint_poses)}")
+                    logger.info(f"Reached waypoint {i + 1}/{len(waypoint_poses)}")
+            finally:
+                force_monitor.stop()
 
-        logger.info(f"{trajectory_name} trajectory completed successfully")
+            if stopped_by_force:
+                logger.info(f"{trajectory_name} trajectory stopped at force threshold")
+            else:
+                logger.info(f"{trajectory_name} trajectory completed successfully")
+        else:
+            for i, waypoint_pose in enumerate(waypoint_poses):
+                plan_result = plan_waypoint(robot, arm, waypoint_pose, tip_link)
+                if not plan_result:
+                    logger.error(f"Planning to waypoint {i} failed; aborting")
+                    break
+
+                if not execute_trajectory_with_fallback(robot, plan_result.trajectory):
+                    logger.error(f"Execution to waypoint {i} failed; aborting")
+                    break
+
+                logger.info(f"Reached waypoint {i + 1}/{len(waypoint_poses)}")
+            logger.info(f"{trajectory_name} trajectory completed successfully")
 
     except Exception as e:
         logger.error(f"Trajectory execution failed: {e}")
