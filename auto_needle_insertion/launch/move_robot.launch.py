@@ -7,6 +7,17 @@ from launch_ros.actions import Node
 from moveit_configs_utils import MoveItConfigsBuilder
 
 
+MOVE_ROBOT_MODES = [
+    "ee_moveit_square",
+    "ee_moveit_keyboard",
+    "ee_pose_logger",
+    "hand_eye_calib",
+    "tool_reporter",
+    "tool_follower",
+    "keyboard_control",
+]
+
+
 def generate_launch_description():
     ur_type_arg = DeclareLaunchArgument("ur_type", default_value="ur5e")
     ur_type     = LaunchConfiguration("ur_type")
@@ -17,7 +28,11 @@ def generate_launch_description():
     )
     ur_calibration_file = LaunchConfiguration("ur_calibration_file")
 
-    mode_arg  = DeclareLaunchArgument("mode", default_value="ee_moveit_square")
+    mode_arg  = DeclareLaunchArgument(
+        "mode",
+        default_value="ee_moveit_square",
+        choices=MOVE_ROBOT_MODES,
+    )
     mode_name = LaunchConfiguration("mode")
 
     target_arg = DeclareLaunchArgument("target", default_value="us_probe")

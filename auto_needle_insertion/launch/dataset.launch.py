@@ -7,6 +7,17 @@ from launch_ros.actions import Node
 from moveit_configs_utils import MoveItConfigsBuilder
 
 
+DATASET_MODES = [
+    "find_needle_static",
+    "find_needle_task4",
+    "task1_probe_placement",
+    "task2robot_record_points",
+    "task2robot_exe_points_placement",
+    "task2robot_exe_points_motion",
+    "task2robot_exe_points_refine",
+]
+
+
 def generate_launch_description():
     ur_type_arg = DeclareLaunchArgument("ur_type", default_value="ur5e")
     ur_type     = LaunchConfiguration("ur_type")
@@ -17,7 +28,11 @@ def generate_launch_description():
     )
     ur_calibration_file = LaunchConfiguration("ur_calibration_file")
 
-    mode_arg  = DeclareLaunchArgument("mode", default_value="keyboard_control")
+    mode_arg  = DeclareLaunchArgument(
+        "mode",
+        default_value="task1_probe_placement",
+        choices=DATASET_MODES,
+    )
     mode_name = LaunchConfiguration("mode")
 
     # Control ROS 2 log verbosity for this node (affects all loggers in-process)
