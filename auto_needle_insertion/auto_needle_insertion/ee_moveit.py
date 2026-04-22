@@ -40,6 +40,7 @@ SQUARE_EDGE_LENGTH = 0.2  # meters
 APPROACH_DISTANCE = 0.3  # meters
 APPROACH_FORCE_Z_TOPIC = "/ati_ft_broadcaster/wrench/force/z"
 APPROACH_FORCE_Z_LIMIT = -10.0  # N
+LOG_FORCE_Z_INFO = False
 MAX_VELOCITY_SCALING = 0.2
 MAX_ACCELERATION_SCALING = 0.2
 PLANNING_SCENE_SYNC_DELAY = 0.5  # seconds
@@ -113,6 +114,9 @@ class ForceZMonitor:
             self._executor.spin_once(timeout_sec=0.05)
 
     def _force_cb(self, msg: Float64) -> None:
+        if LOG_FORCE_Z_INFO:
+            logger.info(f"Force Z: {msg.data:.3f} N")
+
         if msg.data >= self.force_limit or self._triggered.is_set():
             return
 
