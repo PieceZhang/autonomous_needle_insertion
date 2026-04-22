@@ -23,11 +23,24 @@ import plotly.graph_objects as go
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 try:
+    from scipy import ndimage
+except Exception:
+    ndimage = None
+
+try:
+    from skimage import measure
+except Exception:
+    measure = None
+
+try:
     import straight_line_planner as straight_line_planner_module
     STRAIGHT_LINE_IMPORT_ERROR = ""
 except Exception as exc:
     straight_line_planner_module = None
     STRAIGHT_LINE_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
+
+MRI_SURFACE_PICK_TAG = "mri-surface"
+TRACKER_DEVICE_ID = "TrackerDevice"
 
 MODULE_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = MODULE_ROOT.parent
@@ -35,7 +48,7 @@ DATA_ROOT = Path(os.environ.get("UI_DATA_ROOT", str(PROJECT_ROOT))).expanduser()
 MRI_DIR = DATA_ROOT / "data" / "preop" / "MRI" / "SE16"
 PROBE_STEP = MODULE_ROOT / "needle_and_probe" / "C5-1.step"
 PROBE_STL_FALLBACK = MODULE_ROOT / "needle_and_probe" / "c5-1.STL"
-AFFINE_NPZ = MODULE_ROOT / "affine_matrix" / "registration_result_MRI.npz"
+AFFINE_NPZ = MODULE_ROOT / "affine_matrix" / "registration_result_MRI_post.npz"
 CALIB_XML = DATA_ROOT / "calibration" / "PlusDeviceSet_fCal_Wisonic_C5_1_NDIPolaris_2.0_20260111_SRIL.xml"
 INTROOP_RECORDING_DIR = DATA_ROOT / "data" / "intraop_recording" / "rosbag2_20260319_083246_rigidregistration_unknown"
 POSE_NDJSON = INTROOP_RECORDING_DIR / "ndi__us_probe_pose" / "messages.ndjson"
@@ -73,6 +86,21 @@ def _load_transform(root: ET.Element, frm: str, to: str):
     if len(vals) != 16:
         raise RuntimeError(f"Transform From='{frm}' To='{to}' is not a 4x4 matrix in {CALIB_XML}")
     return np.array(vals, dtype=np.float64).reshape(4, 4)
+
+
+def _read_local_time_offset_sec(xml_path: Path, device_id: str | None = None):
+    root = ET.parse(str(xml_path)).getroot()
+    if device_id is not None:
+        for elem in root.iter():
+            if elem.tag.endswith("Device") and elem.attrib.get("Id", "") == device_id:
+                if "LocalTimeOffsetSec" in elem.attrib:
+                    return float(elem.attrib["LocalTimeOffsetSec"])
+        raise RuntimeError(f"LocalTimeOffsetSec not found on Device Id='{device_id}' in {xml_path}")
+
+    for elem in root.iter():
+        if "LocalTimeOffsetSec" in elem.attrib:
+            return float(elem.attrib["LocalTimeOffsetSec"])
+    raise RuntimeError(f"LocalTimeOffsetSec not found in {xml_path}")
 
 
 def _load_model_to_object(root: ET.Element, object_id: str):
@@ -166,11 +194,20 @@ def _read_volume():
     row_dir = slices[0][5]
     col_dir = slices[0][6]
     normal = slices[0][7]
+    z_max = vol.shape[0] - 1
+    x_max = vol.shape[2] - 1
+    # Rotate the MRI by 180 degrees around the R-slice axis (voxel y),
+    # which is equivalent to flipping the x and z voxel axes.
+    ipp0_rotated = (
+        ipp0
+        + row_dir * spacing_xy[1] * float(x_max)
+        + normal * dz * float(z_max)
+    )
     voxel_to_patient = np.eye(4, dtype=np.float64)
-    voxel_to_patient[:3, 0] = col_dir * spacing_xy[1]   # x: column index
-    voxel_to_patient[:3, 1] = row_dir * spacing_xy[0]   # y: row index
-    voxel_to_patient[:3, 2] = normal * dz               # z: slice index
-    voxel_to_patient[:3, 3] = ipp0
+    voxel_to_patient[:3, 0] = -row_dir * spacing_xy[1]  # x: column index
+    voxel_to_patient[:3, 1] = col_dir * spacing_xy[0]   # y: row index
+    voxel_to_patient[:3, 2] = -normal * dz              # z: slice index
+    voxel_to_patient[:3, 3] = ipp0_rotated
     patient_to_voxel = np.linalg.inv(voxel_to_patient)
     return vol, spacing, patient_to_voxel
 
@@ -461,6 +498,57 @@ def _rotation_matrix_zyx_axes(rot_x_deg: float, rot_y_deg: float, rot_z_deg: flo
     return rot_z @ rot_y @ rot_x
 
 
+def _panel_height_from_physical_aspect(panel_width_px: int, span_u_mm: float, span_v_mm: float):
+    panel_width_px = int(max(1, panel_width_px))
+    span_u_mm = float(max(span_u_mm, 1e-6))
+    span_v_mm = float(max(span_v_mm, 1e-6))
+    return max(1, int(round(panel_width_px * span_v_mm / span_u_mm)))
+
+
+def _normalize_vec(vec, eps=1e-9):
+    vec = np.asarray(vec, dtype=np.float64)
+    n = float(np.linalg.norm(vec))
+    if n <= eps:
+        raise RuntimeError("Vector norm is too small.")
+    return vec / n
+
+
+def _plane_points_from_store(data):
+    if not data or len(data) != 3:
+        return None
+    try:
+        pts = np.asarray([[float(item["x"]), float(item["y"]), float(item["z"])] for item in data], dtype=np.float64)
+    except Exception:
+        return None
+    if pts.shape != (3, 3) or not np.all(np.isfinite(pts)):
+        return None
+    return pts
+
+
+def _surface_pick_from_click_data(click_data):
+    if not click_data or not click_data.get("points"):
+        return None
+    point = click_data["points"][0]
+    if point.get("customdata") != MRI_SURFACE_PICK_TAG:
+        return None
+    if any(key not in point for key in ("x", "y", "z")):
+        return None
+    return {
+        "x": float(point["x"]),
+        "y": float(point["y"]),
+        "z": float(point["z"]),
+    }
+
+
+def _pick_status_text(point_count: int):
+    point_count = int(max(0, point_count))
+    if point_count <= 0:
+        return "Pick 3 points on the MRI surface to define a custom slice."
+    if point_count < 3:
+        return f"Picked {point_count}/3 surface points."
+    return "Picked 3/3 surface points. (3,2) and (3,1) now use the custom plane."
+
+
 def _to_rgb_uint8(img):
     img = np.asarray(img)
     if img.ndim == 2:
@@ -686,9 +774,15 @@ def _sample_trilinear(vol, xyz):
 class AppData:
     def __init__(self):
         self.volume, self.spacing_m, self.patient_mm_to_voxel = _read_volume()
+        self.spacing_zyx_mm = self.spacing_m * 1e3
+        self.volume_extent_zyx_mm = np.maximum(np.asarray(self.volume.shape, dtype=np.float64) - 1.0, 1.0) * self.spacing_zyx_mm
         self.voxel_xyz_to_patient_mm = np.linalg.inv(self.patient_mm_to_voxel)
+        self.mri_g_axis_patient_unit = _normalize_vec(self.voxel_xyz_to_patient_mm[:3, 0])
+        self.mri_g_offset_mm = 25.0
         self.affine_cfg = _load_affine()
         self.calibration = _load_calibration()
+        self.tracker_local_time_offset_sec = _read_local_time_offset_sec(CALIB_XML, TRACKER_DEVICE_ID)
+        self.video_time_offset_sec = 0.0
         self.T_probe_image = self.calibration["image_in_probe"]
         self.T_probe_to = self.calibration["to_in_probe"]
         self.poses = _load_probe_poses()
@@ -773,10 +867,21 @@ class AppData:
         self.us_hq_width = 1280
         self.us_hq_height = max(1, int(round(self.us_hq_width * self.video_height / self.video_width)))
         self.resample_panel_width = 720
-        self.resample_panel_height = max(1, int(round(self.resample_panel_width * self.video_height / self.video_width)))
+        self.probe_plane_u_span_mm, self.probe_plane_v_span_mm = self._probe_plane_extent_mm()
+        self.resample_panel_height = _panel_height_from_physical_aspect(
+            self.resample_panel_width,
+            self.probe_plane_u_span_mm,
+            self.probe_plane_v_span_mm,
+        )
         self.auto_section_patch_radius = 90
         self.oblique_panel_width = 860
-        self.oblique_panel_height = max(1, int(round(self.oblique_panel_width * self.video_height / self.video_width)))
+        self.oblique_half_u_mm = 0.45 * max(1.0, self.volume_extent_zyx_mm[2])
+        self.oblique_half_v_mm = 0.45 * max(1.0, self.volume_extent_zyx_mm[1])
+        self.oblique_panel_height = _panel_height_from_physical_aspect(
+            self.oblique_panel_width,
+            2.0 * self.oblique_half_u_mm,
+            2.0 * self.oblique_half_v_mm,
+        )
         self.oblique_center_default = {
             "z": self.volume.shape[0] // 2,
             "y": self.volume.shape[1] // 2,
@@ -785,10 +890,12 @@ class AppData:
         uu = np.linspace(0.0, self.video_width - 1.0, self.us_plane_width, dtype=np.float64)
         vv = np.linspace(0.0, self.video_height - 1.0, self.us_plane_height, dtype=np.float64)
         self.grid_u, self.grid_v = np.meshgrid(uu, vv, indexing="xy")
-        self.static_3d_traces = (
-            self.mri_volume_outline_trace(),
-            self.mri_marker_trace(),
-        )
+        try:
+            self.mri_surface_base = self._build_mri_surface_mesh()
+        except Exception as exc:
+            print(f"MRI surface reconstruction unavailable: {exc}")
+            self.mri_surface_base = None
+        self.mri_marker_3d_trace = self.mri_marker_trace()
 
     @staticmethod
     def pose_m_to_display_mm(T):
@@ -798,19 +905,20 @@ class AppData:
 
     def frame_to_pose_idx(self, frame_idx: int):
         t = self.video_start_ns + int(1e9 * frame_idx / self.video_fps)
-        i = int(np.searchsorted(self.pose_times, t, side="left"))
+        aligned_pose_times = self.pose_times + int(round(self.video_time_offset_sec * 1e9))
+        i = int(np.searchsorted(aligned_pose_times, t, side="left"))
         if i <= 0:
             return 0
-        if i >= len(self.pose_times):
-            return len(self.pose_times) - 1
-        if abs(self.pose_times[i] - t) < abs(t - self.pose_times[i - 1]):
+        if i >= len(aligned_pose_times):
+            return len(aligned_pose_times) - 1
+        if abs(aligned_pose_times[i] - t) < abs(t - aligned_pose_times[i - 1]):
             return i
         i = i - 1
         return i
 
     def pose_idx_to_frame_idx(self, pose_idx: int):
         pose_idx = int(np.clip(pose_idx, 0, len(self.poses) - 1))
-        t = int(self.pose_times[pose_idx])
+        t = int(self.pose_times[pose_idx] + round(self.video_time_offset_sec * 1e9))
         frame_float = (t - self.video_start_ns) * self.video_fps / 1e9
         frame_idx = int(round(frame_float))
         return int(np.clip(frame_idx, 0, self.frame_count - 1))
@@ -868,10 +976,26 @@ class AppData:
     def frame_time_ns(self, frame_idx: int):
         return self.video_start_ns + int(round(1e9 * int(frame_idx) / self.video_fps))
 
+    def mri_g_offset_patient_mm(self):
+        return self.mri_g_axis_patient_unit * float(self.mri_g_offset_mm)
+
+    def mri_g_offset_world_mm(self):
+        offset_patient_mm = self.mri_g_offset_patient_mm()
+        if float(np.linalg.norm(offset_patient_mm)) <= 1e-12:
+            return np.zeros(3, dtype=np.float64)
+        cfg = self.affine_cfg
+        if cfg["mode"] != "rt":
+            return np.zeros(3, dtype=np.float64)
+        scale = float(cfg.get("s", 1.0))
+        if abs(scale) < 1e-12:
+            raise RuntimeError("Registration scale is too small to invert.")
+        return offset_patient_mm @ cfg["R"].T / scale
+
     def patient_mm_to_voxel_batch(self, patient_mm_batch):
         pts = np.asarray(patient_mm_batch, dtype=np.float64).reshape(-1, 3)
         if pts.size == 0:
             return np.empty((0, 3), dtype=np.float64)
+        pts = pts - self.mri_g_offset_patient_mm()[None, :]
         hom = np.c_[pts, np.ones((pts.shape[0], 1), dtype=np.float64)]
         vox_xyz = (self.patient_mm_to_voxel @ hom.T).T[:, :3]
         return np.c_[vox_xyz[:, 2], vox_xyz[:, 1], vox_xyz[:, 0]]
@@ -882,7 +1006,8 @@ class AppData:
             return np.empty((0, 3), dtype=np.float64)
         vox_xyz = np.c_[pts[:, 2], pts[:, 1], pts[:, 0]]
         hom = np.c_[vox_xyz, np.ones((vox_xyz.shape[0], 1), dtype=np.float64)]
-        return (self.voxel_xyz_to_patient_mm @ hom.T).T[:, :3]
+        patient_mm = (self.voxel_xyz_to_patient_mm @ hom.T).T[:, :3]
+        return patient_mm + self.mri_g_offset_patient_mm()[None, :]
 
     def mri_mm_to_world_mm_batch(self, patient_mm_batch):
         pts = np.asarray(patient_mm_batch, dtype=np.float64).reshape(-1, 3)
@@ -903,6 +1028,7 @@ class AppData:
         if cfg["mode"] == "rt":
             sensor_mm = pts * 1e3
             mri_mm = cfg["s"] * (sensor_mm @ cfg["R"]) + cfg["t"][None, :]
+            mri_mm = mri_mm - self.mri_g_offset_patient_mm()[None, :]
             hom = np.c_[mri_mm, np.ones((mri_mm.shape[0], 1), dtype=np.float64)]
             vox_xyz = (self.patient_mm_to_voxel @ hom.T).T[:, :3]
         else:
@@ -1058,6 +1184,17 @@ class AppData:
             hoverinfo="skip",
         )
 
+    def _probe_plane_extent_mm(self):
+        pose = self.poses[0].T_pol_probe if self.poses else np.eye(4, dtype=np.float64)
+        corners = self.image_plane_world(
+            pose,
+            u_coords=np.array([0.0, self.video_width - 1.0], dtype=np.float64),
+            v_coords=np.array([0.0, self.video_height - 1.0], dtype=np.float64),
+        )
+        u_span_mm = float(np.linalg.norm(corners[0, 1] - corners[0, 0]))
+        v_span_mm = float(np.linalg.norm(corners[1, 0] - corners[0, 0]))
+        return max(u_span_mm, 1e-6), max(v_span_mm, 1e-6)
+
     def render_probe_plane_mri(self, pose_idx: int):
         pose_idx = int(np.clip(pose_idx, 0, len(self.poses) - 1))
         pose = self.poses[pose_idx]
@@ -1068,14 +1205,213 @@ class AppData:
         sampled = _sample_trilinear(self.volume, plane_voxel).reshape(self.resample_panel_height, self.resample_panel_width)
         disp = _auto_window_uint8(sampled, lo_pct=0.5, hi_pct=99.7)
         coverage = float(np.count_nonzero(sampled > 0.0)) / float(sampled.size)
-        status = f"Pose {pose_idx} | MRI resample coverage {coverage * 100.0:.1f}%"
+        status = (
+            f"Pose {pose_idx} | MRI resample coverage {coverage * 100.0:.1f}% | "
+            f"mri_g_offset={self.mri_g_offset_mm:+.1f} mm"
+        )
         return disp, status
+
+    def _three_point_plane_frame(self, points_world_mm):
+        pts = np.asarray(points_world_mm, dtype=np.float64).reshape(3, 3)
+        p0, p1, p2 = pts
+        u_dir = _normalize_vec(p1 - p0)
+        normal = np.cross(u_dir, p2 - p0)
+        normal = _normalize_vec(normal)
+        v_dir = _normalize_vec(np.cross(normal, u_dir))
+        center = np.mean(pts, axis=0)
+        return center, u_dir, v_dir, normal
+
+    def sample_three_point_plane_section(self, points_world_mm):
+        center_world_mm, u_dir, v_dir, normal = self._three_point_plane_frame(points_world_mm)
+        uu = np.linspace(-self.oblique_half_u_mm, self.oblique_half_u_mm, self.oblique_panel_width, dtype=np.float64)
+        vv = np.linspace(-self.oblique_half_v_mm, self.oblique_half_v_mm, self.oblique_panel_height, dtype=np.float64)
+        grid_u, grid_v = np.meshgrid(uu, vv, indexing="xy")
+        plane_world_mm = (
+            center_world_mm[None, None, :]
+            + grid_u[:, :, None] * u_dir[None, None, :]
+            + grid_v[:, :, None] * v_dir[None, None, :]
+        )
+        plane_voxel = self.world_to_voxel_batch(plane_world_mm.reshape(-1, 3) * 1e-3).reshape(
+            self.oblique_panel_height,
+            self.oblique_panel_width,
+            3,
+        )
+        sampled = _sample_trilinear(self.volume, plane_voxel.reshape(-1, 3)).reshape(
+            self.oblique_panel_height,
+            self.oblique_panel_width,
+        )
+        coverage = float(np.count_nonzero(sampled > 0.0)) / float(sampled.size)
+        meta = {
+            "mode": "three-point",
+            "center_world_mm": center_world_mm,
+            "normal": normal,
+            "u_dir": u_dir,
+            "v_dir": v_dir,
+            "coverage": coverage,
+        }
+        return sampled, meta
+
+    def _build_mri_surface_mesh(self):
+        if measure is None:
+            raise RuntimeError("skimage.measure is unavailable")
+        stride = int(max(2, np.ceil(max(self.volume.shape) / 160.0)))
+        vol_ds = self.volume[::stride, ::stride, ::stride].astype(np.float32)
+        if ndimage is not None:
+            vol_ds = ndimage.gaussian_filter(vol_ds, sigma=0.8)
+        fg = self.mri_fg_values if self.mri_fg_values.size else self.volume.reshape(-1)
+        level = float(np.percentile(fg, 20.0))
+        level = float(np.clip(level, float(np.min(vol_ds)) + 1e-6, float(np.max(vol_ds)) - 1e-6))
+        verts_ds, faces, _, _ = measure.marching_cubes(vol_ds, level=level, allow_degenerate=False)
+        verts_zyx = verts_ds * float(stride)
+        patient_mm = self.voxel_to_patient_mm_batch(verts_zyx)
+        verts_world_mm = self.mri_mm_to_world_mm_batch(patient_mm)
+        if verts_world_mm.size == 0 or not np.all(np.isfinite(verts_world_mm)):
+            raise RuntimeError("MRI surface vertices are invalid in world coordinates")
+        return verts_world_mm, faces.astype(np.int32)
+
+    def mri_surface_trace(self):
+        if self.mri_surface_base is None:
+            return go.Scatter3d(x=[], y=[], z=[], mode="markers", hoverinfo="skip")
+        verts_world_mm, faces = self.mri_surface_base
+        verts_world_mm = np.asarray(verts_world_mm, dtype=np.float64) + self.mri_g_offset_world_mm()[None, :]
+
+        return go.Mesh3d(
+            x=verts_world_mm[:, 0],
+            y=verts_world_mm[:, 1],
+            z=verts_world_mm[:, 2],
+            i=faces[:, 0],
+            j=faces[:, 1],
+            k=faces[:, 2],
+            color="#d1d5db",
+            opacity=0.50,
+            hovertemplate="MRI surface<extra></extra>",
+            customdata=np.full((verts_world_mm.shape[0],), MRI_SURFACE_PICK_TAG, dtype=object),
+            lighting=dict(ambient=0.55, diffuse=0.75, specular=0.1, roughness=0.95, fresnel=0.02),
+            flatshading=False,
+            showscale=False,
+        )
+
+    def selected_surface_points_trace(self, points_world_mm):
+        pts = np.asarray(points_world_mm, dtype=np.float64).reshape(-1, 3)
+        if pts.size == 0:
+            return go.Scatter3d(x=[], y=[], z=[], mode="markers", hoverinfo="skip")
+        labels = [f"P{i + 1}" for i in range(len(pts))]
+        return go.Scatter3d(
+            x=pts[:, 0],
+            y=pts[:, 1],
+            z=pts[:, 2],
+            mode="markers+text",
+            text=labels,
+            textposition="top center",
+            marker=dict(size=6, color="#ec4899", line=dict(color="#ffffff", width=1)),
+            hovertemplate="%{text}<extra></extra>",
+        )
+
+    def selected_surface_path_trace(self, points_world_mm):
+        pts = np.asarray(points_world_mm, dtype=np.float64).reshape(-1, 3)
+        if pts.size == 0:
+            return go.Scatter3d(x=[], y=[], z=[], mode="lines", hoverinfo="skip")
+        if len(pts) == 3:
+            pts = np.vstack([pts, pts[:1]])
+        return go.Scatter3d(
+            x=pts[:, 0],
+            y=pts[:, 1],
+            z=pts[:, 2],
+            mode="lines",
+            line=dict(color="#ec4899", width=5),
+            hoverinfo="skip",
+        )
+
+    def selected_plane_surface_trace(self, points_world_mm):
+        try:
+            center_world_mm, u_dir, v_dir, _ = self._three_point_plane_frame(points_world_mm)
+        except Exception:
+            return None
+        corners = np.array([
+            center_world_mm - self.oblique_half_u_mm * u_dir - self.oblique_half_v_mm * v_dir,
+            center_world_mm + self.oblique_half_u_mm * u_dir - self.oblique_half_v_mm * v_dir,
+            center_world_mm + self.oblique_half_u_mm * u_dir + self.oblique_half_v_mm * v_dir,
+            center_world_mm - self.oblique_half_u_mm * u_dir + self.oblique_half_v_mm * v_dir,
+        ], dtype=np.float64)
+        grid = corners[[0, 1, 3, 2]].reshape(2, 2, 3)
+        return go.Surface(
+            x=grid[:, :, 0],
+            y=grid[:, :, 1],
+            z=grid[:, :, 2],
+            surfacecolor=np.zeros((2, 2), dtype=np.float32),
+            colorscale=[[0.0, "#22c55e"], [1.0, "#22c55e"]],
+            opacity=0.18,
+            showscale=False,
+            hoverinfo="skip",
+        )
+
+    def _oblique_plane_geometry(self, center_z: float, center_y: float, center_x: float, rot_x_deg: float, rot_y_deg: float, rot_z_deg: float):
+        center = np.array(
+            [
+                np.clip(float(center_z), 0.0, self.volume.shape[0] - 1.0),
+                np.clip(float(center_y), 0.0, self.volume.shape[1] - 1.0),
+                np.clip(float(center_x), 0.0, self.volume.shape[2] - 1.0),
+            ],
+            dtype=np.float64,
+        )
+        rot = _rotation_matrix_zyx_axes(rot_x_deg, rot_y_deg, rot_z_deg)
+        basis_u_phys = rot @ np.array([0.0, 0.0, 1.0], dtype=np.float64)
+        basis_v_phys = rot @ np.array([0.0, 1.0, 0.0], dtype=np.float64)
+        center_phys_mm = center * self.spacing_zyx_mm
+        corners_phys_mm = np.array([
+            center_phys_mm - self.oblique_half_u_mm * basis_u_phys - self.oblique_half_v_mm * basis_v_phys,
+            center_phys_mm + self.oblique_half_u_mm * basis_u_phys - self.oblique_half_v_mm * basis_v_phys,
+            center_phys_mm + self.oblique_half_u_mm * basis_u_phys + self.oblique_half_v_mm * basis_v_phys,
+            center_phys_mm - self.oblique_half_u_mm * basis_u_phys + self.oblique_half_v_mm * basis_v_phys,
+        ], dtype=np.float64)
+        corners_zyx = corners_phys_mm / self.spacing_zyx_mm[None, :]
+        corners_world_mm = self.mri_mm_to_world_mm_batch(self.voxel_to_patient_mm_batch(corners_zyx))
+        center_world_mm = self.mri_mm_to_world_mm_batch(self.voxel_to_patient_mm_batch(center[None, :]))[0]
+        return {
+            "center": center,
+            "rot": (float(rot_x_deg), float(rot_y_deg), float(rot_z_deg)),
+            "center_phys_mm": center_phys_mm,
+            "basis_u_phys": basis_u_phys,
+            "basis_v_phys": basis_v_phys,
+            "corners_world_mm": corners_world_mm,
+            "center_world_mm": center_world_mm,
+        }
+
+    def oblique_plane_surface_trace(self, center_z: float, center_y: float, center_x: float, rot_x_deg: float, rot_y_deg: float, rot_z_deg: float):
+        geom = self._oblique_plane_geometry(center_z, center_y, center_x, rot_x_deg, rot_y_deg, rot_z_deg)
+        pts = geom["corners_world_mm"]
+        grid = pts[[0, 1, 3, 2]].reshape(2, 2, 3)
+        return go.Surface(
+            x=grid[:, :, 0],
+            y=grid[:, :, 1],
+            z=grid[:, :, 2],
+            surfacecolor=np.zeros((2, 2), dtype=np.float32),
+            colorscale=[[0.0, "#22c55e"], [1.0, "#22c55e"]],
+            opacity=0.18,
+            showscale=False,
+            hoverinfo="skip",
+        )
+
+    def oblique_plane_outline_trace(self, center_z: float, center_y: float, center_x: float, rot_x_deg: float, rot_y_deg: float, rot_z_deg: float):
+        geom = self._oblique_plane_geometry(center_z, center_y, center_x, rot_x_deg, rot_y_deg, rot_z_deg)
+        pts = np.vstack([geom["corners_world_mm"], geom["corners_world_mm"][:1]])
+        return go.Scatter3d(
+            x=pts[:, 0],
+            y=pts[:, 1],
+            z=pts[:, 2],
+            mode="lines",
+            line=dict(color="#22c55e", width=6),
+            hoverinfo="skip",
+        )
 
     def render_hq_us_slice(self, pose_idx: int):
         pose_idx = int(np.clip(pose_idx, 0, len(self.poses) - 1))
         frame_idx = self.pose_idx_to_frame_idx(pose_idx)
         img = self.read_us_frame_hq(frame_idx)
-        status = f"Pose {pose_idx} | Frame {frame_idx} | {self.us_hq_width}x{self.us_hq_height}"
+        status = (
+            f"Pose {pose_idx} | Frame {frame_idx} | {self.us_hq_width}x{self.us_hq_height} | "
+            f"video_offset={self.video_time_offset_sec:+.5f}s"
+        )
         return img, status
 
     def sample_oblique_volume_section(
@@ -1087,34 +1423,27 @@ class AppData:
         rot_y_deg: float,
         rot_z_deg: float,
     ):
-        center = np.array(
-            [
-                np.clip(float(center_z), 0.0, self.volume.shape[0] - 1.0),
-                np.clip(float(center_y), 0.0, self.volume.shape[1] - 1.0),
-                np.clip(float(center_x), 0.0, self.volume.shape[2] - 1.0),
-            ],
-            dtype=np.float64,
-        )
-        rot = _rotation_matrix_zyx_axes(rot_x_deg, rot_y_deg, rot_z_deg)
-        basis_u = rot @ np.array([0.0, 0.0, 1.0], dtype=np.float64)
-        basis_v = rot @ np.array([0.0, 1.0, 0.0], dtype=np.float64)
-
-        half_u = 0.45 * max(1.0, self.volume.shape[2] - 1.0)
-        half_v = 0.45 * max(1.0, self.volume.shape[1] - 1.0)
-        uu = np.linspace(-half_u, half_u, self.oblique_panel_width, dtype=np.float64)
-        vv = np.linspace(-half_v, half_v, self.oblique_panel_height, dtype=np.float64)
+        geom = self._oblique_plane_geometry(center_z, center_y, center_x, rot_x_deg, rot_y_deg, rot_z_deg)
+        center = geom["center"]
+        center_phys_mm = geom["center_phys_mm"]
+        basis_u_phys = geom["basis_u_phys"]
+        basis_v_phys = geom["basis_v_phys"]
+        uu = np.linspace(-self.oblique_half_u_mm, self.oblique_half_u_mm, self.oblique_panel_width, dtype=np.float64)
+        vv = np.linspace(-self.oblique_half_v_mm, self.oblique_half_v_mm, self.oblique_panel_height, dtype=np.float64)
         grid_u, grid_v = np.meshgrid(uu, vv, indexing="xy")
-        plane_zyx = (
-            center[None, None, :]
-            + grid_u[:, :, None] * basis_u[None, None, :]
-            + grid_v[:, :, None] * basis_v[None, None, :]
+        plane_phys_mm = (
+            center_phys_mm[None, None, :]
+            + grid_u[:, :, None] * basis_u_phys[None, None, :]
+            + grid_v[:, :, None] * basis_v_phys[None, None, :]
         )
+        plane_zyx = plane_phys_mm / self.spacing_zyx_mm[None, None, :]
         sampled = _sample_trilinear(self.volume, plane_zyx.reshape(-1, 3)).reshape(self.oblique_panel_height, self.oblique_panel_width)
         coverage = float(np.count_nonzero(sampled > 0.0)) / float(sampled.size)
         meta = {
             "center": center,
-            "rot": (float(rot_x_deg), float(rot_y_deg), float(rot_z_deg)),
+            "rot": geom["rot"],
             "coverage": coverage,
+            "center_world_mm": geom["center_world_mm"],
         }
         return sampled, meta
 
@@ -1156,20 +1485,24 @@ class AppData:
         rot_y_deg: float,
         rot_z_deg: float,
         click_xy=None,
+        plane_points_world_mm=None,
     ):
         if straight_line_planner_module is None:
             blank = np.zeros((480, 480, 3), dtype=np.uint8)
             status = f"Planner unavailable | {STRAIGHT_LINE_IMPORT_ERROR or 'missing dependency'}"
             return blank, status, None
 
-        sampled, meta = self.sample_oblique_volume_section(
-            center_z,
-            center_y,
-            center_x,
-            rot_x_deg,
-            rot_y_deg,
-            rot_z_deg,
-        )
+        if plane_points_world_mm is not None:
+            sampled, meta = self.sample_three_point_plane_section(plane_points_world_mm)
+        else:
+            sampled, meta = self.sample_oblique_volume_section(
+                center_z,
+                center_y,
+                center_x,
+                rot_x_deg,
+                rot_y_deg,
+                rot_z_deg,
+            )
         segmentation = self._straight_line_segmentation(sampled)
         workspace_mask = segmentation["workspace_mask"]
         obstacle_mask = segmentation["total_obstacle_mask"]
@@ -1179,13 +1512,22 @@ class AppData:
             dark_region_mask=segmentation["dark_region_mask"],
             bright_region_mask=segmentation["bright_region_mask"],
         )
-        center = meta["center"]
-        rot = meta["rot"]
-        prefix = (
-            f"oblique center=({center[0]:.1f}, {center[1]:.1f}, {center[2]:.1f}) | "
-            f"rot=({rot[0]:.1f}, {rot[1]:.1f}, {rot[2]:.1f}) | "
-            f"coverage {meta['coverage'] * 100.0:.1f}%"
-        )
+        if meta.get("mode") == "three-point":
+            center = meta["center_world_mm"]
+            normal = meta["normal"]
+            prefix = (
+                f"3-point plane | center_world_mm=({center[0]:.1f}, {center[1]:.1f}, {center[2]:.1f}) | "
+                f"normal=({normal[0]:.2f}, {normal[1]:.2f}, {normal[2]:.2f}) | "
+                f"coverage {meta['coverage'] * 100.0:.1f}%"
+            )
+        else:
+            center = meta["center"]
+            rot = meta["rot"]
+            prefix = (
+                f"oblique center=({center[0]:.1f}, {center[1]:.1f}, {center[2]:.1f}) | "
+                f"rot=({rot[0]:.1f}, {rot[1]:.1f}, {rot[2]:.1f}) | "
+                f"coverage {meta['coverage'] * 100.0:.1f}%"
+            )
 
         if click_xy is None:
             status = f"{prefix} | click image to choose target"
@@ -1298,23 +1640,36 @@ class AppData:
         rot_x_deg: float,
         rot_y_deg: float,
         rot_z_deg: float,
+        plane_points_world_mm=None,
     ):
-        sampled, meta = self.sample_oblique_volume_section(
-            center_z,
-            center_y,
-            center_x,
-            rot_x_deg,
-            rot_y_deg,
-            rot_z_deg,
-        )
+        if plane_points_world_mm is not None:
+            sampled, meta = self.sample_three_point_plane_section(plane_points_world_mm)
+        else:
+            sampled, meta = self.sample_oblique_volume_section(
+                center_z,
+                center_y,
+                center_x,
+                rot_x_deg,
+                rot_y_deg,
+                rot_z_deg,
+            )
         disp = _auto_window_uint8(sampled, lo_pct=0.5, hi_pct=99.7)
-        center = meta["center"]
-        rot = meta["rot"]
-        status = (
-            f"center(z,y,x)=({center[0]:.1f}, {center[1]:.1f}, {center[2]:.1f}) | "
-            f"rot(x,y,z)=({rot[0]:.1f}, {rot[1]:.1f}, {rot[2]:.1f}) deg | "
-            f"coverage {meta['coverage'] * 100.0:.1f}%"
-        )
+        if meta.get("mode") == "three-point":
+            center = meta["center_world_mm"]
+            normal = meta["normal"]
+            status = (
+                f"3-point plane | center_world_mm=({center[0]:.1f}, {center[1]:.1f}, {center[2]:.1f}) | "
+                f"normal=({normal[0]:.2f}, {normal[1]:.2f}, {normal[2]:.2f}) | "
+                f"coverage {meta['coverage'] * 100.0:.1f}%"
+            )
+        else:
+            center = meta["center"]
+            rot = meta["rot"]
+            status = (
+                f"center(z,y,x)=({center[0]:.1f}, {center[1]:.1f}, {center[2]:.1f}) | "
+                f"rot(x,y,z)=({rot[0]:.1f}, {rot[1]:.1f}, {rot[2]:.1f}) deg | "
+                f"coverage {meta['coverage'] * 100.0:.1f}%"
+            )
         return disp, status
 
     def image_plane_outline_trace(self, T_pol_probe):
@@ -1445,7 +1800,21 @@ class AppData:
             hovertemplate="%{text}<extra></extra>",
         )
 
-def _render_3d_view(pose_idx, axial_slice, coronal_slice, sagittal_slice):
+def _render_3d_view(
+    pose_idx,
+    axial_slice,
+    coronal_slice,
+    sagittal_slice,
+    oblique_center_z,
+    oblique_center_y,
+    oblique_center_x,
+    oblique_rot_x,
+    oblique_rot_y,
+    oblique_rot_z,
+    show_us_probe_items=True,
+    show_mri_surface=True,
+    show_mri_markers=True,
+):
     pose_idx = int(np.clip(pose_idx, 0, len(DATA.poses) - 1))
     pose = DATA.poses[pose_idx]
     frame_idx = DATA.pose_idx_to_frame_idx(pose_idx)
@@ -1459,18 +1828,44 @@ def _render_3d_view(pose_idx, axial_slice, coronal_slice, sagittal_slice):
     coronal_outline = DATA.mri_slice_outline_trace("coronal", coronal_slice)
     sagittal_surface = DATA.mri_slice_surface_trace("sagittal", sagittal_slice)
     sagittal_outline = DATA.mri_slice_outline_trace("sagittal", sagittal_slice)
-    fig = go.Figure(data=[
-        *DATA.static_3d_traces,
+    oblique_surface = DATA.oblique_plane_surface_trace(
+        oblique_center_z,
+        oblique_center_y,
+        oblique_center_x,
+        oblique_rot_x,
+        oblique_rot_y,
+        oblique_rot_z,
+    )
+    oblique_outline = DATA.oblique_plane_outline_trace(
+        oblique_center_z,
+        oblique_center_y,
+        oblique_center_x,
+        oblique_rot_x,
+        oblique_rot_y,
+        oblique_rot_z,
+    )
+    fig_traces = [
+        DATA.mri_volume_outline_trace(),
         axial_surface,
         coronal_surface,
         sagittal_surface,
         axial_outline,
         coronal_outline,
         sagittal_outline,
-        probe_trace,
-        needle_trace,
-        plane_surface,
-    ])
+        oblique_surface,
+        oblique_outline,
+    ]
+    if show_mri_markers:
+        fig_traces.append(DATA.mri_marker_3d_trace)
+    if show_mri_surface:
+        fig_traces.append(DATA.mri_surface_trace())
+    if show_us_probe_items:
+        fig_traces.extend([
+            probe_trace,
+            needle_trace,
+            plane_surface,
+        ])
+    fig = go.Figure(data=fig_traces)
     fig.update_layout(
         scene=dict(
             aspectmode="data",
@@ -1482,10 +1877,15 @@ def _render_3d_view(pose_idx, axial_slice, coronal_slice, sagittal_slice):
         paper_bgcolor="#ffffff",
         margin=dict(l=0, r=0, b=0, t=0),
         showlegend=False,
+        uirevision="view-3d-static",
     )
     msg = (
         f"pose_idx={pose_idx} | pose_time_ns={pose.t_ns} | "
         f"matched_frame={frame_idx} | frame_time_ns={DATA.frame_time_ns(frame_idx)} | "
+        f"video_offset={DATA.video_time_offset_sec:+.5f}s | "
+        f"mri_g_offset={DATA.mri_g_offset_mm:+.1f}mm | "
+        f"oblique_center=({float(oblique_center_z):.1f}, {float(oblique_center_y):.1f}, {float(oblique_center_x):.1f}) | "
+        f"oblique_rot=({float(oblique_rot_x):.1f}, {float(oblique_rot_y):.1f}, {float(oblique_rot_z):.1f}) | "
         f"mri_markers={len(DATA.mri_marker_names)}"
     )
     return fig, msg
@@ -1527,6 +1927,12 @@ INITIAL_FIG, INITIAL_MSG = _render_3d_view(
     DATA.slice_default["axial"],
     DATA.slice_default["coronal"],
     DATA.slice_default["sagittal"],
+    DATA.oblique_center_default["z"],
+    DATA.oblique_center_default["y"],
+    DATA.oblique_center_default["x"],
+    0.0,
+    0.0,
+    0.0,
 )
 
 _PANEL_STYLE = {
@@ -1547,6 +1953,25 @@ _MRI_IMG_STYLE = {
     "background": "#000",
     "flex": "1 1 auto",
     "minHeight": "0",
+}
+
+_COMPACT_PANEL_IMAGE_STYLE = {
+    "display": "block",
+    "width": "88%",
+    "height": "88%",
+    "objectFit": "contain",
+    "margin": "auto",
+    "background": "#000",
+}
+
+_COMPACT_PANEL_IMAGE_WRAP_STYLE = {
+    "flex": "1 1 auto",
+    "minHeight": "0",
+    "background": "#000",
+    "display": "flex",
+    "alignItems": "center",
+    "justifyContent": "center",
+    "padding": "16px",
 }
 
 _CONTROL_BLOCK_STYLE = {
@@ -1581,6 +2006,21 @@ def _slice_status_text(slice_idx: int, marker_count: int):
     return f"Slice {int(slice_idx)} | {marker_count} {suffix}"
 
 
+def _sync_offset_sec_from_mode(mode_value: str):
+    mode_value = str(mode_value or "none")
+    offset_sec = float(getattr(DATA, "tracker_local_time_offset_sec", 0.0))
+    if mode_value == "plus":
+        return offset_sec
+    if mode_value == "minus":
+        return -offset_sec
+    return 0.0
+
+
+def _apply_runtime_offsets(video_sync_mode=None):
+    if video_sync_mode is not None:
+        DATA.video_time_offset_sec = _sync_offset_sec_from_mode(video_sync_mode)
+
+
 def _timeline_ids(prefix: str):
     if not prefix:
         return {
@@ -1588,12 +2028,14 @@ def _timeline_ids(prefix: str):
             "toggle": "play-toggle",
             "slider": "pose-slider",
             "frame_info": "frame-info",
+            "sync_mode": "video-sync-mode",
         }
     return {
         "interval": f"{prefix}-play-interval",
         "toggle": f"{prefix}-play-toggle",
         "slider": f"{prefix}-pose-slider",
         "frame_info": f"{prefix}-frame-info",
+        "sync_mode": f"{prefix}-video-sync-mode",
     }
 
 
@@ -1610,6 +2052,18 @@ def _timeline_controls(prefix: str, initial_msg: str):
                         f"{DATA.play_interval_ms} ms / step",
                         style={"fontSize": "12px", "color": "#4b5563"},
                     ),
+                    dcc.Dropdown(
+                        id=ids["sync_mode"],
+                        options=[
+                            {"label": "Video Sync: None", "value": "none"},
+                            {"label": f"Video Sync: +{DATA.tracker_local_time_offset_sec:.5f}s", "value": "plus"},
+                            {"label": f"Video Sync: -{DATA.tracker_local_time_offset_sec:.5f}s", "value": "minus"},
+                        ],
+                        value="none",
+                        clearable=False,
+                        searchable=False,
+                        style={"width": "210px", "fontSize": "12px"},
+                    ),
                 ], style={"display": "flex", "alignItems": "center", "gap": "10px"}),
             ], style={"display": "flex", "justifyContent": "space-between", "alignItems": "center"}),
             dcc.Slider(
@@ -1625,6 +2079,56 @@ def _timeline_controls(prefix: str, initial_msg: str):
             html.Div(id=ids["frame_info"], children=initial_msg, style={"marginTop": "8px", "fontSize": "14px"}),
         ], style={"padding": "12px 16px", "background": "#f3f4f6", "borderBottom": "1px solid #d1d5db"}),
     ])
+
+
+def _oblique_ids():
+    return {
+        "center_z": "oblique-center-z",
+        "center_y": "oblique-center-y",
+        "center_x": "oblique-center-x",
+        "rot_x": "oblique-rot-x",
+        "rot_y": "oblique-rot-y",
+        "rot_z": "oblique-rot-z",
+    }
+
+
+OBLIQUE_IDS = _oblique_ids()
+
+
+def _oblique_slider_control(label: str, slider_id: str, min_value: float, max_value: float, value: float, step: float = 1.0):
+    return html.Div([
+        html.Div(label, style={"fontSize": "12px", "marginBottom": "2px"}),
+        dcc.Slider(
+            min_value,
+            max_value,
+            step,
+            value=value,
+            id=slider_id,
+            marks=None,
+            updatemode="drag",
+            tooltip={"placement": "top", "always_visible": False},
+        ),
+    ], style={"minWidth": "0"})
+
+
+def _oblique_controls():
+    ids = OBLIQUE_IDS
+    return html.Div([
+        html.Div(
+            "Adjust the arbitrary section with these sliders. The same plane is shown in the 3D view.",
+            style={"fontSize": "12px", "lineHeight": "1.4", "marginBottom": "8px"},
+        ),
+        html.Div([
+            _oblique_slider_control("Center Z", ids["center_z"], 0, DATA.volume.shape[0] - 1, DATA.oblique_center_default["z"]),
+            _oblique_slider_control("Center Y", ids["center_y"], 0, DATA.volume.shape[1] - 1, DATA.oblique_center_default["y"]),
+            _oblique_slider_control("Center X", ids["center_x"], 0, DATA.volume.shape[2] - 1, DATA.oblique_center_default["x"]),
+        ], style={"display": "grid", "gridTemplateColumns": "repeat(3, minmax(0, 1fr))", "gap": "10px"}),
+        html.Div([
+            _oblique_slider_control("Rotate X", ids["rot_x"], -180, 180, 0),
+            _oblique_slider_control("Rotate Y", ids["rot_y"], -180, 180, 0),
+            _oblique_slider_control("Rotate Z", ids["rot_z"], -180, 180, 0),
+        ], style={"display": "grid", "gridTemplateColumns": "repeat(3, minmax(0, 1fr))", "gap": "10px", "marginTop": "8px"}),
+    ], style=_CONTROL_BLOCK_STYLE)
 
 
 def _mri_panel(panel_id: str, title: str, color: str, img_src: str, slice_max: int, slice_default: int, status_text: str):
@@ -1683,13 +2187,7 @@ def _clickable_image_panel(img_id: str, overlay_id: str, img_src: str):
         html.Img(
             id=img_id,
             src=img_src,
-            style={
-                "display": "block",
-                "maxWidth": "100%",
-                "maxHeight": "100%",
-                "margin": "auto",
-                "background": "#000",
-            },
+            style=_COMPACT_PANEL_IMAGE_STYLE,
         ),
         html.Div(
             id=overlay_id,
@@ -1708,6 +2206,7 @@ def _clickable_image_panel(img_id: str, overlay_id: str, img_src: str):
         "display": "flex",
         "alignItems": "center",
         "justifyContent": "center",
+        "padding": "16px",
     })
 
 
@@ -1733,32 +2232,15 @@ def _volume_sampler_panel(img_src: str, status_text: str):
             html.Span("3D Volume Arbitrary Section"),
             html.Span(id="volume-sampler-status", children=status_text),
         ], style=_slice_header_style("#22c55e")),
-        html.Div(
-            "Move center Z/Y/X and rotate X/Y/Z to sample any oblique section through the MRI volume.",
-            style={**_CONTROL_BLOCK_STYLE, "fontSize": "12px", "lineHeight": "1.4"},
-        ),
+        _oblique_controls(),
         html.Div([
-            html.Div([
-                html.Div("Center Z", style={"fontSize": "12px", "marginBottom": "2px"}),
-                dcc.Slider(0, DATA.volume.shape[0] - 1, 1, value=DATA.oblique_center_default["z"], id="oblique-center-z", marks=None, tooltip={"placement": "top", "always_visible": False}),
-                html.Div("Center Y", style={"fontSize": "12px", "marginTop": "8px", "marginBottom": "2px"}),
-                dcc.Slider(0, DATA.volume.shape[1] - 1, 1, value=DATA.oblique_center_default["y"], id="oblique-center-y", marks=None, tooltip={"placement": "top", "always_visible": False}),
-                html.Div("Center X", style={"fontSize": "12px", "marginTop": "8px", "marginBottom": "2px"}),
-                dcc.Slider(0, DATA.volume.shape[2] - 1, 1, value=DATA.oblique_center_default["x"], id="oblique-center-x", marks=None, tooltip={"placement": "top", "always_visible": False}),
-                html.Div("Rotate X", style={"fontSize": "12px", "marginTop": "8px", "marginBottom": "2px"}),
-                dcc.Slider(-90, 90, 1, value=0, id="oblique-rot-x", marks=None, tooltip={"placement": "top", "always_visible": False}),
-                html.Div("Rotate Y", style={"fontSize": "12px", "marginTop": "8px", "marginBottom": "2px"}),
-                dcc.Slider(-90, 90, 1, value=0, id="oblique-rot-y", marks=None, tooltip={"placement": "top", "always_visible": False}),
-                html.Div("Rotate Z", style={"fontSize": "12px", "marginTop": "8px", "marginBottom": "2px"}),
-                dcc.Slider(-180, 180, 1, value=0, id="oblique-rot-z", marks=None, tooltip={"placement": "top", "always_visible": False}),
-            ], style={**_CONTROL_BLOCK_STYLE, "overflowY": "auto"}),
             html.Div(
-                html.Img(id="volume-sampler-img", src=img_src, style=_MRI_IMG_STYLE),
-                style={"flex": "1 1 auto", "minHeight": "0", "background": "#000"},
+                html.Img(id="volume-sampler-img", src=img_src, style=_COMPACT_PANEL_IMAGE_STYLE),
+                style=_COMPACT_PANEL_IMAGE_WRAP_STYLE,
             ),
         ], style={
             "display": "grid",
-            "gridTemplateColumns": "320px minmax(0, 1fr)",
+            "gridTemplateColumns": "minmax(0, 1fr)",
             "gap": "1px",
             "background": "#1d1d1d",
             "flex": "1 1 auto",
@@ -1770,6 +2252,7 @@ def _volume_sampler_panel(img_src: str, status_text: str):
 def _main_page_layout():
     return html.Div([
         dcc.Store(id="straight-line-target-store"),
+        dcc.Store(id="view-3d-visibility", data={"show_us_probe": True, "show_mri_surface": True, "show_mri_markers": True}),
         _timeline_controls("", INITIAL_MSG),
         html.Div([
             _mri_panel("axial", DATA.panel_configs["axial"]["title"], DATA.panel_configs["axial"]["color"], INITIAL_AXIAL, DATA.slice_max["axial"], DATA.slice_default["axial"], _slice_status_text(DATA.slice_default["axial"], INITIAL_AXIAL_MARKERS)),
@@ -1778,7 +2261,21 @@ def _main_page_layout():
                     html.Span("3D"),
                     html.Span("Probe / MRI / Needle"),
                 ], style=_slice_header_style("#8b93ff")),
-                dcc.Graph(id="view-3d", figure=INITIAL_FIG, style={"height": "calc(100% - 42px)"}),
+                html.Div([
+                    dcc.Checklist(
+                        id="view-3d-visibility-toggle",
+                        options=[
+                            {"label": "Show US / Probe", "value": "show_us_probe"},
+                            {"label": "Show MRI Surface", "value": "show_mri_surface"},
+                            {"label": "Show MRI Markers", "value": "show_mri_markers"},
+                        ],
+                        value=["show_us_probe", "show_mri_surface", "show_mri_markers"],
+                        inline=True,
+                        style={"fontSize": "13px", "color": "#111827"},
+                        inputStyle={"marginRight": "6px", "marginLeft": "10px"},
+                    ),
+                ], style={"display": "flex", "alignItems": "center", "gap": "10px", "padding": "8px 12px", "background": "#f3f4f6", "borderBottom": "1px solid #d1d5db", "flexWrap": "wrap"}),
+                dcc.Graph(id="view-3d", figure=INITIAL_FIG, style={"height": "calc(100% - 92px)"}),
             ], style={**_PANEL_STYLE, "height": "100%", "background": "#ffffff"}),
             html.Div(
                 _resample_panel(INITIAL_RESAMPLE, INITIAL_RESAMPLE_STATUS),
@@ -1857,6 +2354,19 @@ def handle_playback(play_clicks, n_intervals, pose_idx, is_disabled):
 
 
 @app.callback(
+    Output("view-3d-visibility", "data"),
+    Input("view-3d-visibility-toggle", "value"),
+)
+def update_3d_visibility(toggle_values):
+    values = set(toggle_values or [])
+    return {
+        "show_us_probe": "show_us_probe" in values,
+        "show_mri_surface": "show_mri_surface" in values,
+        "show_mri_markers": "show_mri_markers" in values,
+    }
+
+
+@app.callback(
     Output("axial-slice", "value"),
     Output("coronal-slice", "value"),
     Output("sagittal-slice", "value"),
@@ -1875,12 +2385,49 @@ def sync_slices_to_pose(pose_idx):
     Output("view-3d", "figure"),
     Output("frame-info", "children"),
     Input("pose-slider", "value"),
+    Input("video-sync-mode", "value"),
     Input("axial-slice", "value"),
     Input("coronal-slice", "value"),
     Input("sagittal-slice", "value"),
+    Input(OBLIQUE_IDS["center_z"], "value"),
+    Input(OBLIQUE_IDS["center_y"], "value"),
+    Input(OBLIQUE_IDS["center_x"], "value"),
+    Input(OBLIQUE_IDS["rot_x"], "value"),
+    Input(OBLIQUE_IDS["rot_y"], "value"),
+    Input(OBLIQUE_IDS["rot_z"], "value"),
+    Input("view-3d-visibility", "data"),
 )
-def update_3d_view(pose_idx, axial_slice, coronal_slice, sagittal_slice):
-    fig, msg = _render_3d_view(pose_idx, axial_slice, coronal_slice, sagittal_slice)
+def update_3d_view(
+    pose_idx,
+    video_sync_mode,
+    axial_slice,
+    coronal_slice,
+    sagittal_slice,
+    oblique_center_z,
+    oblique_center_y,
+    oblique_center_x,
+    oblique_rot_x,
+    oblique_rot_y,
+    oblique_rot_z,
+    visibility_cfg,
+):
+    _apply_runtime_offsets(video_sync_mode=video_sync_mode)
+    visibility_cfg = visibility_cfg or {}
+    fig, msg = _render_3d_view(
+        pose_idx,
+        axial_slice,
+        coronal_slice,
+        sagittal_slice,
+        oblique_center_z,
+        oblique_center_y,
+        oblique_center_x,
+        oblique_rot_x,
+        oblique_rot_y,
+        oblique_rot_z,
+        show_us_probe_items=bool(visibility_cfg.get("show_us_probe", True)),
+        show_mri_surface=bool(visibility_cfg.get("show_mri_surface", True)),
+        show_mri_markers=bool(visibility_cfg.get("show_mri_markers", True)),
+    )
     return fig, msg
 
 
@@ -1898,20 +2445,22 @@ def update_probe_resample(pose_idx):
     Output("us-hq-img", "src"),
     Output("us-hq-status", "children"),
     Input("pose-slider", "value"),
+    Input("video-sync-mode", "value"),
 )
-def update_us_hq(pose_idx):
+def update_us_hq(pose_idx, video_sync_mode):
+    _apply_runtime_offsets(video_sync_mode=video_sync_mode)
     img_arr, status = DATA.render_hq_us_slice(pose_idx)
     return _b64_img(img_arr), status
 
 
 @app.callback(
     Output("straight-line-target-store", "data"),
-    Input("oblique-center-z", "value"),
-    Input("oblique-center-y", "value"),
-    Input("oblique-center-x", "value"),
-    Input("oblique-rot-x", "value"),
-    Input("oblique-rot-y", "value"),
-    Input("oblique-rot-z", "value"),
+    Input(OBLIQUE_IDS["center_z"], "value"),
+    Input(OBLIQUE_IDS["center_y"], "value"),
+    Input(OBLIQUE_IDS["center_x"], "value"),
+    Input(OBLIQUE_IDS["rot_x"], "value"),
+    Input(OBLIQUE_IDS["rot_y"], "value"),
+    Input(OBLIQUE_IDS["rot_z"], "value"),
 )
 def reset_straight_line_target(center_z, center_y, center_x, rot_x, rot_y, rot_z):
     del center_z, center_y, center_x, rot_x, rot_y, rot_z
@@ -1922,27 +2471,27 @@ def reset_straight_line_target(center_z, center_y, center_x, rot_x, rot_y, rot_z
     Output("straight-line-img", "src"),
     Output("straight-line-status", "children"),
     Output("straight-line-click-text", "children"),
-    Input("oblique-center-z", "value"),
-    Input("oblique-center-y", "value"),
-    Input("oblique-center-x", "value"),
-    Input("oblique-rot-x", "value"),
-    Input("oblique-rot-y", "value"),
-    Input("oblique-rot-z", "value"),
     Input("straight-line-target-store", "data"),
+    Input(OBLIQUE_IDS["center_z"], "value"),
+    Input(OBLIQUE_IDS["center_y"], "value"),
+    Input(OBLIQUE_IDS["center_x"], "value"),
+    Input(OBLIQUE_IDS["rot_x"], "value"),
+    Input(OBLIQUE_IDS["rot_y"], "value"),
+    Input(OBLIQUE_IDS["rot_z"], "value"),
 )
-def update_straight_line_panel(center_z, center_y, center_x, rot_x, rot_y, rot_z, target_data):
+def update_straight_line_panel(target_data, center_z, center_y, center_x, rot_x, rot_y, rot_z):
     click_xy = None
     click_text = "Clicked target: waiting for click"
     if target_data and "x" in target_data and "y" in target_data:
         click_xy = (target_data["x"], target_data["y"])
         click_text = f"Clicked target: x={click_xy[0]:.1f}, y={click_xy[1]:.1f}"
     img_arr, status, marker_xy = DATA.render_straight_line_planner(
-        DATA.oblique_center_default["z"] if center_z is None else center_z,
-        DATA.oblique_center_default["y"] if center_y is None else center_y,
-        DATA.oblique_center_default["x"] if center_x is None else center_x,
-        0.0 if rot_x is None else rot_x,
-        0.0 if rot_y is None else rot_y,
-        0.0 if rot_z is None else rot_z,
+        center_z,
+        center_y,
+        center_x,
+        rot_x,
+        rot_y,
+        rot_z,
         click_xy=click_xy,
     )
     del marker_xy
@@ -1952,21 +2501,21 @@ def update_straight_line_panel(center_z, center_y, center_x, rot_x, rot_y, rot_z
 @app.callback(
     Output("volume-sampler-img", "src"),
     Output("volume-sampler-status", "children"),
-    Input("oblique-center-z", "value"),
-    Input("oblique-center-y", "value"),
-    Input("oblique-center-x", "value"),
-    Input("oblique-rot-x", "value"),
-    Input("oblique-rot-y", "value"),
-    Input("oblique-rot-z", "value"),
+    Input(OBLIQUE_IDS["center_z"], "value"),
+    Input(OBLIQUE_IDS["center_y"], "value"),
+    Input(OBLIQUE_IDS["center_x"], "value"),
+    Input(OBLIQUE_IDS["rot_x"], "value"),
+    Input(OBLIQUE_IDS["rot_y"], "value"),
+    Input(OBLIQUE_IDS["rot_z"], "value"),
 )
 def update_volume_sampler(center_z, center_y, center_x, rot_x, rot_y, rot_z):
     img_arr, status = DATA.render_oblique_volume_section(
-        DATA.oblique_center_default["z"] if center_z is None else center_z,
-        DATA.oblique_center_default["y"] if center_y is None else center_y,
-        DATA.oblique_center_default["x"] if center_x is None else center_x,
-        0.0 if rot_x is None else rot_x,
-        0.0 if rot_y is None else rot_y,
-        0.0 if rot_z is None else rot_z,
+        center_z,
+        center_y,
+        center_x,
+        rot_x,
+        rot_y,
+        rot_z,
     )
     return _b64_img(img_arr), status
 
