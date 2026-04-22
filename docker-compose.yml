@@ -218,7 +218,7 @@ services:
   ati_ft_driver:
     <<: *ros_app
     container_name: "${COMPOSE_PROJECT_NAME:-ros2}-ati-ft-driver"
-    profiles: ["default", "dev", "ati_test"]
+    profiles: ["default", "dev", "ati_test", "ur_test"]
     command: >
       bash -lc "
         if [ -f /opt/ati_ws/install/setup.bash ]; then source /opt/ati_ws/install/setup.bash; fi;
