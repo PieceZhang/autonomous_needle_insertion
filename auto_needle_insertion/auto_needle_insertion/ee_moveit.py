@@ -104,7 +104,24 @@ class ForceZMonitor:
             f"Collecting force Z offset from {self.topic_name} for "
             f"{FORCE_Z_OFFSET_COLLECTION_SEC:.1f} s"
         )
-        time.sleep(FORCE_Z_OFFSET_COLLECTION_SEC)
+        start_time = time.monotonic()
+        next_status_time = start_time
+        while True:
+            elapsed = time.monotonic() - start_time
+            if elapsed >= FORCE_Z_OFFSET_COLLECTION_SEC:
+                break
+            if time.monotonic() >= next_status_time:
+                progress = min(elapsed / FORCE_Z_OFFSET_COLLECTION_SEC, 1.0)
+                bar_width = 20
+                filled = int(progress * bar_width)
+                bar = "#" * filled + "-" * (bar_width - filled)
+                logger.info(
+                    f"Force Z offset collection [{bar}] "
+                    f"{elapsed:.1f}/{FORCE_Z_OFFSET_COLLECTION_SEC:.1f} s"
+                )
+                next_status_time += 0.5
+            time.sleep(0.05)
+
         with self._offset_lock:
             self._collecting_offset = False
             sample_count = len(self._offset_samples)
@@ -138,7 +155,6 @@ class ForceZMonitor:
         with self._offset_lock:
             if self._collecting_offset:
                 self._offset_samples.append(raw_force_z)
-                logger.info(f"Force Z offset sample: {raw_force_z:.3f} N")
                 return
             force_offset = self.force_offset
 
