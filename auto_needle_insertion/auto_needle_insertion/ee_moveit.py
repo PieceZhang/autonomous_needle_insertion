@@ -27,18 +27,17 @@ from typing import List, Tuple
 import numpy as np
 import rclpy
 from action_msgs.srv import CancelGoal
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, WrenchStamped
 from moveit.core.robot_state import RobotState
 from moveit.planning import MoveItPy, PlanRequestParameters
 from rclpy.executors import SingleThreadedExecutor
-from std_msgs.msg import Float64
 
 # Module constants
 NODE_NAME = "auto_needle_insertion"
 DEFAULT_TRAJECTORY = "square"
 SQUARE_EDGE_LENGTH = 0.2  # meters
 APPROACH_DISTANCE = 0.3  # meters
-APPROACH_FORCE_Z_TOPIC = "/ati_ft_broadcaster/wrench/force/z"
+APPROACH_FORCE_Z_TOPIC = "/ati_ft_broadcaster/wrench"
 APPROACH_FORCE_Z_LIMIT = -10.0  # N
 LOG_FORCE_Z_INFO = False
 MAX_VELOCITY_SCALING = 0.2
@@ -68,7 +67,7 @@ logger = logging.getLogger(__name__)
 
 
 class ForceZMonitor:
-    """Monitor scalar force Z and cancel active trajectory goals below a limit."""
+    """Monitor wrench force Z and cancel active trajectory goals below a limit."""
 
     def __init__(
         self,
@@ -87,7 +86,7 @@ class ForceZMonitor:
             self._node.create_client(CancelGoal, service_name)
             for service_name in cancel_services
         ]
-        self._sub = self._node.create_subscription(Float64, topic_name, self._force_cb, 10)
+        self._sub = self._node.create_subscription(WrenchStamped, topic_name, self._force_cb, 10)
         self._spin_thread = threading.Thread(target=self._spin, daemon=True)
 
     @property
@@ -113,16 +112,18 @@ class ForceZMonitor:
         while not self._stop_spin.is_set() and rclpy.ok():
             self._executor.spin_once(timeout_sec=0.05)
 
-    def _force_cb(self, msg: Float64) -> None:
-        if LOG_FORCE_Z_INFO:
-            logger.info(f"Force Z: {msg.data:.3f} N")
+    def _force_cb(self, msg: WrenchStamped) -> None:
+        force_z = msg.wrench.force.z
 
-        if msg.data >= self.force_limit or self._triggered.is_set():
+        if LOG_FORCE_Z_INFO:
+            logger.info(f"Force Z: {force_z:.3f} N")
+
+        if force_z >= self.force_limit or self._triggered.is_set():
             return
 
         self._triggered.set()
         logger.warning(
-            f"Force Z {msg.data:.3f} N fell below {self.force_limit:.3f} N; "
+            f"Force Z {force_z:.3f} N fell below {self.force_limit:.3f} N; "
             "canceling active approach trajectory"
         )
         self._cancel_active_goals()
