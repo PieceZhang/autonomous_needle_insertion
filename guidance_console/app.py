@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import base64
+import atexit
 import csv
 import io
 import json
+import logging
 import os
 import socket
+import sys
 import threading
+import time
 import xml.etree.ElementTree as ET
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,6 +42,24 @@ try:
 except Exception as exc:
     straight_line_planner_module = None
     STRAIGHT_LINE_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
+
+try:
+    import rclpy
+    from geometry_msgs.msg import PoseStamped
+    from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
+    from rclpy.node import Node
+    from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
+except Exception:
+    rclpy = None
+    PoseStamped = None
+    SingleThreadedExecutor = None
+    Node = object
+    QoSProfile = None
+    ReliabilityPolicy = None
+    HistoryPolicy = None
+
+    class ExternalShutdownException(Exception):
+        pass
 
 MRI_SURFACE_PICK_TAG = "mri-surface"
 TRACKER_DEVICE_ID = "TrackerDevice"
@@ -77,6 +99,181 @@ def _quat_to_rot(qx, qy, qz, qw):
         dtype=np.float64,
     )
 
+
+def _stamp_to_ns(stamp) -> int:
+    return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+
+
+class _LiveProbeNode(Node):
+    def __init__(self, logger: logging.Logger, topic: str):
+        super().__init__("guidance_console_live_probe")
+        self._logger = logger
+        self._topic = topic
+        self._lock = threading.Lock()
+        self._latest_t_ns = None
+        self._latest_T_pol_probe = None
+        self._msg_count = 0
+        self._pose_buffer = deque(maxlen=int(os.environ.get("UI_LIVE_PROBE_BUFFER_SIZE", "300")))
+
+        pose_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+        )
+        self.create_subscription(
+            PoseStamped,
+            self._topic,
+            self._on_probe_pose,
+            qos_profile=pose_qos,
+        )
+
+    def _on_probe_pose(self, msg: PoseStamped):
+        p = msg.pose.position
+        q = msg.pose.orientation
+        T = np.eye(4, dtype=np.float64)
+        T[:3, :3] = _quat_to_rot(q.x, q.y, q.z, q.w)
+        T[:3, 3] = [p.x, p.y, p.z]
+        t_ns = _stamp_to_ns(msg.header.stamp)
+        with self._lock:
+            self._latest_t_ns = t_ns
+            self._latest_T_pol_probe = T
+            self._msg_count += 1
+            self._pose_buffer.append((t_ns, T.copy()))
+
+    def latest_probe_pose(self):
+        with self._lock:
+            if self._latest_T_pol_probe is None:
+                return None, None
+            return self._latest_t_ns, self._latest_T_pol_probe.copy()
+
+    def closest_probe_pose(self, target_t_ns: int, max_delta_ns: int):
+        with self._lock:
+            if not self._pose_buffer:
+                return None, None
+            best_t_ns, best_T = min(self._pose_buffer, key=lambda item: abs(item[0] - target_t_ns))
+            if abs(best_t_ns - target_t_ns) > max_delta_ns:
+                return None, None
+            return int(best_t_ns), best_T.copy()
+
+    def diagnostics(self):
+        with self._lock:
+            return {
+                "topic": self._topic,
+                "probe_msg_count": self._msg_count,
+                "last_probe_ns": self._latest_t_ns,
+                "buffer_size": len(self._pose_buffer),
+            }
+
+
+class LiveProbeBridge:
+    def __init__(self):
+        self._logger = logging.getLogger("guidance_console.live_probe")
+        if not self._logger.handlers:
+            handler = logging.StreamHandler(stream=sys.stdout)
+            handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s"))
+            self._logger.addHandler(handler)
+        self._logger.setLevel((os.environ.get("UI_LOG_LEVEL") or "INFO").upper())
+        self._logger.propagate = False
+
+        self._topic = os.environ.get("UI_PROBE_POSE_TOPIC", "/ndi/us_probe_pose")
+        self._enabled = rclpy is not None
+        self._node = None
+        self._executor = None
+        self._thread = None
+        self._running = False
+        self._start_error = ""
+        self._owns_rclpy_context = False
+        self._close_lock = threading.Lock()
+        self._closed = False
+
+        if not self._enabled:
+            self._start_error = "rclpy unavailable"
+            return
+
+        try:
+            if not rclpy.ok():
+                rclpy.init(args=None)
+                self._owns_rclpy_context = True
+            self._node = _LiveProbeNode(self._logger, self._topic)
+            self._executor = SingleThreadedExecutor()
+            self._executor.add_node(self._node)
+            self._running = True
+            self._thread = threading.Thread(target=self._spin, daemon=True)
+            self._thread.start()
+            self._logger.info("live probe bridge started topic=%s", self._topic)
+        except Exception as exc:
+            self._start_error = f"{type(exc).__name__}: {exc}"
+            self._running = False
+            self._logger.exception("live probe bridge startup failed: %s", self._start_error)
+
+    @property
+    def available(self) -> bool:
+        return self._running and self._node is not None
+
+    @property
+    def start_error(self) -> str:
+        if self._start_error:
+            return self._start_error
+        if self._node is None:
+            return ""
+        diag = self._node.diagnostics()
+        if diag["probe_msg_count"] == 0:
+            return f"no probe pose received on {diag['topic']}"
+        return ""
+
+    def _spin(self):
+        while self._running and self._executor is not None:
+            if rclpy is None or not rclpy.ok():
+                self._start_error = "rclpy context is not valid"
+                self._logger.warning("live probe spin loop stopped: %s", self._start_error)
+                break
+            try:
+                self._executor.spin_once(timeout_sec=0.2)
+            except ExternalShutdownException:
+                self._logger.info("live probe spin loop stopped: external shutdown")
+                break
+            except Exception as exc:
+                self._start_error = f"spin failed: {type(exc).__name__}: {exc}"
+                self._logger.warning("live probe spin loop stopped: %s", self._start_error)
+                break
+        self._running = False
+
+    def latest_probe_pose(self):
+        if not self.available:
+            return None, None
+        return self._node.latest_probe_pose()
+
+    def probe_pose_for_time(self, target_t_ns: int, max_delta_ns: int):
+        if not self.available:
+            return None, None
+        return self._node.closest_probe_pose(target_t_ns, max_delta_ns)
+
+    def close(self):
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+
+        self._running = False
+        if self._executor is not None:
+            try:
+                self._executor.shutdown(timeout_sec=0.5)
+            except Exception:
+                pass
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        if self._executor is not None and self._node is not None:
+            try:
+                self._executor.remove_node(self._node)
+            except Exception:
+                pass
+        if self._node is not None:
+            try:
+                self._node.destroy_node()
+            except Exception:
+                pass
+        if self._owns_rclpy_context and rclpy is not None and rclpy.ok():
+            rclpy.shutdown()
 
 def _load_transform(root: ET.Element, frm: str, to: str):
     elem = root.find(f".//Transform[@From='{frm}'][@To='{to}']")
@@ -773,6 +970,9 @@ def _sample_trilinear(vol, xyz):
 
 class AppData:
     def __init__(self):
+        self.live_probe = LiveProbeBridge()
+        self.live_probe_max_age_sec = float(os.environ.get("UI_LIVE_PROBE_MAX_AGE_SEC", "1.0"))
+        self.live_probe_match_max_delta_sec = float(os.environ.get("UI_LIVE_PROBE_MATCH_MAX_DELTA_SEC", "0.25"))
         self.volume, self.spacing_m, self.patient_mm_to_voxel = _read_volume()
         self.spacing_zyx_mm = self.spacing_m * 1e3
         self.volume_extent_zyx_mm = np.maximum(np.asarray(self.volume.shape, dtype=np.float64) - 1.0, 1.0) * self.spacing_zyx_mm
@@ -896,6 +1096,29 @@ class AppData:
             print(f"MRI surface reconstruction unavailable: {exc}")
             self.mri_surface_base = None
         self.mri_marker_3d_trace = self.mri_marker_trace()
+
+    def close(self):
+        self.live_probe.close()
+
+    def active_probe_pose(self, pose_idx: int):
+        pose_idx = int(np.clip(pose_idx, 0, len(self.poses) - 1))
+        recorded_pose = self.poses[pose_idx]
+        target_t_ns = int(recorded_pose.t_ns + round(self.video_time_offset_sec * 1e9))
+        max_delta_ns = int(max(1.0, self.live_probe_match_max_delta_sec * 1e9))
+
+        live_t_ns, live_T = self.live_probe.probe_pose_for_time(target_t_ns, max_delta_ns)
+        if live_T is not None and live_t_ns is not None:
+            age_sec = max(0.0, (time.time_ns() - int(live_t_ns)) / 1e9)
+            if age_sec <= self.live_probe_max_age_sec:
+                return live_T, int(live_t_ns), "live-buffered"
+
+        live_t_ns, live_T = self.live_probe.latest_probe_pose()
+        if live_T is not None and live_t_ns is not None:
+            age_sec = max(0.0, (time.time_ns() - int(live_t_ns)) / 1e9)
+            if age_sec <= self.live_probe_max_age_sec:
+                return live_T, int(live_t_ns), "live-latest"
+
+        return recorded_pose.T_pol_probe, int(recorded_pose.t_ns), "recorded"
 
     @staticmethod
     def pose_m_to_display_mm(T):
@@ -1816,12 +2039,12 @@ def _render_3d_view(
     show_mri_markers=True,
 ):
     pose_idx = int(np.clip(pose_idx, 0, len(DATA.poses) - 1))
-    pose = DATA.poses[pose_idx]
+    probe_pose_m, probe_pose_t_ns, probe_pose_source = DATA.active_probe_pose(pose_idx)
     frame_idx = DATA.pose_idx_to_frame_idx(pose_idx)
     us_img = DATA.read_us_frame(frame_idx)
-    probe_trace = DATA.mesh_trace(DATA.probe_mesh, pose.T_pol_probe, model_to_local=DATA.probe_model_in_probe)
-    needle_trace = DATA.needle_line_trace(pose.T_pol_probe)
-    plane_surface = DATA.image_plane_surface_trace(pose.T_pol_probe, us_img)
+    probe_trace = DATA.mesh_trace(DATA.probe_mesh, probe_pose_m, model_to_local=DATA.probe_model_in_probe)
+    needle_trace = DATA.needle_line_trace(probe_pose_m)
+    plane_surface = DATA.image_plane_surface_trace(probe_pose_m, us_img)
     axial_surface = DATA.mri_slice_surface_trace("axial", axial_slice)
     axial_outline = DATA.mri_slice_outline_trace("axial", axial_slice)
     coronal_surface = DATA.mri_slice_surface_trace("coronal", coronal_slice)
@@ -1880,7 +2103,7 @@ def _render_3d_view(
         uirevision="view-3d-static",
     )
     msg = (
-        f"pose_idx={pose_idx} | pose_time_ns={pose.t_ns} | "
+        f"pose_idx={pose_idx} | pose_source={probe_pose_source} | pose_time_ns={probe_pose_t_ns} | "
         f"matched_frame={frame_idx} | frame_time_ns={DATA.frame_time_ns(frame_idx)} | "
         f"video_offset={DATA.video_time_offset_sec:+.5f}s | "
         f"mri_g_offset={DATA.mri_g_offset_mm:+.1f}mm | "
@@ -1892,6 +2115,7 @@ def _render_3d_view(
 
 
 DATA = AppData()
+atexit.register(DATA.close)
 INITIAL_POSE_SLICES = DATA.pose_to_slice_indices(0)
 DATA.slice_default.update(INITIAL_POSE_SLICES)
 INITIAL_AXIAL_IMG, INITIAL_AXIAL_MARKERS = DATA.render_mri_slice("axial", DATA.slice_default["axial"], DATA.panel_configs["axial"]["title"])
@@ -2250,9 +2474,12 @@ def _volume_sampler_panel(img_src: str, status_text: str):
 
 
 def _main_page_layout():
+    live_probe_interval_ms = int(os.environ.get("UI_LIVE_PROBE_INTERVAL_MS", "350"))
     return html.Div([
         dcc.Store(id="straight-line-target-store"),
         dcc.Store(id="view-3d-visibility", data={"show_us_probe": True, "show_mri_surface": True, "show_mri_markers": True}),
+        dcc.Store(id="live-probe-render-state", data={"last_t_ns": None}),
+        dcc.Interval(id="live-probe-interval", interval=live_probe_interval_ms, n_intervals=0),
         _timeline_controls("", INITIAL_MSG),
         html.Div([
             _mri_panel("axial", DATA.panel_configs["axial"]["title"], DATA.panel_configs["axial"]["color"], INITIAL_AXIAL, DATA.slice_max["axial"], DATA.slice_default["axial"], _slice_status_text(DATA.slice_default["axial"], INITIAL_AXIAL_MARKERS)),
@@ -2384,6 +2611,7 @@ def sync_slices_to_pose(pose_idx):
 @app.callback(
     Output("view-3d", "figure"),
     Output("frame-info", "children"),
+    Output("live-probe-render-state", "data"),
     Input("pose-slider", "value"),
     Input("video-sync-mode", "value"),
     Input("axial-slice", "value"),
@@ -2396,6 +2624,8 @@ def sync_slices_to_pose(pose_idx):
     Input(OBLIQUE_IDS["rot_y"], "value"),
     Input(OBLIQUE_IDS["rot_z"], "value"),
     Input("view-3d-visibility", "data"),
+    Input("live-probe-interval", "n_intervals"),
+    State("live-probe-render-state", "data"),
 )
 def update_3d_view(
     pose_idx,
@@ -2410,7 +2640,21 @@ def update_3d_view(
     oblique_rot_y,
     oblique_rot_z,
     visibility_cfg,
+    live_probe_tick,
+    live_probe_render_state,
 ):
+    live_probe_render_state = live_probe_render_state or {}
+    triggered_ids = {prop_id.split(".")[0] for prop_id in dash.ctx.triggered_prop_ids}
+    only_interval_tick = triggered_ids == {"live-probe-interval"}
+    if only_interval_tick:
+        live_t_ns, live_T = DATA.live_probe.latest_probe_pose()
+        del live_probe_tick, live_T
+        if live_t_ns is None:
+            return dash.no_update, dash.no_update, live_probe_render_state
+        if int(live_t_ns) == int(live_probe_render_state.get("last_t_ns") or -1):
+            return dash.no_update, dash.no_update, live_probe_render_state
+    else:
+        del live_probe_tick
     _apply_runtime_offsets(video_sync_mode=video_sync_mode)
     visibility_cfg = visibility_cfg or {}
     fig, msg = _render_3d_view(
@@ -2428,7 +2672,9 @@ def update_3d_view(
         show_mri_surface=bool(visibility_cfg.get("show_mri_surface", True)),
         show_mri_markers=bool(visibility_cfg.get("show_mri_markers", True)),
     )
-    return fig, msg
+    latest_live_t_ns, _ = DATA.live_probe.latest_probe_pose()
+    new_state = {"last_t_ns": None if latest_live_t_ns is None else int(latest_live_t_ns)}
+    return fig, msg, new_state
 
 
 @app.callback(
