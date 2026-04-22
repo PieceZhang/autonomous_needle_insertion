@@ -33,6 +33,7 @@ setup(
             "task2robot_exe_points_refine = auto_needle_insertion.task2robot_exe_points_refine:main",
             "ee_moveit_keyboard = auto_needle_insertion.ee_moveit_keyboard:main",
             "ee_moveit = auto_needle_insertion.ee_moveit:main",
+            "place_probe = auto_needle_insertion.place_probe:main",
             "ee_pose_logger = auto_needle_insertion.ee_pose_logger:main",
             "hand_eye_calib = auto_needle_insertion.hand_eye_calib:main",
             "tool_reporter = auto_needle_insertion.tool_reporter:main",

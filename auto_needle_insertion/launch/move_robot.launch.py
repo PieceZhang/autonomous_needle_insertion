@@ -10,6 +10,7 @@ from moveit_configs_utils import MoveItConfigsBuilder
 MOVE_ROBOT_MODES = [
     "ee_moveit",
     "ee_moveit_keyboard",
+    "place_probe",
     "ee_pose_logger",
     "hand_eye_calib",
     "tool_reporter",
