@@ -302,6 +302,24 @@ def create_pose_stamped(
     return pose_stamped
 
 
+def create_placeholder_approach_start_pose(
+    current_pose,
+    planning_frame: str,
+    origin: np.ndarray,
+    x_axis: np.ndarray,
+) -> PoseStamped:
+    """Placeholder desired pose before approach offset collection."""
+    position = origin + 0.05 * x_axis
+
+    pose_stamped = PoseStamped()
+    pose_stamped.header.frame_id = planning_frame
+    pose_stamped.pose.position.x = float(position[0])
+    pose_stamped.pose.position.y = float(position[1])
+    pose_stamped.pose.position.z = float(position[2])
+    pose_stamped.pose.orientation = current_pose.orientation
+    return pose_stamped
+
+
 def execute_trajectory_with_fallback(
     robot: MoveItPy,
     trajectory,
@@ -451,6 +469,20 @@ def main() -> None:
         ]
 
         if trajectory_name == "approach":
+            approach_start_pose = create_placeholder_approach_start_pose(
+                current_pose,
+                planning_frame,
+                origin,
+                x_axis,
+            )
+            logger.info("Moving to placeholder approach start pose")
+            plan_result = plan_waypoint(robot, arm, approach_start_pose, tip_link)
+            if not plan_result:
+                raise RuntimeError("Planning to placeholder approach start pose failed")
+            if not execute_trajectory_with_fallback(robot, plan_result.trajectory):
+                raise RuntimeError("Execution to placeholder approach start pose failed")
+            logger.info("Reached placeholder approach start pose")
+
             force_monitor = ForceZMonitor()
             force_monitor.start()
             stopped_by_force = False
