@@ -39,6 +39,7 @@ SQUARE_EDGE_LENGTH = 0.2  # meters
 APPROACH_DISTANCE = 0.3  # meters
 APPROACH_FORCE_Z_TOPIC = "/ati_ft_broadcaster/wrench"
 APPROACH_FORCE_Z_LIMIT = -10.0  # N
+FORCE_Z_OFFSET_COLLECTION_SEC = 3.0
 LOG_FORCE_Z_INFO = False
 MAX_VELOCITY_SCALING = 0.2
 MAX_ACCELERATION_SCALING = 0.2
@@ -77,6 +78,10 @@ class ForceZMonitor:
     ) -> None:
         self.topic_name = topic_name
         self.force_limit = force_limit
+        self.force_offset = 0.0
+        self._collecting_offset = True
+        self._offset_samples: List[float] = []
+        self._offset_lock = threading.Lock()
         self._triggered = threading.Event()
         self._node = rclpy.create_node("ee_moveit_force_z_monitor")
         self._executor = SingleThreadedExecutor()
@@ -96,6 +101,21 @@ class ForceZMonitor:
     def start(self) -> None:
         self._spin_thread.start()
         logger.info(
+            f"Collecting force Z offset from {self.topic_name} for "
+            f"{FORCE_Z_OFFSET_COLLECTION_SEC:.1f} s"
+        )
+        time.sleep(FORCE_Z_OFFSET_COLLECTION_SEC)
+        with self._offset_lock:
+            self._collecting_offset = False
+            sample_count = len(self._offset_samples)
+            if sample_count:
+                self.force_offset = sum(self._offset_samples) / sample_count
+            else:
+                self.force_offset = 0.0
+        logger.info(
+            f"Force Z offset: {self.force_offset:.3f} N from {sample_count} samples"
+        )
+        logger.info(
             f"Monitoring {self.topic_name}; approach stops below {self.force_limit:.1f} N"
         )
 
@@ -113,10 +133,19 @@ class ForceZMonitor:
             self._executor.spin_once(timeout_sec=0.05)
 
     def _force_cb(self, msg: WrenchStamped) -> None:
-        force_z = msg.wrench.force.z
+        raw_force_z = msg.wrench.force.z
+
+        with self._offset_lock:
+            if self._collecting_offset:
+                self._offset_samples.append(raw_force_z)
+                logger.info(f"Force Z offset sample: {raw_force_z:.3f} N")
+                return
+            force_offset = self.force_offset
+
+        force_z = raw_force_z - force_offset
 
         if LOG_FORCE_Z_INFO:
-            logger.info(f"Force Z: {force_z:.3f} N")
+            logger.info(f"Force Z: {force_z:.3f} N (raw: {raw_force_z:.3f} N)")
 
         if force_z >= self.force_limit or self._triggered.is_set():
             return
