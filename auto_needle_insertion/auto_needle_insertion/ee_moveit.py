@@ -320,11 +320,18 @@ def plan_waypoint(robot: MoveItPy, arm, waypoint_pose: PoseStamped, tip_link: st
     return arm.plan(single_plan_parameters=plan_params)
 
 
-def get_trajectory_parameter(robot: MoveItPy) -> str:
-    """Read the requested trajectory type from the MoveItPy node."""
-    node = robot.get_node()
-    node.declare_parameter("trajectory", DEFAULT_TRAJECTORY)
-    return node.get_parameter("trajectory").get_parameter_value().string_value
+def get_trajectory_parameter() -> str:
+    """Read trajectory from ROS parameters without relying on MoveItPy internals."""
+    node = rclpy.create_node(
+        "ee_moveit_parameter_reader",
+        automatically_declare_parameters_from_overrides=True,
+    )
+    try:
+        if not node.has_parameter("trajectory"):
+            node.declare_parameter("trajectory", DEFAULT_TRAJECTORY)
+        return node.get_parameter("trajectory").get_parameter_value().string_value
+    finally:
+        node.destroy_node()
 
 
 def main() -> None:
@@ -332,9 +339,9 @@ def main() -> None:
     rclpy.init()
 
     try:
-        robot = MoveItPy(node_name=NODE_NAME)
-        trajectory_name = get_trajectory_parameter(robot)
+        trajectory_name = get_trajectory_parameter()
         logger.info(f"Selected trajectory: {trajectory_name}")
+        robot = MoveItPy(node_name=NODE_NAME)
 
         # Allow time for joint states to populate the planning scene
         time.sleep(PLANNING_SCENE_SYNC_DELAY)
