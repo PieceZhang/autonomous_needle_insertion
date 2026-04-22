@@ -39,7 +39,7 @@ DEFAULT_TRAJECTORY = "square"
 SQUARE_EDGE_LENGTH = 0.2  # meters
 APPROACH_DISTANCE = 0.3  # meters
 APPROACH_FORCE_Z_TOPIC = "/ati_ft_broadcaster/wrench/force/z"
-APPROACH_FORCE_Z_LIMIT = 10.0  # N
+APPROACH_FORCE_Z_LIMIT = -10.0  # N
 MAX_VELOCITY_SCALING = 0.2
 MAX_ACCELERATION_SCALING = 0.2
 PLANNING_SCENE_SYNC_DELAY = 0.5  # seconds
@@ -67,7 +67,7 @@ logger = logging.getLogger(__name__)
 
 
 class ForceZMonitor:
-    """Monitor scalar force Z and cancel active trajectory goals above a limit."""
+    """Monitor scalar force Z and cancel active trajectory goals below a limit."""
 
     def __init__(
         self,
@@ -96,7 +96,7 @@ class ForceZMonitor:
     def start(self) -> None:
         self._spin_thread.start()
         logger.info(
-            f"Monitoring {self.topic_name}; approach stops above {self.force_limit:.1f} N"
+            f"Monitoring {self.topic_name}; approach stops below {self.force_limit:.1f} N"
         )
 
     def stop(self) -> None:
@@ -113,12 +113,12 @@ class ForceZMonitor:
             self._executor.spin_once(timeout_sec=0.05)
 
     def _force_cb(self, msg: Float64) -> None:
-        if msg.data <= self.force_limit or self._triggered.is_set():
+        if msg.data >= self.force_limit or self._triggered.is_set():
             return
 
         self._triggered.set()
         logger.warning(
-            f"Force Z {msg.data:.3f} N exceeded {self.force_limit:.3f} N; "
+            f"Force Z {msg.data:.3f} N fell below {self.force_limit:.3f} N; "
             "canceling active approach trajectory"
         )
         self._cancel_active_goals()
