@@ -190,7 +190,7 @@ Run the external control program. On the UR pendant:
 ```bash
 # Some available commands are:
 # Run a simple trajectory profile:
-ros2 launch auto_needle_insertion move_robot.launch.py mode:=ee_moveit_square
+ros2 launch auto_needle_insertion move_robot.launch.py mode:=ee_moveit
 
 # Run keyboard control in the end-effector local frame:
 ros2 launch auto_needle_insertion move_robot.launch.py mode:=keyboard

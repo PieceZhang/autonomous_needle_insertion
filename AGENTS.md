@@ -56,7 +56,7 @@ The build system uses several optimizations to minimize rebuild time:
 
 ## Conventions
 - **Python ROS 2 package** (`auto_needle_insertion`): uses `setup.py` with `entry_points` for console_scripts — add new nodes there, not as standalone scripts.
-- **Launch files** live in `auto_needle_insertion/launch/*.launch.py`; motion modes are selected via `mode:=` arg (e.g., `mode:=keyboard`, `mode:=ee_moveit_square`).
+- **Launch files** live in `auto_needle_insertion/launch/*.launch.py`; motion modes are selected via `mode:=` arg (e.g., `mode:=keyboard`, `mode:=ee_moveit`).
 - **Config YAML** in `auto_needle_insertion/config/` — MoveIt/servo params (`moveit_py_ur_ompl.yaml`, `servo_params.yaml`).
 - **Task scripts** follow a naming pattern: `task{N}_{description}.py` in the package, with matching shell wrappers in `task_scripts/` (e.g., `task1_auto.sh`).
 - **Post-processing pipeline**: rosbag MCAP → `rosbag_decode.py` (decodes to NDJSON + MP4) → `task{N}_to_lerobot.py` (converts to LeRobot HDF5 format). Each `.py` has a companion `.sh` wrapper.

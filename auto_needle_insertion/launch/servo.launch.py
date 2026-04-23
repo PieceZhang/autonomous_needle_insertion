@@ -9,6 +9,9 @@ from launch_ros.actions import Node
 from moveit_configs_utils import MoveItConfigsBuilder
 
 
+SERVO_MODES = ["keyboard_servo"]
+
+
 def generate_launch_description():
     # Launch arguments
     ur_type_arg = DeclareLaunchArgument("ur_type", default_value="ur5e")
@@ -19,6 +22,12 @@ def generate_launch_description():
         description="Path to UR calibration kinematics YAML",
     )
     ur_calibration_file = LaunchConfiguration("ur_calibration_file")
+    mode_arg = DeclareLaunchArgument(
+        "mode",
+        default_value="keyboard_servo",
+        choices=SERVO_MODES,
+    )
+    mode_name = LaunchConfiguration("mode")
 
     # Package paths
     ur_moveit_pkg = Path(get_package_share_directory("ur_moveit_config"))
@@ -117,7 +126,7 @@ def generate_launch_description():
     # Keyboard servo node
     keyboard_servo = Node(
         package="auto_needle_insertion",
-        executable="keyboard_servo",
+        executable=mode_name,
         name="keyboard_servo",
         output="screen",
     )
@@ -125,6 +134,7 @@ def generate_launch_description():
     return LaunchDescription([
         ur_type_arg,
         ur_calibration_file_arg,
+        mode_arg,
         servo,
         static_polaris_to_base,
         keyboard_servo,
