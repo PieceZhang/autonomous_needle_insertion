@@ -32,6 +32,8 @@ from moveit.core.robot_state import RobotState
 from moveit.planning import MoveItPy, PlanRequestParameters
 from rclpy.executors import SingleThreadedExecutor
 
+from auto_needle_insertion.utils.us_probe import USProbe
+
 # Module constants
 NODE_NAME = "auto_needle_insertion"
 SQUARE_EDGE_LENGTH = 0.2  # meters
@@ -387,12 +389,36 @@ def plan_waypoint(robot: MoveItPy, arm, waypoint_pose: PoseStamped, tip_link: st
     return arm.plan(single_plan_parameters=plan_params)
 
 
+def log_us_probe_pose(timeout_sec: float = 2.0) -> None:
+    us_probe = USProbe()
+    try:
+        pose = us_probe.report_pose(timeout_sec=timeout_sec)
+    except RuntimeError as e:
+        if "NaN" in str(e) or "Inf" in str(e):
+            logger.warning(f"US probe pose contains NaN/Inf: {e}")
+        else:
+            logger.warning(f"Failed to report US probe pose: {e}")
+        return
+    except TimeoutError as e:
+        logger.warning(f"Failed to report US probe pose: {e}")
+        return
+
+    pose_values = np.asarray(pose, dtype=float)
+    logger.info(
+        "US probe pose (px, py, pz, qx, qy, qz, qw): "
+        f"{tuple(float(x) for x in pose_values)}"
+    )
+    if np.any(np.isnan(pose_values)):
+        logger.warning("US probe pose contains NaN values")
+
+
 def main() -> None:
     """Main execution function for the fixed place-probe approach sequence."""
     rclpy.init()
 
     try:
         logger.info("Starting place_probe approach sequence")
+        log_us_probe_pose()
         robot = MoveItPy(node_name=NODE_NAME)
 
         # Allow time for joint states to populate the planning scene
