@@ -3,6 +3,8 @@
 [![License](https://img.shields.io/badge/license-Apache%20License%202.0-blue)](LICENSE)
 [![Docker Pulls](https://img.shields.io/docker/pulls/your_dockerhub_username/your_image_name.svg)](https://hub.docker.com/layers/osrf/ros/jazzy-desktop-full/images/sha256-b706aba86d1be07e9dc2834bf54c9acf1be87c2bad1aea83cd2f49ff738b6f5e)
 
+## `💡This is a static snapshot of the private development repository. It is provided for reference only and is not intended for active development.`
+
 ## NEW
 The Franka Research 3 driver has been fully integrated and tested on a machine with a real-time kernel.
 
